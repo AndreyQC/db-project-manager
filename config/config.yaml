@@ -1,0 +1,38 @@
+appName: DB_MANAGER_UTILITIES
+appShortName: DBMNGRU
+logLevel: WARN
+authors:
+  - Andrey Potapov
+
+description:
+  porpose:
+
+paths:
+  workingpath: 'C:\Temp\DBMNGRU\Testing'
+  excluded_paths: ''
+  destination_path: 'C:\Temp\DBMNGRU\Testing\SQL'
+  log_path: 'C:\Temp\DBMNGRU\Logs'
+
+flags:
+  debugmode: False
+
+connections:
+  connection-greenplum:
+    name: greenplum_dev
+    type: greenplum
+    host: ENVOS_DBMNGRU_VALUE_01
+    port: 5432
+    sslmode: verify-full
+    dbname: dev_cis
+    user: ENVOS_DBMNGRU_VALUE_02
+    target_session_attrs: read-write
+    password: ENVOS_DBMNGRU_VALUE_03
+
+  connection-clickhouse:
+    name: clickhouse_dev
+    type: clickhouse
+    host: 158.160.70.220
+    port: 8123
+    user: ENVOS_DBMNGRU_VALUE_11
+    password: ENVOS_DBMNGRU_VALUE_12
+
