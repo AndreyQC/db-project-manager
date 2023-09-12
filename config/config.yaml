@@ -31,7 +31,7 @@ connections:
   connection-clickhouse:
     name: clickhouse_dev
     type: clickhouse
-    host: 158.160.70.220
+    host: somehost
     port: 8123
     user: ENVOS_DBMNGRU_VALUE_11
     password: ENVOS_DBMNGRU_VALUE_12
