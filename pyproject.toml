@@ -1,0 +1,71 @@
+[project]
+name = "db-project-manager"
+version = "0.1.0"
+description = "DB Project Manager — tool for working with DB structure: reads metadata, generates SQL scripts, builds deployment graphs."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.13"
+authors = [
+    { name = "Andrey Potapov", email = "andrey.potapov@reksoft.com" },
+]
+dependencies = [
+    "pydantic~=2.11.3",
+    "pyyaml~=6.0.2",
+    "cryptography~=44.0.2",
+    "loguru~=0.7.3",
+    "sqlalchemy~=2.0.23",
+    "psycopg2~=2.9.9",
+    "jinja2~=3.1.6",
+    "typer~=0.24.1",
+    "pyside6~=6.8.3",
+    "darkdetect~=0.8.0",
+]
+
+[project.scripts]
+db-pm = "db_project_manager.presentation.cli.main:app"
+db-pm-gui = "db_project_manager.presentation.gui.main:main"
+
+[dependency-groups]
+dev = [
+    "pytest~=8.3.5",
+    "pytest-cov~=6.0.0",
+    "ruff~=0.11.4",
+]
+
+[build-system]
+requires = ["uv_build>=0.11.6,<0.12"]
+build-backend = "uv_build"
+
+[tool.uv]
+package = true
+
+# --- src layout ---
+[tool.uv-build]
+module-name = "db_project_manager"
+module-root = "src"
+
+[tool.ruff]
+line-length = 120
+indent-width = 4
+exclude = [".venv", ".vscode", "site-packages", "venv", "__pycache__"]
+
+[tool.ruff.lint]
+# D105: Missing docstring in magic method
+# D107: Missing docstring in __init__
+# D400 First line should end with a period
+# D401: First line should be in imperative mood
+# D403: First line should end with a period
+# D415: Section should end with a period
+# D418: Function/Method decorated with @overload shouldn't contain a docstring
+ignore = ["D105", "D107", "D400", "D401", "D403", "D415", "D418"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.isort]
+lines-after-imports = 2
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-ra"
