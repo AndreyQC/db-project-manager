@@ -1,0 +1,17 @@
+-- Создание представления {{ schema }}.{{ name }}
+CREATE MATERIALIZED VIEW {{ schema }}.{{ name }}
+TABLESPACE {{ tablespace }}
+AS{{ definition }}
+{{ data_status }};
+
+{% if comment %}
+-- Комментарий к материализованному представлению {{ schema }}.{{ name }}
+COMMENT ON MATERIALIZED VIEW {{ schema }}.{{ name }} IS '{{ comment }}';
+{% endif %}
+{% for col in columns if col.comment %}
+    {% if loop.first %}
+
+-- Комментарии к колонкам
+    {% endif %}
+COMMENT ON COLUMN {{ schema }}.{{ name }}.{{col.name}} IS '{{ col.comment }}';
+{% endfor %}

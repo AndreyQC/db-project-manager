@@ -1,0 +1,6 @@
+-- Создание процедуры {{ schema }}.{{ name }}({{ argument_types }})
+{{ definition }};{% if comment %}
+
+
+COMMENT ON PROCEDURE {{ schema }}.{{ name }}({{ argument_types }}) IS '{{ comment }}';
+{% endif %}

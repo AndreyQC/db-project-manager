@@ -1,0 +1,6 @@
+-- Создание функции {{ schema }}.{{ name }}({{ argument_types }})
+{{ definition }};{% if comment %}
+
+
+COMMENT ON FUNCTION {{ schema }}.{{ name }}({{ argument_types }}) IS '{{ comment }}';
+{% endif %}

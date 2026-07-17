@@ -1,0 +1,15 @@
+-- Создание триггера {{ name }}
+CREATE OR REPLACE TRIGGER {{ name }}
+    {% if when %}WHEN {{ when }}{% endif %}
+    {% for event in events %}
+    {{ event }}{% if not loop.last %} OR{% endif %}
+    {% endfor %}
+    ON {{ table_name }}
+    {% if for_each %}FOR EACH {{ for_each }}{% endif %}
+    {% if deferrable %}DEFERRABLE{% endif %}
+    {% if initially %}INITIALLY {{ initially }}{% endif %}
+EXECUTE FUNCTION {{ function_name }}({{ function_args|join(', ') }});
+
+{% if comment %}
+COMMENT ON TRIGGER {{ name }} ON {{ table_name }} IS '{{ comment }}';
+{% endif %}

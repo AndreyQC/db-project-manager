@@ -1,0 +1,143 @@
+{
+  "schemas": [
+    {
+      "name": "bookings",
+      "comment": "Демо-схема",
+      "sequences": [],
+      "tables": [
+        {
+          "schema": "bookings",
+          "name": "aircrafts",
+          "comment": "Самолеты",
+          "columns": [
+            {
+              "name": "aircraft_code",
+              "type": "bpchar",
+              "nullable": false,
+              "default": null,
+              "character_maximum_length": 3,
+              "numeric_precision": null,
+              "numeric_scale": null,
+              "comment": "Код самолета, IATA"
+            },
+            {
+              "name": "model",
+              "type": "text",
+              "nullable": false,
+              "default": null,
+              "character_maximum_length": null,
+              "numeric_precision": null,
+              "numeric_scale": null,
+              "comment": "Модель самолета"
+            },
+            {
+              "name": "range",
+              "type": "int4",
+              "nullable": false,
+              "default": null,
+              "character_maximum_length": null,
+              "numeric_precision": 32,
+              "numeric_scale": 0,
+              "comment": "Дальность полета"
+            }
+          ],
+          "constraints": [
+            {
+              "name": "aircrafts_pkey",
+              "type": "PRIMARY KEY",
+              "schema": "bookings",
+              "table_name": "aircrafts",
+              "columns": ["aircraft_code"],
+              "referenced_table_schema": null,
+              "referenced_table_name": null,
+              "referenced_column_name": null,
+              "definition": "PRIMARY KEY (aircraft_code)",
+              "comment": null
+            },
+            {
+              "name": "aircrafts_range_check",
+              "type": "CHECK",
+              "schema": "bookings",
+              "table_name": "aircrafts",
+              "columns": [],
+              "referenced_table_schema": null,
+              "referenced_table_name": null,
+              "referenced_column_name": null,
+              "definition": "CHECK ((range > 0))",
+              "comment": null
+            }
+          ],
+          "primary_keys": [],
+          "indexes": []
+        },
+        {
+          "schema": "bookings",
+          "name": "flights",
+          "comment": null,
+          "columns": [
+            {
+              "name": "flight_id",
+              "type": "int4",
+              "nullable": false,
+              "default": "nextval('flights_flight_id_seq'::regclass)",
+              "character_maximum_length": null,
+              "numeric_precision": 32,
+              "numeric_scale": 0,
+              "comment": null
+            },
+            {
+              "name": "aircraft_code",
+              "type": "bpchar",
+              "nullable": false,
+              "default": null,
+              "character_maximum_length": 3,
+              "numeric_precision": null,
+              "numeric_scale": null,
+              "comment": null
+            }
+          ],
+          "constraints": [
+            {
+              "name": "flights_aircraft_code_fkey",
+              "type": "FOREIGN KEY",
+              "schema": "bookings",
+              "table_name": "flights",
+              "columns": ["aircraft_code"],
+              "referenced_table_schema": "bookings",
+              "referenced_table_name": "aircrafts",
+              "referenced_column_name": "aircraft_code",
+              "definition": "FOREIGN KEY (aircraft_code) REFERENCES bookings.aircrafts(aircraft_code)",
+              "comment": "FK to aircrafts"
+            }
+          ],
+          "primary_keys": [],
+          "indexes": [
+            {
+              "name": "flights_aircraft_code_idx",
+              "columns": ["aircraft_code"],
+              "index_type": "btree",
+              "unique": false,
+              "filter_condition": null
+            }
+          ]
+        }
+      ],
+      "views": [
+        {
+          "name": "flights_v",
+          "schema": "bookings",
+          "comment": "Представление рейсов",
+          "definition": "\n SELECT flight_id, aircraft_code\n   FROM bookings.flights;",
+          "columns": [
+            {"name": "flight_id", "comment": null},
+            {"name": "aircraft_code", "comment": "Код самолета"}
+          ]
+        }
+      ],
+      "materialized_views": [],
+      "functions": [],
+      "procedures": [],
+      "enums": []
+    }
+  ]
+}

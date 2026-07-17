@@ -1,0 +1,7 @@
+-- Создание схемы {{ name }}
+
+CREATE SCHEMA {{ name }};
+
+{% if comment %}
+COMMENT ON SCHEMA {{ name }} IS '{{ comment }}';
+{% endif %}

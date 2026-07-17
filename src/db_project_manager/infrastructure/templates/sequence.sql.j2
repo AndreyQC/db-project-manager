@@ -1,0 +1,12 @@
+-- Создание последовательности {{ schema }}.{{ name }}
+CREATE SEQUENCE {{ schema }}.{{ name }}
+    INCREMENT BY {{ increment }}
+    MINVALUE {{ minvalue }}
+    MAXVALUE {{ maxvalue }}
+    START {{ start }}
+    CACHE {{ cache }}
+    {{ cycle }};
+{% if comment %}
+-- Комментарий к последовательности
+COMMENT ON TABLE {{ schema }}.{{ name }} IS '{{ comment }}';
+{% endif %}

@@ -1,0 +1,21 @@
+-- Создание таблицы {{ schema }}.{{ name }}
+CREATE TABLE {{ schema }}.{{ name }} (
+{% for col in columns %}
+    {{ col.name }} {{ col.type }}{{ _type_mod(col) }}{{ _null_mod(col) }}{{ _default_mod(col) }}{{ _comma(col, loop, constraints) }}{{ _comment_mod(col) }}
+{% endfor %}
+{% for c in constraints %}
+    CONSTRAINT {{ c.name }} {{ c.definition }}{{ _constraint_comma(loop) }}{{ _comment_mod(c) }}
+{% endfor %});
+{% if comment %}
+COMMENT ON TABLE {{ schema }}.{{ name }} IS '{{ comment }}';
+{% endif %}
+{% for col in columns if col.comment %}
+COMMENT ON COLUMN {{ schema }}.{{ name }}.{{ col.name }} IS '{{ col.comment }}';
+{% endfor %}
+{% if foreign_keys %}
+
+-- Внешние ключи таблицы {{ schema }}.{{ name }}
+{% for f in foreign_keys %}
+ALTER TABLE {{ schema }}.{{ name }} ADD CONSTRAINT {{ f.name }} {{ f.definition }};{{ _comment_mod(f) }}
+{% endfor %}
+{% endif %}

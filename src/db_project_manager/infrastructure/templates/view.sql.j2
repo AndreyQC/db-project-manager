@@ -1,0 +1,15 @@
+-- Создание представления {{ schema }}.{{ name }}
+CREATE OR REPLACE VIEW {{ schema }}.{{ name }}
+AS{{ definition }}
+
+{% if comment %}
+-- Комментарий к представлению {{ schema }}.{{ name }}
+COMMENT ON VIEW {{ schema }}.{{ name }} IS '{{ comment }}';
+{% endif %}
+{% for col in columns if col.comment %}
+    {% if loop.first %}
+
+-- Комментарии к колонкам
+    {% endif %}
+COMMENT ON COLUMN {{ schema }}.{{ name }}.{{col.name}} IS '{{ col.comment }}';
+{% endfor %}

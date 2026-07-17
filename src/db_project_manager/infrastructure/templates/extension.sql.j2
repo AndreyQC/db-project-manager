@@ -1,0 +1,9 @@
+-- Создание расширения {{ name }}
+CREATE EXTENSION IF NOT EXISTS {{ name }}
+{% if schema %}SCHEMA {{ schema }}{% endif %}
+{% if version %}VERSION {{ version }}{% endif %}
+{% if cascade %}CASCADE{% endif %};
+
+{% if comment %}
+COMMENT ON EXTENSION {{ name }} IS '{{ comment }}';
+{% endif %}
