@@ -1,0 +1,20 @@
+# Connection file example.
+# connections/ directory is git-ignored except this example file.
+# Real connections are created via GUI (Connection dialog) or manually copied here.
+#
+# The password field uses the crypto__<ENV_VAR>__<token> format:
+#   - <ENV_VAR> is an environment variable name holding the Fernet key (set on your machine / CI secrets).
+#   - <token> is the Fernet ciphertext.
+# To produce an encrypted password, run: db-pm crypto encrypt <ENV_VAR>   (reads password from stdin)
+# or use the GUI connection dialog (encrypts automatically on save).
+#
+# Example entry:
+
+# type: postgres           # postgres | greenplum (phase 1) ; snowflake | mssql (later)
+# host: localhost
+# port: 5432
+# database: mydb
+# username: myuser
+# password: crypto__ENVOS_CRYPTO_01__gAAAAABm...your-token...
+# options:                 # optional extra driver options
+#   sslmode: prefer

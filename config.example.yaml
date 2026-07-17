@@ -1,0 +1,15 @@
+# Application configuration (copy to config.yaml and adjust).
+# config.yaml is git-ignored; keep secrets/local settings there.
+
+paths:
+  default_output_dir: "./output"   # where SQL project files are generated
+  logs_dir: "./logs"
+
+logging:
+  level: "INFO"                    # DEBUG | INFO | WARNING | ERROR
+  console: true
+  file_name: "app.log"
+
+# Optional: connection file used by default in GUI (path to connections/*.yaml).
+# CLI always requires explicit --connection-file.
+default_connection_file: null

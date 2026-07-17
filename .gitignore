@@ -133,7 +133,7 @@ dmypy.json
 config.yaml
 config.local.yaml
 *.local.yaml
-connections/
+connections/*
 !connections/example.yaml
 # Logs
 logs/
