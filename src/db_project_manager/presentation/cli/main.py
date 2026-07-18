@@ -28,6 +28,11 @@ from db_project_manager.infrastructure.logging_setup import configure as configu
 app = typer.Typer(no_args_is_help=True, add_completion=False, help="DB Project Manager CLI.")
 
 
+@app.callback()
+def _main() -> None:
+    """DB Project Manager — work with database structure from the command line."""
+
+
 @app.command("reverse-engineer")
 def reverse_engineer(
     connection_file: Annotated[
