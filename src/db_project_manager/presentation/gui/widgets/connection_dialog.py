@@ -8,6 +8,7 @@ without persisting anything.
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -18,6 +19,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSpinBox,
+    QWidget,
 )
 
 from db_project_manager.domain.connection import ConnectionConfig
@@ -65,13 +67,29 @@ class ConnectionDialog(QDialog):
         self.password_edit = QLineEdit()
         self.password_edit.setEchoMode(QLineEdit.EchoMode.Password)
 
+        # Eye toggle to reveal/hide the password value.
+        self.password_toggle = QPushButton()
+        self.password_toggle.setCheckable(True)
+        self.password_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.password_toggle.setFlat(True)
+        self.password_toggle.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.password_toggle.setFixedWidth(28)
+        self._set_password_visible(False)
+        self.password_toggle.toggled.connect(self._set_password_visible)
+
+        password_row = QWidget()
+        password_layout = QHBoxLayout(password_row)
+        password_layout.setContentsMargins(0, 0, 0, 0)
+        password_layout.addWidget(self.password_edit)
+        password_layout.addWidget(self.password_toggle)
+
         form.addRow("Название:", self.name_edit)
         form.addRow("Тип БД:", self.type_combo)
         form.addRow("Хост:", self.host_edit)
         form.addRow("Порт:", self.port_spin)
         form.addRow("База данных:", self.database_edit)
         form.addRow("Пользователь:", self.username_edit)
-        form.addRow("Пароль:", self.password_edit)
+        form.addRow("Пароль:", password_row)
 
         # Test button next to the buttons row.
         test_btn = QPushButton("Тест соединения")
@@ -89,6 +107,21 @@ class ConnectionDialog(QDialog):
         btn_row.addStretch()
         btn_row.addWidget(buttons)
         form.addRow(btn_row)
+
+    def _set_password_visible(self, visible: bool) -> None:
+        """Toggle password echo mode and the eye button appearance."""
+        self.password_edit.setEchoMode(
+            QLineEdit.EchoMode.Normal if visible else QLineEdit.EchoMode.Password
+        )
+        # Prefer standard theme icons; fall back to text glyphs if unavailable.
+        name = "view-visible" if visible else "view-hidden"
+        icon = QIcon.fromTheme(name)
+        if icon.isNull():
+            self.password_toggle.setText("🙈" if visible else "👁")
+        else:
+            self.password_toggle.setIcon(icon)
+            self.password_toggle.setText("")
+        self.password_toggle.setToolTip("Скрыть пароль" if visible else "Показать пароль")
 
     def _load_existing(self, name: str) -> None:
         try:
