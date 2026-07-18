@@ -99,3 +99,24 @@ def test_empty_structure_produces_no_files(tmp_path) -> None:
     out = gen.generate_scripts({"schemas": []}, tmp_path / "out")
     assert out.exists()
     assert list(out.iterdir()) == []
+
+
+def test_autodoc_header_prepended_by_default(structure, tmp_path) -> None:
+    gen = SQLGenerator()
+    out = gen.generate_scripts(structure, tmp_path / "out", object_catalog="mydb")
+    text = (out / "bookings" / "tables" / "table aircrafts.sql").read_text(encoding="utf-8")
+    assert "[<[autodoc-yaml]]" in text
+    assert "[[autodoc-yaml]>]" in text
+    assert "object_catalog: mydb" in text
+    assert "object_type: table" in text
+    assert "object_name: aircrafts" in text
+    assert "object_key: pg_database/mydb/schema/bookings/type/table/name/aircrafts" in text
+
+
+def test_autodoc_disabled(structure, tmp_path) -> None:
+    gen = SQLGenerator(autodoc=False)
+    out = gen.generate_scripts(structure, tmp_path / "out", object_catalog="mydb")
+    text = (out / "bookings" / "tables" / "table aircrafts.sql").read_text(encoding="utf-8")
+    assert "[<[autodoc-yaml]]" not in text
+    # Body still intact.
+    assert "CREATE TABLE bookings.aircrafts" in text

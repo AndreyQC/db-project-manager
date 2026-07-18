@@ -16,6 +16,8 @@ from typing import Any
 from jinja2 import Environment, FileSystemLoader
 from loguru import logger
 
+from db_project_manager.infrastructure.sql.autodoc import ensure_header
+
 
 def _template_helpers() -> dict[str, Any]:
     """Helpers exposed to Jinja templates to avoid inline {% if %} at line ends.
@@ -72,10 +74,16 @@ class SQLGenerator:
     #: object kinds that each produce a subfolder under a schema.
     _OBJECT_KINDS = ("sequences", "tables", "views", "materialized_views", "functions", "procedures")
 
-    def __init__(self, templates_dir: str | Path | None = None) -> None:
+    def __init__(
+        self,
+        templates_dir: str | Path | None = None,
+        *,
+        autodoc: bool = True,
+    ) -> None:
         if templates_dir is None:
             templates_dir = Path(__file__).resolve().parent.parent / "templates"
         self.templates_dir = Path(templates_dir)
+        self.autodoc = autodoc
         self.env = Environment(
             loader=FileSystemLoader(str(self.templates_dir)),
             trim_blocks=True,
@@ -84,12 +92,20 @@ class SQLGenerator:
         )
         self.env.globals.update(_template_helpers())
 
-    def generate_scripts(self, structure: dict[str, Any], output_path: str | Path) -> Path:
+    def generate_scripts(
+        self,
+        structure: dict[str, Any],
+        output_path: str | Path,
+        *,
+        object_catalog: str | None = None,
+    ) -> Path:
         """Render all object scripts under ``output_path``.
 
         Args:
             structure: Output of DatabaseAdapter.get_database_structure().
             output_path: Root directory for the generated tree.
+            object_catalog: Database name used in autodoc object_key. When None,
+                autodoc headers are still emitted with this field blank.
 
         Returns:
             The output path (created if missing).
@@ -99,14 +115,14 @@ class SQLGenerator:
         logger.info(f"Генерация SQL-скриптов в: {output_path}")
 
         for schema_info in structure.get("schemas", []):
-            self._generate_schema(schema_info, output_path)
+            self._generate_schema(schema_info, output_path, object_catalog)
 
         logger.info("Генерация SQL-скриптов завершена")
         return output_path
 
     # --- per-schema rendering ---
 
-    def _generate_schema(self, schema_info: dict[str, Any], output_path: Path) -> None:
+    def _generate_schema(self, schema_info: dict[str, Any], output_path: Path, object_catalog: str | None) -> None:
         schema_name = schema_info["name"]
         has_objects = any(schema_info.get(kind) for kind in self._OBJECT_KINDS)
         if not has_objects:
@@ -122,30 +138,63 @@ class SQLGenerator:
                 {"name": schema_name, "comment": schema_info.get("comment")},
                 schema_dir,
                 f"schema {schema_name}.sql",
+                object_catalog=object_catalog or "",
+                object_schema=schema_name,
+                object_type="schema",
+                object_name=schema_name,
             )
 
-        self._render_kind(schema_info, "sequences", "sequence.sql.j2", schema_dir, self._sequence_ctx)
-        self._render_kind(schema_info, "tables", "table.sql.j2", schema_dir, self._table_ctx)
-        self._render_kind(schema_info, "views", "view.sql.j2", schema_dir, self._view_ctx)
+        self._render_kind(schema_info, "sequences", "sequence", schema_dir, self._sequence_ctx, object_catalog)
+        self._render_kind(schema_info, "tables", "table", schema_dir, self._table_ctx, object_catalog)
+        self._render_kind(schema_info, "views", "view", schema_dir, self._view_ctx, object_catalog)
         self._render_kind(
-            schema_info, "materialized_views", "materialized_view.sql.j2", schema_dir, self._matview_ctx
+            schema_info, "materialized_views", "materialized_view", schema_dir, self._matview_ctx, object_catalog
         )
-        self._render_kind(schema_info, "functions", "function.sql.j2", schema_dir, self._function_ctx)
-        self._render_kind(schema_info, "procedures", "procedure.sql.j2", schema_dir, self._procedure_ctx)
+        self._render_kind(schema_info, "functions", "function", schema_dir, self._function_ctx, object_catalog)
+        self._render_kind(schema_info, "procedures", "procedure", schema_dir, self._procedure_ctx, object_catalog)
 
-    def _render_kind(self, schema_info, kind, template_name, schema_dir, ctx_builder) -> None:
-        items = schema_info.get(kind) or []
+    def _render_kind(self, schema_info, kind, object_type, schema_dir, ctx_builder, object_catalog) -> None:
+        items = schema_info.get(f"{kind}") or schema_info.get(f"{object_type}s") or []
         if not items:
             return
         kind_dir = schema_dir / kind
         kind_dir.mkdir(parents=True, exist_ok=True)
+        schema_name = schema_info.get("name")
         for item in items:
             ctx, file_name = ctx_builder(item)
-            self._render_one(template_name, ctx, kind_dir, file_name)
+            self._render_one(
+                f"{object_type}.sql.j2",
+                ctx,
+                kind_dir,
+                file_name,
+                object_catalog=object_catalog or "",
+                object_schema=item.get("schema", schema_name),
+                object_type=object_type,
+                object_name=item.get("name", ""),
+            )
 
-    def _render_one(self, template_name: str, context: dict[str, Any], out_dir: Path, file_name: str) -> None:
+    def _render_one(
+        self,
+        template_name: str,
+        context: dict[str, Any],
+        out_dir: Path,
+        file_name: str,
+        *,
+        object_catalog: str,
+        object_schema: str | None,
+        object_type: str,
+        object_name: str,
+    ) -> None:
         template = self.env.get_template(template_name)
         script = template.render(**context)
+        if self.autodoc:
+            script = ensure_header(
+                script,
+                object_catalog=object_catalog,
+                object_schema=object_schema,
+                object_type=object_type,
+                object_name=object_name,
+            )
         path = out_dir / file_name
         path.write_text(script, encoding="utf-8")
         logger.debug(f"Записан файл: {path}")

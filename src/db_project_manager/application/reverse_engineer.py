@@ -66,7 +66,7 @@ class ReverseEngineerService:
 
             target = output_dir / conn_cfg.database
             self._emit(progress, f"Генерация SQL-скриптов в: {target}", 2, 4)
-            result = self.generator.generate_scripts(structure, target)
+            result = self.generator.generate_scripts(structure, target, object_catalog=conn_cfg.database)
 
             self._emit(progress, "Готово", 4, 4)
             logger.info(f"Reverse-engineer завершён: {result}")
