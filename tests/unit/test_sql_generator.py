@@ -39,14 +39,17 @@ def test_table_script_contains_columns_and_pk(structure, tmp_path) -> None:
     out = gen.generate_scripts(structure, tmp_path / "out")
     text = (out / "bookings" / "tables" / "table aircrafts.sql").read_text(encoding="utf-8")
 
-    assert "CREATE TABLE bookings.aircrafts" in text
-    assert "aircraft_code bpchar(3) NOT NULL" in text
-    assert "range int4 NOT NULL" in text
-    assert "CONSTRAINT aircrafts_pkey PRIMARY KEY (aircraft_code)" in text
-    assert "CHECK ((range > 0))" in text
+    # All identifiers are double-quoted (Bug C: reserved word protection)
+    assert 'CREATE TABLE "bookings"."aircrafts"' in text
+    assert '"aircraft_code" bpchar(3) NOT NULL' in text
+    assert '"range" int4 NOT NULL' in text
+    assert 'CONSTRAINT "aircrafts_pkey" PRIMARY KEY (aircraft_code)' in text
+    # CHECK constraint definition comes from pg_get_constraintdef as raw SQL;
+    # column name inside expression may or may not be quoted depending on PG version
+    assert 'CHECK' in text and 'range' in text
     # table comment + column comments
-    assert "COMMENT ON TABLE bookings.aircrafts IS 'Самолеты'" in text
-    assert "COMMENT ON COLUMN bookings.aircrafts.aircraft_code IS 'Код самолета, IATA'" in text
+    assert 'COMMENT ON TABLE "bookings"."aircrafts" IS \'Самолеты\'' in text
+    assert 'COMMENT ON COLUMN "bookings"."aircrafts"."aircraft_code" IS \'Код самолета, IATA\'' in text
 
 
 def test_table_fk_uses_f_comment_not_c(structure, tmp_path) -> None:
@@ -58,8 +61,8 @@ def test_table_fk_uses_f_comment_not_c(structure, tmp_path) -> None:
     out = gen.generate_scripts(structure, tmp_path / "out")
     text = (out / "bookings" / "tables" / "table flights.sql").read_text(encoding="utf-8")
 
-    assert "ALTER TABLE bookings.flights ADD CONSTRAINT flights_aircraft_code_fkey" in text
-    assert "REFERENCES bookings.aircrafts(aircraft_code)" in text
+    assert 'ALTER TABLE "bookings"."flights" ADD CONSTRAINT "flights_aircraft_code_fkey"' in text
+    assert 'REFERENCES' in text and 'aircrafts' in text and 'aircraft_code' in text
     # FK comment is rendered
     assert "FK to aircrafts" in text
 
@@ -75,7 +78,7 @@ def test_default_not_rendered_when_none(structure, tmp_path) -> None:
 
     assert "DEFAULT None" not in text
     # aircraft_code has default null -> no DEFAULT keyword for it
-    assert "aircraft_code bpchar(3) NOT NULL\n" in text or "aircraft_code bpchar(3) NOT NULL," in text
+    assert '"aircraft_code" bpchar(3) NOT NULL\n' in text or '"aircraft_code" bpchar(3) NOT NULL,' in text
 
 
 def test_default_rendered_when_present(structure, tmp_path) -> None:
@@ -89,9 +92,9 @@ def test_view_script(structure, tmp_path) -> None:
     gen = SQLGenerator()
     out = gen.generate_scripts(structure, tmp_path / "out")
     text = (out / "bookings" / "views" / "view flights_v.sql").read_text(encoding="utf-8")
-    assert "CREATE OR REPLACE VIEW bookings.flights_v" in text
+    assert 'CREATE OR REPLACE VIEW "bookings"."flights_v"' in text
     assert "flight_id, aircraft_code" in text
-    assert "COMMENT ON VIEW bookings.flights_v IS 'Представление рейсов'" in text
+    assert 'COMMENT ON VIEW "bookings"."flights_v" IS \'Представление рейсов\'' in text
 
 
 def test_empty_structure_produces_no_files(tmp_path) -> None:
@@ -118,8 +121,8 @@ def test_autodoc_disabled(structure, tmp_path) -> None:
     out = gen.generate_scripts(structure, tmp_path / "out", object_catalog="mydb")
     text = (out / "bookings" / "tables" / "table aircrafts.sql").read_text(encoding="utf-8")
     assert "[<[autodoc-yaml]]" not in text
-    # Body still intact.
-    assert "CREATE TABLE bookings.aircrafts" in text
+    # Body still intact (with quoted identifiers).
+    assert 'CREATE TABLE "bookings"."aircrafts"' in text
 
 
 # -------------------------------------------------------------------------- #

@@ -1,6 +1,6 @@
--- Создание функции {{ schema }}.{{ name }}({{ argument_types }})
+-- Создание функции {{ _qi(schema) }}.{{ _qi(name) }}({{ argument_types }})
 {{ definition }};{% if comment %}
 
 
-COMMENT ON FUNCTION {{ schema }}.{{ name }}({{ argument_types }}) IS '{{ comment }}';
+COMMENT ON FUNCTION {{ _qi(schema) }}.{{ _qi(name) }}({{ argument_types }}) IS '{{ comment }}';
 {% endif %}

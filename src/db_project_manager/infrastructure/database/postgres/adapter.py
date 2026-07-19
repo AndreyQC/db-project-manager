@@ -17,6 +17,7 @@ from sqlalchemy.engine import Engine
 from db_project_manager.domain.connection import ConnectionConfig
 from db_project_manager.infrastructure.database.base import DatabaseAdapter, DatabaseError
 from db_project_manager.infrastructure.database.postgres import queries as q
+from db_project_manager.infrastructure.database.postgres.keywords import get_reserved
 
 #: Identifier whitelist for temp-DB names (defends against injection in
 #: CREATE DATABASE / DROP DATABASE — see LESSONS_LEARNED §create_database).
@@ -171,7 +172,7 @@ class PGDatabaseAdapter(DatabaseAdapter):
             schemas.append(schema_info)
 
         logger.info(f"Структура получена: схем = {len(schemas)}")
-        return {"schemas": schemas}
+        return {"schemas": schemas, "reserved_keywords": get_reserved()}
 
     # --- helpers: low-level readers (kept close to the POC result shape) ---
 

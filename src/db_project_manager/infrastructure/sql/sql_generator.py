@@ -46,6 +46,17 @@ def _template_helpers() -> dict[str, Any]:
     Moving logic into helpers keeps each line ending on plain text.
     """
 
+    def qi(name: str) -> str:
+        """Quote a SQL identifier (schema, table, column, sequence, etc.).
+
+        Doubles embedded double-quotes per SQL standard.
+        """
+        return '"' + str(name).replace('"', '""') + '"'
+
+    def qqi(*parts: str) -> str:
+        """Quote a qualified name parts (e.g. schema, name) joined by dot."""
+        return ".".join(qi(p) for p in parts)
+
     def type_mod(col: dict[str, Any]) -> str:
         np, ns = col.get("numeric_precision"), col.get("numeric_scale")
         cml = col.get("character_maximum_length")
@@ -79,6 +90,8 @@ def _template_helpers() -> dict[str, Any]:
         return f" -- {c}" if c else ""
 
     return {
+        "_qi": qi,
+        "_qqi": qqi,
         "_type_mod": type_mod,
         "_null_mod": null_mod,
         "_default_mod": default_mod,

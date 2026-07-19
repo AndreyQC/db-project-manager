@@ -1,21 +1,21 @@
--- Создание таблицы {{ schema }}.{{ name }}
-CREATE TABLE {{ schema }}.{{ name }} (
+-- Создание таблицы {{ _qi(schema) }}.{{ _qi(name) }}
+CREATE TABLE {{ _qi(schema) }}.{{ _qi(name) }} (
 {% for col in columns %}
-    {{ col.name }} {{ col.type }}{{ _type_mod(col) }}{{ _null_mod(col) }}{{ _default_mod(col) }}{{ _comma(col, loop, constraints) }}{{ _comment_mod(col) }}
+    {{ _qi(col.name) }} {{ col.type }}{{ _type_mod(col) }}{{ _null_mod(col) }}{{ _default_mod(col) }}{{ _comma(col, loop, constraints) }}{{ _comment_mod(col) }}
 {% endfor %}
 {% for c in constraints %}
-    CONSTRAINT {{ c.name }} {{ c.definition }}{{ _constraint_comma(loop) }}{{ _comment_mod(c) }}
+    CONSTRAINT {{ _qi(c.name) }} {{ c.definition }}{{ _constraint_comma(loop) }}{{ _comment_mod(c) }}
 {% endfor %});
 {% if comment %}
-COMMENT ON TABLE {{ schema }}.{{ name }} IS '{{ comment }}';
+COMMENT ON TABLE {{ _qi(schema) }}.{{ _qi(name) }} IS '{{ comment }}';
 {% endif %}
 {% for col in columns if col.comment %}
-COMMENT ON COLUMN {{ schema }}.{{ name }}.{{ col.name }} IS '{{ col.comment }}';
+COMMENT ON COLUMN {{ _qi(schema) }}.{{ _qi(name) }}.{{ _qi(col.name) }} IS '{{ col.comment }}';
 {% endfor %}
 {% if foreign_keys %}
 
--- Внешние ключи таблицы {{ schema }}.{{ name }}
+-- Внешние ключи таблицы {{ _qi(schema) }}.{{ _qi(name) }}
 {% for f in foreign_keys %}
-ALTER TABLE {{ schema }}.{{ name }} ADD CONSTRAINT {{ f.name }} {{ f.definition }};{{ _comment_mod(f) }}
+ALTER TABLE {{ _qi(schema) }}.{{ _qi(name) }} ADD CONSTRAINT {{ _qi(f.name) }} {{ f.definition }};{{ _comment_mod(f) }}
 {% endfor %}
 {% endif %}
