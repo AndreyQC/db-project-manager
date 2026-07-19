@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from PySide6.QtCore import QThreadPool
+from PySide6.QtCore import Qt, QThreadPool
 from PySide6.QtWidgets import (
     QFileDialog,
     QGroupBox,
@@ -35,7 +35,10 @@ from db_project_manager.infrastructure.logging_setup import configure as configu
 from db_project_manager.presentation.gui.widgets.connection_dialog import ConnectionDialog
 from db_project_manager.presentation.gui.widgets.connection_list import ConnectionListWidget
 from db_project_manager.presentation.gui.widgets.project_viewer import ProjectViewer
-from db_project_manager.presentation.gui.widgets.workers import ReverseEngineerWorker
+from db_project_manager.presentation.gui.widgets.workers import (
+    DeployValidateWorker,
+    ReverseEngineerWorker,
+)
 
 
 class MainWindow(QMainWindow):
@@ -90,6 +93,10 @@ class MainWindow(QMainWindow):
         self.run_btn = QPushButton("Сгенерировать скрипты объектов БД")
         self.run_btn.clicked.connect(self._on_run)
         alayout.addWidget(self.run_btn)
+
+        self.deploy_btn = QPushButton("Deploy validate…")
+        self.deploy_btn.clicked.connect(self._on_deploy)
+        alayout.addWidget(self.deploy_btn)
 
         top.addWidget(actions_group, stretch=1)
         root.addLayout(top, stretch=0)
@@ -204,6 +211,96 @@ class MainWindow(QMainWindow):
 
     def _set_running(self, running: bool) -> None:
         self.run_btn.setEnabled(not running)
+        self.deploy_btn.setEnabled(not running)
 
     def _append_status(self, message: str) -> None:
         self.status_edit.append(message)
+
+    # --- deploy validate ---
+
+    def _on_deploy(self) -> None:
+        """Open the deploy-validate dialog and run it on a background worker."""
+        from PySide6.QtWidgets import QCheckBox, QDialog, QDialogButtonBox, QFormLayout, QLineEdit
+
+        name = self.connection_list.selected_name()
+        if not name:
+            QMessageBox.warning(self, "Deploy", "Выберите подключение к серверу.")
+            return
+
+        codebase_dir = self.output_edit.text().strip()
+        if not codebase_dir:
+            QMessageBox.warning(self, "Deploy", "Укажите папку кодовой базы (поле 'Папка вывода').")
+            return
+
+        # Options dialog (Q3: GUI checkbox for keep_db, off by default).
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Validation deploy")
+        form = QFormLayout(dlg)
+        prefix_edit = QLineEdit()
+        prefix_edit.setPlaceholderText("по умолчанию: имя каталога кодовой базы")
+        keep_check = QCheckBox("Оставить временную БД после деплоя (для отладки)")
+        continue_check = QCheckBox("Продолжать при ошибках в views/functions/procedures")
+        form.addRow("Префикс имени БД:", prefix_edit)
+        form.addRow(keep_check)
+        form.addRow(continue_check)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+            Qt.Orientation.Horizontal,
+        )
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        form.addRow(buttons)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        try:
+            conn_cfg = self.store.load_by_name(name)
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.critical(self, "Deploy", f"Не удалось загрузить подключение: {e}")
+            return
+
+        prefix_value = prefix_edit.text().strip() or None
+        self._set_running(True)
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setRange(0, 0)  # indeterminate until first progress
+        self.status_edit.clear()
+        self._append_status(f"Validation deploy: кодовая база '{codebase_dir}', подключение '{name}'")
+
+        worker = DeployValidateWorker(
+            conn_cfg,
+            codebase_dir,
+            prefix=prefix_value,
+            keep_db=keep_check.isChecked(),
+            continue_on_error=continue_check.isChecked(),
+        )
+        worker.signals.progress.connect(self._on_progress)
+        worker.signals.status.connect(self._append_status)
+        worker.signals.error.connect(self._on_error)
+        worker.signals.finished.connect(self._on_deploy_finished)
+        self.thread_pool.start(worker)
+
+    def _on_deploy_finished(self, result) -> None:
+        self._set_running(False)
+        self.progress_bar.setVisible(False)
+        if result is None:
+            return  # error already reported via _on_error
+        # DeployResult has .success / .db_name / .errors / objects_done/total
+        success = getattr(result, "success", False)
+        db_name = getattr(result, "db_name", "?")
+        done = getattr(result, "objects_done", 0)
+        total = getattr(result, "objects_total", 0)
+        errors = getattr(result, "errors", []) or []
+        if success:
+            self._append_status(f"✓ Деплой успешен: база {db_name}, объектов {done}/{total}")
+            QMessageBox.information(
+                self, "Deploy", f"✓ Успешно.\nБаза: {db_name}\nОбъектов: {done}/{total}"
+            )
+        else:
+            for err in errors:
+                self._append_status(
+                    f"✗ [{err.object_type}] {err.object_name} ({err.source_file}): {err.error}"
+                )
+            self._append_status(f"Деплой с ошибками: база {db_name}, объектов {done}/{total}")
+            QMessageBox.warning(
+                self, "Deploy", f"Деплой завершился с ошибками ({len(errors)}).\nБаза: {db_name}"
+            )

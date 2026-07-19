@@ -51,3 +51,58 @@ class ReverseEngineerWorker(QRunnable):
         except Exception as e:  # noqa: BLE001
             self.signals.error.emit(f"Непредвиденная ошибка: {e}")
             self.signals.finished.emit(None)
+
+
+class DeployValidateWorker(QRunnable):
+    """Run validation deploy off the UI thread."""
+
+    def __init__(
+        self,
+        conn_cfg: ConnectionConfig,
+        codebase_dir: str | Path,
+        *,
+        prefix: str | None = None,
+        keep_db: bool = False,
+        continue_on_error: bool = False,
+    ) -> None:
+        super().__init__()
+        self.conn_cfg = conn_cfg
+        self.codebase_dir = Path(codebase_dir)
+        self.prefix = prefix
+        self.keep_db = keep_db
+        self.continue_on_error = continue_on_error
+        self.signals = WorkerSignals()
+
+    def run(self) -> None:  # noqa: C901 (Qt entrypoint)
+        from db_project_manager.application.deploy_service import (
+            DeployPermissionError,
+            DeployValidateService,
+        )
+        from db_project_manager.domain.graph import CycleError
+
+        service = DeployValidateService()
+
+        def progress(message: str, current: int, total: int) -> None:
+            self.signals.progress.emit(message, current, total)
+            self.signals.status.emit(message)
+
+        try:
+            result = service.run(
+                self.conn_cfg,
+                self.codebase_dir,
+                prefix=self.prefix,
+                keep_db=self.keep_db,
+                continue_on_error=self.continue_on_error,
+                progress=progress,
+            )
+            # Pass the structured result through 'finished' (object).
+            self.signals.finished.emit(result)
+        except DeployPermissionError as e:
+            self.signals.error.emit(f"Нет прав CREATEDB: {e}")
+            self.signals.finished.emit(None)
+        except CycleError as e:
+            self.signals.error.emit(f"Граф содержит циклы: {', '.join(sorted(e.unresolved))}")
+            self.signals.finished.emit(None)
+        except Exception as e:  # noqa: BLE001
+            self.signals.error.emit(f"Непредвиденная ошибка: {e}")
+            self.signals.finished.emit(None)
