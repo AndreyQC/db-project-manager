@@ -6,6 +6,18 @@ Parameter binding uses SQLAlchemy ``text()`` bind parameters (:schema, :table_na
 
 from __future__ import annotations
 
+# --- privileges / server info (Phase 2: validation deploy) ---
+
+GET_CREATEDB_CHECK = """
+    SELECT rolcreatedb
+      FROM pg_roles
+     WHERE rolname = current_user
+"""
+
+GET_SERVER_TIMESTAMP_UTC = """
+    SELECT to_char(now() AT TIME ZONE 'UTC', 'YYYYMMDD"T"HH24MISS')
+"""
+
 # --- schemas ---
 
 GET_SCHEMAS = """

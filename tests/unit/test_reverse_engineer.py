@@ -37,6 +37,21 @@ class FakeAdapter(DatabaseAdapter):
             raise DatabaseError("connection refused")
         self.connected = True
 
+    # Phase 2 deploy surface (unused by ReverseEngineerService; stubbed for ABC).
+    def check_can_create_db(self) -> bool:
+        return True
+
+    def get_server_timestamp_utc(self) -> str:
+        return "20260101T000000"
+
+    def create_database(self, name: str) -> None:
+        pass
+
+    def drop_database(self, name: str) -> None:
+        pass
+
+    def execute_script(self, script: str) -> None:
+        pass
     def disconnect(self) -> None:
         self.disconnected = True
 

@@ -7,6 +7,7 @@ SQL text lives in queries.py. The adapter also serves Greenplum connections
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from loguru import logger
@@ -16,6 +17,20 @@ from sqlalchemy.engine import Engine
 from db_project_manager.domain.connection import ConnectionConfig
 from db_project_manager.infrastructure.database.base import DatabaseAdapter, DatabaseError
 from db_project_manager.infrastructure.database.postgres import queries as q
+
+#: Identifier whitelist for temp-DB names (defends against injection in
+#: CREATE DATABASE / DROP DATABASE — see LESSONS_LEARNED §create_database).
+_DB_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _validate_db_name(name: str) -> str:
+    """Reject anything outside [A-Za-z_][A-Za-z0-9_]* before it reaches SQL."""
+    if not name or not _DB_NAME_RE.match(name):
+        raise DatabaseError(
+            f"Недопустимое имя базы данных: {name!r}. "
+            "Допускаются только латинские буквы, цифры и подчёркивание."
+        )
+    return name
 
 
 class PGDatabaseAdapter(DatabaseAdapter):
@@ -66,6 +81,61 @@ class PGDatabaseAdapter(DatabaseAdapter):
     def _require_connection(self) -> None:
         if self._connection is None:
             raise DatabaseError("Сначала необходимо подключиться к базе данных")
+
+    # --- Phase 2: validation-deploy surface ---
+
+    def check_can_create_db(self) -> bool:
+        self._require_connection()
+        try:
+            rows = self._exec(q.GET_CREATEDB_CHECK)
+            if not rows:
+                return False
+            return bool(rows[0][0])
+        except Exception as e:
+            logger.error(f"Не удалось проверить право CREATEDB: {e}")
+            raise DatabaseError(f"Не удалось проверить право CREATEDB: {e}") from e
+
+    def get_server_timestamp_utc(self) -> str:
+        self._require_connection()
+        try:
+            rows = self._exec(q.GET_SERVER_TIMESTAMP_UTC)
+            if not rows or not rows[0][0]:
+                raise DatabaseError("Сервер вернул пустое значение timestamp")
+            return str(rows[0][0])
+        except DatabaseError:
+            raise
+        except Exception as e:
+            logger.error(f"Не получить timestamp сервера: {e}")
+            raise DatabaseError(f"Не получить timestamp сервера: {e}") from e
+
+    def create_database(self, name: str) -> None:
+        """Create a fresh database. Autocommit is required (DDL outside tx)."""
+        self._require_connection()
+        _validate_db_name(name)
+        try:
+            self._connection.execute(text(f'CREATE DATABASE "{name}";'))
+            logger.info(f"Создана база данных: {name}")
+        except Exception as e:
+            logger.error(f"Ошибка создания базы данных {name}: {e}")
+            raise DatabaseError(f"Ошибка создания базы данных {name}: {e}") from e
+
+    def drop_database(self, name: str) -> None:
+        """Drop a database. Idempotent: missing database is not an error."""
+        self._require_connection()
+        _validate_db_name(name)
+        try:
+            self._connection.execute(text(f'DROP DATABASE IF EXISTS "{name}";'))
+            logger.info(f"Удалена база данных: {name}")
+        except Exception as e:
+            logger.error(f"Ошибка удаления базы данных {name}: {e}")
+            raise DatabaseError(f"Ошибка удаления базы данных {name}: {e}") from e
+
+    def execute_script(self, script: str) -> None:
+        self._require_connection()
+        try:
+            self._connection.execute(text(script))
+        except Exception as e:
+            raise DatabaseError(f"Ошибка выполнения скрипта: {e}") from e
 
     # --- structure aggregation ---
 

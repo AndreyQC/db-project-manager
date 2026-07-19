@@ -35,3 +35,36 @@ class DatabaseAdapter(ABC):
         Shape: {"schemas": [ {"name", "comment", "sequences", "tables",
         "views", "materialized_views", "functions", "procedures", "enums"}, ... ]}
         """
+
+    # --- Phase 2: validation-deploy surface ---
+
+    @abstractmethod
+    def check_can_create_db(self) -> bool:
+        """Whether the current user may CREATE DATABASE.
+
+        Called before attempting validation deploy so a missing privilege is
+        reported with a clear message instead of a mid-deploy failure.
+        """
+
+    @abstractmethod
+    def get_server_timestamp_utc(self) -> str:
+        """Return the server's UTC timestamp as YYYYMMDDTHHMMSS.
+
+        Used for unique temp-DB names; reading it from the server avoids
+        client/server clock drift in CI.
+        """
+
+    @abstractmethod
+    def create_database(self, name: str) -> None:
+        """Create a fresh database. Name must be validated by the caller."""
+
+    @abstractmethod
+    def drop_database(self, name: str) -> None:
+        """Drop a database created by create_database. Idempotent on missing."""
+
+    @abstractmethod
+    def execute_script(self, script: str) -> None:
+        """Execute a single object's SQL script against the current connection.
+
+        Transaction management is the caller's responsibility (DeployValidateService).
+        """
