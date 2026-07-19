@@ -14,10 +14,11 @@ from loguru import logger
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
-from db_project_manager.domain.connection import ConnectionConfig
+from db_project_manager.domain.connection import ConnectionConfig, ConnectionType
 from db_project_manager.infrastructure.database.base import DatabaseAdapter, DatabaseError
 from db_project_manager.infrastructure.database.postgres import queries as q
 from db_project_manager.infrastructure.database.postgres.keywords import get_reserved
+from db_project_manager.infrastructure.database.ssh_tunnel import SSHTunnelManager
 
 #: Identifier whitelist for temp-DB names (defends against injection in
 #: CREATE DATABASE / DROP DATABASE — see LESSONS_LEARNED §create_database).
@@ -41,18 +42,26 @@ class PGDatabaseAdapter(DatabaseAdapter):
         self._engine: Engine | None = None
         self._connection = None
         self._is_greenplum: bool = False
+        self._tunnel: SSHTunnelManager | None = None
+        self._cfg: ConnectionConfig | None = None
 
     # --- connection lifecycle ---
 
     def connect(self, cfg: ConnectionConfig) -> None:
         """Open a connection. Password is passed via args, not the URL.
 
-        Building the URL without credentials keeps them out of logs/exceptions
-        emitted by SQLAlchemy; the password is injected through connect_args
-        (psycopg2 accepts it as a keyword).
+        If connection_type is SSH_TUNNEL, first establishes an SSH tunnel
+        to the jump host and connects through it.
         """
+        self._cfg = cfg
+        if cfg.connection_type == ConnectionType.SSH_TUNNEL:
+            self._connect_via_ssh_tunnel(cfg)
+        else:
+            self._connect_direct(cfg)
+
+    def _connect_direct(self, cfg: ConnectionConfig) -> None:
+        """Direct connection without SSH tunnel."""
         try:
-            # Build URL without embedded credentials.
             url = (
                 f"postgresql+psycopg2://{cfg.username}@{cfg.host}:{cfg.port}/{cfg.database}"
             )
@@ -61,13 +70,58 @@ class PGDatabaseAdapter(DatabaseAdapter):
 
             self._engine = create_engine(url, isolation_level="AUTOCOMMIT", connect_args=connect_args)
             self._connection = self._engine.connect()
-            # Force a round-trip to fail fast on bad credentials.
             self._connection.execute(text("SELECT 1"))
             self._is_greenplum = cfg.is_greenplum
             logger.info(f"Подключено к БД: {cfg.host}:{cfg.port}/{cfg.database} (greenplum={self._is_greenplum})")
         except Exception as e:
             logger.error(f"Ошибка подключения к БД: {e}")
             raise DatabaseError(f"Ошибка подключения к БД: {e}") from e
+
+    def _connect_via_ssh_tunnel(self, cfg: ConnectionConfig) -> None:
+        """Connect through an SSH tunnel."""
+        if cfg.ssh_tunnel is None:
+            raise DatabaseError("ssh_tunnel configuration is required for SSH_TUNNEL connection type")
+
+        from db_project_manager.infrastructure.crypto.crypto_util import get_decrypted_text, _is_cipher_token
+
+        logger.info(f"SSH tunnel: starting connection to {cfg.ssh_tunnel.ssh_host}:{cfg.ssh_tunnel.ssh_port}")
+
+        # Decrypt SSH password if needed
+        ssh_pass = cfg.ssh_tunnel.ssh_pass
+        if _is_cipher_token(ssh_pass):
+            logger.info("SSH password is encrypted, decrypting...")
+            ssh_pass = get_decrypted_text(ssh_pass)
+            logger.info("SSH password decrypted")
+        else:
+            logger.info("SSH password is plaintext")
+
+        # Create and start tunnel
+        logger.info("Creating tunnel manager...")
+        tunnel = SSHTunnelManager.from_config(cfg.ssh_tunnel, decrypted_password=ssh_pass)
+        logger.info("Starting tunnel (this may take up to 10 seconds)...")
+        local_port = tunnel.start()
+        logger.info(f"Tunnel started on local port {local_port}")
+        self._tunnel = tunnel
+
+        # Connect to database via tunnel
+        try:
+            url = f"postgresql+psycopg2://{cfg.username}@127.0.0.1:{local_port}/{cfg.database}"
+            connect_args: dict[str, Any] = {"password": cfg.password}
+            connect_args.update(cfg.options)
+
+            self._engine = create_engine(url, isolation_level="AUTOCOMMIT", connect_args=connect_args)
+            self._connection = self._engine.connect()
+            self._connection.execute(text("SELECT 1"))
+            self._is_greenplum = cfg.is_greenplum
+            logger.info(
+                f"Подключено к БД через SSH туннель: 127.0.0.1:{local_port}/{cfg.database} "
+                f"(tunnel={cfg.ssh_tunnel.ssh_host}:{cfg.ssh_tunnel.ssh_port})"
+            )
+        except Exception as e:
+            self._tunnel.stop()
+            self._tunnel = None
+            logger.error(f"Ошибка подключения через SSH туннель: {e}")
+            raise DatabaseError(f"Ошибка подключения через SSH туннель: {e}") from e
 
     def disconnect(self) -> None:
         try:
@@ -78,6 +132,10 @@ class PGDatabaseAdapter(DatabaseAdapter):
                 self._engine.dispose()
             self._connection = None
             self._engine = None
+            # Stop SSH tunnel after database connection is closed
+            if self._tunnel is not None:
+                self._tunnel.stop()
+                self._tunnel = None
 
     def _require_connection(self) -> None:
         if self._connection is None:

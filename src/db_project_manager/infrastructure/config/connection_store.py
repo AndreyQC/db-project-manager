@@ -54,10 +54,10 @@ class ConnectionStore:
         name: str | None = None,
         crypto_env: str,
     ) -> Path:
-        """Persist a connection, encrypting the password under ``crypto_env``.
+        """Persist a connection, encrypting sensitive fields under ``crypto_env``.
 
         Args:
-            cfg: Connection parameters. If password is already a crypto token,
+            cfg: Connection parameters. If a field is already a crypto token,
                 it is kept as-is (re-encrypting would produce a different token
                 but still valid; we avoid needless churn).
             name: Connection name (file stem). Falls back to cfg.name.
@@ -72,10 +72,20 @@ class ConnectionStore:
 
         data: dict[str, Any] = cfg.model_dump(exclude={"name"})
 
-        # Encrypt the password unless it is already a cipher token.
+        # Encrypt DB password unless it is already a cipher token.
         password = data.get("password", "")
         if password and not _is_cipher_token(password):
             data["password"] = get_encrypted_text(password, crypto_env)
+
+        # Encrypt SSH tunnel fields unless they are already cipher tokens.
+        if data.get("ssh_tunnel"):
+            ssh_tunnel = data["ssh_tunnel"]
+            if ssh_tunnel.get("ssh_host") and not _is_cipher_token(ssh_tunnel["ssh_host"]):
+                ssh_tunnel["ssh_host"] = get_encrypted_text(ssh_tunnel["ssh_host"], crypto_env)
+            if ssh_tunnel.get("ssh_user") and not _is_cipher_token(ssh_tunnel["ssh_user"]):
+                ssh_tunnel["ssh_user"] = get_encrypted_text(ssh_tunnel["ssh_user"], crypto_env)
+            if ssh_tunnel.get("ssh_pass") and not _is_cipher_token(ssh_tunnel["ssh_pass"]):
+                ssh_tunnel["ssh_pass"] = get_encrypted_text(ssh_tunnel["ssh_pass"], crypto_env)
 
         self.connections_dir.mkdir(parents=True, exist_ok=True)
         path = self.path_for(stem)

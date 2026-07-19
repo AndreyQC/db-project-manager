@@ -8,13 +8,33 @@
 # To produce an encrypted password, run: db-pm crypto encrypt <ENV_VAR>   (reads password from stdin)
 # or use the GUI connection dialog (encrypts automatically on save).
 #
-# Example entry:
-
-# type: postgres           # postgres | greenplum (phase 1) ; snowflake | mssql (later)
+# =============================================================================
+# SCENARIO A: Direct PostgreSQL connection
+# =============================================================================
+# connection_type: direct
 # host: localhost
 # port: 5432
 # database: mydb
 # username: myuser
 # password: crypto__ENVOS_CRYPTO_01__gAAAAABm...your-token...
-# options:                 # optional extra driver options
+# type: postgres
+# options:
 #   sslmode: prefer
+
+# =============================================================================
+# SCENARIO B: PostgreSQL via SSH tunnel
+# =============================================================================
+# connection_type: ssh_tunnel
+# host: 127.0.0.1           # Local tunnel endpoint (ignored when using tunnel)
+# port: 5432
+# database: mydb
+# username: myuser
+# password: crypto__ENVOS_CRYPTO_01__gAAAAABm...your-token...
+# type: postgres
+# ssh_tunnel:
+#   ssh_host: 192.168.1.100  # Jump host IP
+#   ssh_port: 22
+#   ssh_user: root
+#   ssh_pass: crypto__ENVOS_CRYPTO_01__gAAAAABm...your-token...
+#   remote_bind_host: 127.0.0.1  # DB host as seen from jump host
+#   remote_bind_port: 5432
