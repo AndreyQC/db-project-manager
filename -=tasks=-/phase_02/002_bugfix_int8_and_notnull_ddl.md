@@ -126,29 +126,69 @@ constraints = [
 
 ---
 
-## 4. План работ
+## 4. Bug C — Зарезервированные слова как имена колонок без кавычек
+
+### 4.1 Описание
+
+Все идентификаторы в SQL-шаблонах выводились **без кавычек**. Когда колонка или таблица называется зарезервированным словом PostgreSQL (`limit`, `user`, `order`, `group` и т.д.), PostgreSQL отвергает DDL:
+
+```sql
+limit int4 NOT NULL   -- ← syntax error at "limit"
+```
+
+Источник — шаблоны `.sql.j2` рендерят `{{ col.name }}` напрямую.
+
+### 4.2 Решение
+
+Добавить helper `_qi()` (quote identifier) в `sql_generator.py` и применить ко **всем** идентификаторам в шаблонах:
+
+```python
+def qi(name: str) -> str:
+    """Double-quote a SQL identifier, doubling embedded quotes."""
+    return '"' + str(name).replace('"', '""') + '"'
+```
+
+Подход **всегда квотировать** — безопасен для всех СУБД (стандарт SQL), нет накладных расходов, не зависит от версии PG.
+
+Добавлены:
+- `postgres/keywords.yaml` — PG 18 reserved words (источник: официальная документация)
+- `postgres/keywords.py` — загрузчик, `get_reserved()` (для будущего явного использования; текущий `_qi()` не зависит от этого набора)
+- `adapter.get_database_structure()` → `reserved_keywords` в structure dict (для будущих проверок)
+
+### 4.3 Затронутые шаблоны
+
+Все 9 шаблонов обновлены: `table`, `view`, `materialized_view`, `sequence`, `schema`, `function`, `procedure`, `trigger`, `extension`.
+
+---
+
+## 5. План работ
 
 | Шаг | Действие | Файл |
 |-----|----------|------|
-| S17a | Исправить `type_mod()` — пропускать `(precision, scale)` для типов без модификаторов | `sql_generator.py:30` |
-| S17b | Исправить `_build_table()` — удалить NOT NULL CHECK-constraints из списка | `adapter.py:210` |
-| S17c | Добавить unit-тесты `test_type_mod` с типами: bigint, numeric(10,2), varchar(255), float8, int4, timestamp | `tests/` |
+| S17a | Исправить `type_mod()` — пропускать `(precision, scale)` для типов без модификаторов | `sql_generator.py` |
+| S17b | Исправить `_build_table()` — удалить NOT NULL CHECK-constraints из списка | `adapter.py` |
+| S17c | Добавить unit-тесты `test_type_mod` | `tests/` |
+| S17d | Добавить `_qi()` helper + применить во всех шаблонах | `sql_generator.py` + 9 `.j2` |
+| S17e | Добавить `postgres/keywords.yaml` + `keywords.py` | `postgres/` |
 
 ---
 
-## 5. Метрики приёмки
+## 6. Метрики приёмки
 
-1. `uv run pytest tests/` — все тесты зелёные
+1. `uv run pytest tests/unit/` — 160 тестов зелёные
 2. `uv run ruff check src/` — чистый
-3. Deploy validate dagster DB — **без ошибок** `int8(64, 0)` и без `CONSTRAINT ... NOT NULL`
-4. Повторный reverse-engineer dagster DB → deploy validate — детерминирован (одинаковый результат)
+3. Deploy validate dagster DB — **0 errors** (все 43 таблицы созданы)
+4. Повторный reverse-engineer dagster DB → deploy validate — детерминирован
 
 ---
 
-## 6. Файлы для изменения
+## 7. Файлы для изменения
 
 ```
-src/db_project_manager/infrastructure/sql/sql_generator.py   # type_mod
-src/db_project_manager/infrastructure/database/postgres/adapter.py  # _build_table
-tests/                                                   # новые тесты type_mod
+src/db_project_manager/infrastructure/sql/sql_generator.py       # type_mod, _qi
+src/db_project_manager/infrastructure/database/postgres/adapter.py    # reserved_keywords in structure
+src/db_project_manager/infrastructure/database/postgres/keywords.py   # get_reserved()
+src/db_project_manager/infrastructure/database/postgres/keywords.yaml # PG 18 reserved words
+src/db_project_manager/infrastructure/templates/*.sql.j2            # _qi() applied
+tests/unit/test_sql_generator.py                                # updated assertions + new tests
 ```
