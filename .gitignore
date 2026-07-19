@@ -137,3 +137,6 @@ connections/*
 !connections/example.yaml
 # Logs
 logs/
+# Generated graph artifacts (deterministically rebuilt from codebase via db-pm graph build)
+**/.dbm_graph/
+
