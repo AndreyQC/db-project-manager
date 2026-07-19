@@ -253,34 +253,40 @@ class DatabaseAdapter(ABC):
 
 ## 10. Фазы реализации (milestones)
 
-### Фаза 1 — Фундамент (MVP PG + CLI + базовый GUI)
-- [ ] Скелет пакетов по целевой архитектуре (§1).
-- [ ] Перенос `crypto_util.py` + pydantic `app_config.py` / `connection_store.py` (§4).
-- [ ] `.gitignore`, `config.example.yaml`, `connections/example.yaml` (§3).
-- [ ] `infrastructure/database/postgres` — перенос запросов из `database.py`, как адаптер.
-- [ ] `domain/objects.py`, `domain/graph.py`.
-- [ ] `application/reverse_engineer.py` + перенос шаблонов Jinja2 (с фиксажами §6).
-- [ ] CLI: `reverse-engineer --connection-file <path>` (управление подключениями — только в UI, см. §8).
-- [ ] **Базовый GUI (PySide6)** — единственное место для управления подключениями (§8) и клиент `reverse_engineer`-сервиса (§7):
-      - список подключений + диалог добавления/редактирования (перенос `ConnectionDialog`/`ConnectionListView` из мёртвого кода в активное использование) с валидацией полей, выбором типа СУБД и кнопкой «Тест соединения»; сохранение шифрует пароль через `crypto_util`;
-      - выбор выходной директории;
-      - кнопка «Сгенерировать скрипты объектов БД» → неблокирующий запуск через `QRunnable`/`QThreadPool` с прогрессом и статусом;
-      - **панель «дерево проекта + просмотр SQL»** (`QTreeView` + `QSplitter` + `QScintilla`, read-only, §7) — быстрый просмотр сгенерированных файлов рядом с деревом.
-      Цель — UI создаёт подключения и запускает reverse-engineer на едином application-слое с CLI.
-- [ ] Базовые тесты (mock-адаптер + фикстуры SQL-файлов из `samples/`).
+### Фаза 1 — Фундамент (MVP PG + CLI + базовый GUI) — ✅ ЗАВЕРШЕНА
+- [x] Скелет пакетов по целевой архитектуре (§1).
+- [x] Перенос `crypto_util.py` + pydantic `app_config.py` / `connection_store.py` (§4).
+- [x] `.gitignore`, `config.example.yaml`, `connections/example.yaml` (§3).
+- [x] `infrastructure/database/postgres` — перенос запросов из `database.py`, как адаптер.
+- [x] `domain/connection.py` (graph.py перенесён в Фазу 2).
+- [x] `application/reverse_engineer.py` + перенос шаблонов Jinja2 (с фиксажами §6).
+- [x] CLI: `reverse-engineer --connection-file <path>` (управление подключениями — только в UI, см. §8).
+- [x] **Базовый GUI (PySide6)** — управление подключениями + reverse-engineer + read-only просмотр (QPlainTextEdit + QSyntaxHighlighter вместо QScintilla — см. §13 риски/LESSONS_LEARNED).
+- [x] Базовые тесты (mock-адаптер + фикстуры SQL-файлов).
+- [x] Autodoc YAML-заголовок в каждом сгенерированном файле.
 
-### Фаза 2 — Деплой и граф
-- [ ] `application/collect_deployment.py` (файлы → скрипт, с топосортировкой §5).
-- [ ] `application/compare.py` (diff каталога и БД).
-- [ ] Переписанный парсер SQL на `sqlglot`.
-- [ ] CLI: `build`, `deploy --temp-db --validate`, `diff`, `graph export`.
-- [ ] **Расширение GUI:** панель «Операции с Базами Данных» (build, deploy, validate), просмотр/экспорт графа зависимостей.
+### Фаза 2 — Граф зависимостей + Validation deploy — ✅ ЗАВЕРШЕНА
+- [x] `domain/graph.py` (Vertex/Edge/DependencyGraph, CycleError).
+- [x] `infrastructure/parsing/` — generic `ObjectGraphParser` + перенос POC-парсера с фиксажами (дедупликация, порядок elif, autodoc-driven identity).
+- [x] `infrastructure/graph/topological_sort.py` — проверка циклов (CycleError), детерминизм, приоритеты типов.
+- [x] `infrastructure/graph/graph_store.py` — `.dbm_graph/` (vertices/edges/graph/meta с codebase_hash), gitignored.
+- [x] `infrastructure/graph/export.py` — JSON / GraphML / Graphviz DOT.
+- [x] `application/graph_service.py` (BuildGraphService), `application/deploy_service.py` (DeployValidateService со стратификацией ошибок, cleanup, фильтр build:false).
+- [x] Расширение `DatabaseAdapter` контракта (+5 методов: check_can_create_db, get_server_timestamp_utc, create/drop_database, execute_script) + валидация имени БД (whitelist).
+- [x] CLI: `graph {build,export,show,validate}`, `deploy validate`.
+- [x] **Расширение GUI:** кнопка «Deploy validate…» + диалог опций + `DeployValidateWorker` (QRunnable).
+- [x] Интеграционные тесты через testcontainers (PostgreSQL 16), маркированы `integration` (deselected по умолчанию).
+
+**Отложено из Фазы 2 (в Фазу 3+):**
+- [ ] Переписанный парсер SQL на `sqlglot` (POC-парсер как MVP работает; sqlglot — улучшение).
+- [ ] `application/compare.py` (diff каталога и БД) — часть Phase 3 (миграции).
 - [ ] Greenplum-адаптер полностью; Snowflake — исследование/импорт из дампа.
-- [ ] Интеграционные тесты через testcontainers (PostgreSQL в контейнере).
-- [ ] Пример CI/CD пайплайна (§8).
+- [ ] Пример CI/CD пайплайна.
 
 ### Фаза 3 — Миграции и расширение СУБД
+- [ ] `application/compare.py`: сравнение кодовой базы и живой схемы (diff).
 - [ ] `application/migrations.py`: pre/post-deploy скрипты, учёт наличия данных в таблицах (через `pg_class.reltuples` / sampling) — генерация безопасных миграционных скриптов.
+- [ ] `db-pm deploy migrate` — деплой дельты на существующую БД; ALTER-план для таблиц вместо DROP+CREATE.
 - [ ] **GUI: секция миграций** (diff/миграции с предпросмотром).
 - [ ] MSSQL и MySQL адаптеры.
 - [ ] Полноценное покрытие тестами; пакетирование и релиз (через `uv build`).

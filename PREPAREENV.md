@@ -59,3 +59,19 @@ uv add --dev <package>     # добавить dev-зависимость
 ```
 
 После изменения зависимостей коммитьте обновлённый `uv.lock`. Забирающие изменения делают `uv sync` повторно для актуализации окружения.
+
+## Integration-тесты (Phase 2+)
+
+Integration-тесты (`tests/integration/`) поднимают PostgreSQL в Docker-контейнере через `testcontainers`. По умолчанию они **пропускаются** (`addopts = "-m 'not integration'"` в `pyproject.toml`).
+
+```bash
+uv run pytest                       # только unit-тесты (быстро)
+uv run pytest -m integration        # integration-тесты (нужен Docker)
+uv run pytest -m "not integration"  # явно без integration
+```
+
+Требования для integration-тестов:
+- **Docker Desktop запущен** (на Windows — иконка в трее активна; `docker version` показывает секцию `Server`).
+- Если `docker.errors.DockerException: ... CreateFile ...` — daemon не запущен или Python SDK не видит pipe. Запустите Docker Desktop, при необходимости `docker context use desktop-linux`.
+
+Integration-тесты покрывают полный сценарий validation deploy и round-trip reverse-engineer → graph build на реальном PostgreSQL 16.
