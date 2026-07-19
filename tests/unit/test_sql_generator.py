@@ -41,7 +41,7 @@ def test_table_script_contains_columns_and_pk(structure, tmp_path) -> None:
 
     assert "CREATE TABLE bookings.aircrafts" in text
     assert "aircraft_code bpchar(3) NOT NULL" in text
-    assert "range int4(32, 0) NOT NULL" in text
+    assert "range int4 NOT NULL" in text
     assert "CONSTRAINT aircrafts_pkey PRIMARY KEY (aircraft_code)" in text
     assert "CHECK ((range > 0))" in text
     # table comment + column comments
@@ -120,3 +120,122 @@ def test_autodoc_disabled(structure, tmp_path) -> None:
     assert "[<[autodoc-yaml]]" not in text
     # Body still intact.
     assert "CREATE TABLE bookings.aircrafts" in text
+
+
+# -------------------------------------------------------------------------- #
+# type_mod helpers (tested in isolation via a minimal generator instance)
+# -------------------------------------------------------------------------- #
+
+import pytest
+from db_project_manager.infrastructure.sql.sql_generator import SQLGenerator, _NO_NUMERIC_MOD
+
+
+def _type_mod_for(type_: str, np=None, ns=None, cml=None) -> str:
+    """Render type_mod for a column dict with the given attributes."""
+    gen = SQLGenerator()
+    return gen.env.globals["_type_mod"]({
+        "type": type_,
+        "numeric_precision": np,
+        "numeric_scale": ns,
+        "character_maximum_length": cml,
+    })
+
+
+class TestTypeModIntegerTypes:
+    """Bug A: int8/int4 with numeric_precision should NOT emit (64, 0)."""
+
+    @pytest.mark.parametrize("udt", ["int8", "int4", "int2", "bigint", "integer", "smallint"])
+    def test_integer_type_no_modifier(self, udt) -> None:
+        """Even when PostgreSQL reports precision/scale, they must not appear in DDL."""
+        result = _type_mod_for(udt, np=64, ns=0)
+        assert result == "", f"{udt} must not get (precision, scale) suffix"
+
+    def test_bigserial_no_modifier(self) -> None:
+        result = _type_mod_for("bigserial", np=64, ns=0)
+        assert result == ""
+
+    def test_smallserial_no_modifier(self) -> None:
+        result = _type_mod_for("smallserial", np=16, ns=0)
+        assert result == ""
+
+
+class TestTypeModFloatTypes:
+    """float4/float8 do not accept (precision, scale) in PostgreSQL DDL."""
+
+    def test_float4_no_modifier(self) -> None:
+        result = _type_mod_for("float4", np=24, ns=0)
+        assert result == ""
+
+    def test_float8_no_modifier(self) -> None:
+        result = _type_mod_for("float8", np=53, ns=0)
+        assert result == ""
+
+    def test_real_no_modifier(self) -> None:
+        result = _type_mod_for("real", np=24, ns=0)
+        assert result == ""
+
+    def test_double_precision_no_modifier(self) -> None:
+        result = _type_mod_for("double precision", np=53, ns=0)
+        assert result == ""
+
+
+class TestTypeModDateTimeTypes:
+    """timestamp/date/time types do not accept (precision, scale) modifiers."""
+
+    def test_timestamp_no_modifier(self) -> None:
+        result = _type_mod_for("timestamp", np=6, ns=6)
+        assert result == ""
+
+    def test_timestamptz_no_modifier(self) -> None:
+        result = _type_mod_for("timestamptz", np=6, ns=6)
+        assert result == ""
+
+    def test_date_no_modifier(self) -> None:
+        result = _type_mod_for("date", np=4, ns=0)
+        assert result == ""
+
+
+class TestTypeModNumeric:
+    """numeric/decimal ARE valid with (precision, scale)."""
+
+    def test_numeric_emits_modifier(self) -> None:
+        result = _type_mod_for("numeric", np=10, ns=2)
+        assert result == "(10, 2)"
+
+    def test_decimal_emits_modifier(self) -> None:
+        result = _type_mod_for("decimal", np=15, ns=3)
+        assert result == "(15, 3)"
+
+
+class TestTypeModCharacter:
+    """Character types emit character_maximum_length, not numeric_precision/scale."""
+
+    def test_varchar_emits_length(self) -> None:
+        result = _type_mod_for("varchar", np=None, ns=None, cml=255)
+        assert result == "(255)"
+
+    def test_bpchar_emits_length(self) -> None:
+        result = _type_mod_for("bpchar", np=None, ns=None, cml=3)
+        assert result == "(3)"
+
+    def test_text_no_modifier(self) -> None:
+        result = _type_mod_for("text", np=100, ns=0)
+        assert result == ""
+
+    def test_bpchar_no_cml_no_modifier(self) -> None:
+        result = _type_mod_for("bpchar", np=None, ns=None, cml=None)
+        assert result == ""
+
+
+class TestNoNumericModSet:
+    """Sanity-check the frozenset covers the expected PostgreSQL types."""
+
+    def test_no_numeric_mod_set_contains_int8(self) -> None:
+        assert "int8" in _NO_NUMERIC_MOD
+
+    def test_no_numeric_mod_set_contains_numeric(self) -> None:
+        # numeric IS allowed to have (precision, scale)
+        assert "numeric" not in _NO_NUMERIC_MOD
+
+    def test_no_numeric_mod_set_contains_bool(self) -> None:
+        assert "bool" in _NO_NUMERIC_MOD

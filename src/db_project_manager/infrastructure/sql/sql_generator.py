@@ -18,6 +18,25 @@ from loguru import logger
 
 from db_project_manager.infrastructure.sql.autodoc import ensure_header
 
+# Types that do NOT accept (numeric_precision, numeric_scale) modifiers in DDL.
+# For these types PostgreSQL's information_schema may report precision/scale
+# values (e.g. int8 reports precision=64, scale=0) but the "(64, 0)" syntax
+# is only valid for numeric/decimal.  Keeping the full list avoids accidental
+# emission of invalid type suffixes like int8(64, 0) or timestamp(64, 0).
+_NO_NUMERIC_MOD = frozenset({
+    # Integers — precision/scale from information_schema describe storage
+    # size, not a meaningful type modifier.
+    "int2", "int4", "int8", "smallint", "integer", "bigint",
+    "smallserial", "serial", "bigserial",
+    # Floating-point — "precision" here is total bits, not decimal digits.
+    "float4", "float8", "real", "double precision",
+    # Date / time
+    "date", "time", "timetz", "timestamp", "timestamptz", "interval",
+    # Other scalars
+    "bool", "boolean", "bytea", "money", "oid", "uuid", "xml",
+    "json", "jsonb", "text", "bpchar", "char", "name",
+})
+
 
 def _template_helpers() -> dict[str, Any]:
     """Helpers exposed to Jinja templates to avoid inline {% if %} at line ends.
@@ -30,7 +49,8 @@ def _template_helpers() -> dict[str, Any]:
     def type_mod(col: dict[str, Any]) -> str:
         np, ns = col.get("numeric_precision"), col.get("numeric_scale")
         cml = col.get("character_maximum_length")
-        if np is not None and ns is not None:
+        udt = col.get("type", "")
+        if np is not None and ns is not None and udt not in _NO_NUMERIC_MOD:
             return f"({np}, {ns})"
         if cml:
             return f"({cml})"

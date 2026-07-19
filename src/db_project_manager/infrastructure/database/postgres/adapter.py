@@ -210,6 +210,15 @@ class PGDatabaseAdapter(DatabaseAdapter):
         constraints = self._group_constraints(
             self._exec(q.GET_CONSTRAINTS, {"table_name": name, "schema": schema})
         )
+        # NOT NULL is a column modifier, not a table-level constraint.  In
+        # information_schema it appears as constraint_type='CHECK', but
+        # pg_get_constraintdef() returns "NOT NULL <colname>" — neither valid as
+        # a named CONSTRAINT nor needed because nullable is already derived from
+        # col[2] == 'YES'.  Drop these artefacts.
+        constraints = [
+            c for c in constraints
+            if not (c["type"] == "CHECK" and c["definition"].startswith("NOT NULL"))
+        ]
         indexes = self._group_indexes(
             self._exec(q.GET_INDEXES, {"table_name": name, "schema": schema})
         )
