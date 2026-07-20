@@ -105,3 +105,44 @@ def test_service_no_progress_callback(tmp_path) -> None:
     # Must not raise when progress is None.
     out = service.run(_cfg(), tmp_path, progress=None)
     assert out.is_dir()
+
+
+def test_qualify_refs_hook_invoked_after_generation(tmp_path) -> None:
+    """When a qualify_refs_service is wired, it runs after generation and bumps
+    the progress total from 4 to 5."""
+    adapter = FakeAdapter()
+    runs: list[Path] = []
+
+    class _StubQualify:
+        def run(self, codebase_dir: Path, *, dry_run: bool = False) -> None:  # noqa: ARG002
+            runs.append(Path(codebase_dir))
+
+    service = ReverseEngineerService(
+        adapter_factory=lambda _cfg: adapter,
+        qualify_refs_service=_StubQualify(),  # type: ignore[arg-type]
+    )
+
+    progress_log: list[tuple[str, int, int]] = []
+    out = service.run(_cfg(), tmp_path, progress=lambda m, c, t: progress_log.append((m, c, t)))
+
+    assert runs and runs[0] == out
+    # Total is now 5 (4 base + 1 qualify step).
+    assert progress_log[0][2] == 5
+    assert progress_log[-1] == ("Готово", 5, 5)
+    assert any("Квалификация" in m for m, _, _ in progress_log)
+
+
+def test_qualify_refs_error_does_not_fail_reverse(tmp_path) -> None:
+    """A qualify-refs failure is swallowed — reverse still returns successfully."""
+    adapter = FakeAdapter()
+
+    class _BoomQualify:
+        def run(self, codebase_dir: Path, *, dry_run: bool = False) -> None:  # noqa: ARG002
+            raise RuntimeError("boom")
+
+    service = ReverseEngineerService(
+        adapter_factory=lambda _cfg: adapter,
+        qualify_refs_service=_BoomQualify(),  # type: ignore[arg-type]
+    )
+    out = service.run(_cfg(), tmp_path)
+    assert out.is_dir()

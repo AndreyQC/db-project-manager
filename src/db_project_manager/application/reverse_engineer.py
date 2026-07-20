@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from loguru import logger
 
@@ -19,6 +20,9 @@ from db_project_manager.domain.connection import ConnectionConfig
 from db_project_manager.infrastructure.database.base import DatabaseAdapter, DatabaseError
 from db_project_manager.infrastructure.database.registry import get_adapter
 from db_project_manager.infrastructure.sql.sql_generator import SQLGenerator
+
+if TYPE_CHECKING:
+    from db_project_manager.application.qualify_refs_service import QualifyRefsService
 
 #: Progress callback signature: (stage_message, current_step, total_steps).
 ProgressCallback = Callable[[str, int, int], None]
@@ -35,10 +39,14 @@ class ReverseEngineerService:
         self,
         generator: SQLGenerator | None = None,
         adapter_factory: Callable[[ConnectionConfig], DatabaseAdapter] | None = None,
+        qualify_refs_service: QualifyRefsService | None = None,
     ) -> None:
         self.generator = generator or SQLGenerator()
         # Default factory picks the adapter from ConnectionConfig.type.
         self._adapter_factory = adapter_factory or get_adapter
+        # Phase 6: post-process generated files to qualify bare refs.
+        # None disables the step (used by tests / when caller wants raw output).
+        self._qualify_service = qualify_refs_service
 
     def run(
         self,
@@ -58,17 +66,28 @@ class ReverseEngineerService:
         adapter = self._adapter_factory(conn_cfg)
 
         try:
-            self._emit(progress, "Подключение к базе данных...", 0, 4)
+            total = 5 if self._qualify_service is not None else 4
+            self._emit(progress, "Подключение к базе данных...", 0, total)
             adapter.connect(conn_cfg)
 
-            self._emit(progress, "Получение структуры базы данных...", 1, 4)
+            self._emit(progress, "Получение структуры базы данных...", 1, total)
             structure = adapter.get_database_structure()
 
             target = output_dir / conn_cfg.database
-            self._emit(progress, f"Генерация SQL-скриптов в: {target}", 2, 4)
+            self._emit(progress, f"Генерация SQL-скриптов в: {target}", 2, total)
             result = self.generator.generate_scripts(structure, target, object_catalog=conn_cfg.database)
 
-            self._emit(progress, "Готово", 4, 4)
+            if self._qualify_service is not None:
+                self._emit(progress, "Квалификация ссылок...", 3, total)
+                try:
+                    self._qualify_service.run(result)
+                except Exception as e:  # noqa: BLE001
+                    # Qualify-refs is a best-effort post-processor: never let it
+                    # fail the whole reverse-engineer. The report file is still
+                    # useful and the user can re-run db-pm qualify-refs manually.
+                    logger.warning(f"Qualify-refs пропущен из-за ошибки: {e}")
+
+            self._emit(progress, "Готово", total, total)
             logger.info(f"Reverse-engineer завершён: {result}")
             return result
         except DatabaseError as e:
@@ -83,5 +102,8 @@ class ReverseEngineerService:
 
 
 def build_default_service() -> ReverseEngineerService:
-    """Convenience constructor for CLI/GUI."""
-    return ReverseEngineerService()
+    """Convenience constructor for CLI/GUI — wires the default qualify-refs step."""
+    # Local import to avoid a cycle (qualify_refs_service imports graph_service).
+    from db_project_manager.application.qualify_refs_service import QualifyRefsService
+
+    return ReverseEngineerService(qualify_refs_service=QualifyRefsService())
