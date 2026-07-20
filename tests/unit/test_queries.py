@@ -14,6 +14,30 @@ from db_project_manager.infrastructure.database.postgres import queries
 #: Anything else here is almost certainly a typo. See PostgreSQL docs for pg_attribute.
 _VALID_OWNING_COL_ATTRS = {"attname", "attnum", "attrelid", "atttypid", "atttypmod"}
 
+#: Catalog columns per alias for the Phase 5 queries (guard against typos like
+#: atttypod — the alias is only scanned inside its own query, since aliases such
+#: as ``d`` mean pg_depend in the sequence queries and pg_database in the new ones).
+_VALID_PG_EXTENSION_ATTRS = {
+    "oid", "extname", "extowner", "extnamespace", "extrelocatable",
+    "extversion", "extconfig", "extcondition",
+}
+_VALID_PG_NAMESPACE_ATTRS = {"oid", "nspname", "nspowner", "nspacl"}
+_VALID_PG_DATABASE_ATTRS = {
+    "oid", "datname", "datdba", "encoding", "datlocprovider", "datistemplate",
+    "datallowconn", "dathasloginevt", "datconnlimit", "datfrozenxid",
+    "datminmxid", "dattablespace", "datcollate", "datctype", "datlocale",
+    "daticurules", "datcollversion", "datacl",
+}
+_VALID_PG_DB_ROLE_SETTING_ATTRS = {"setdatabase", "setrole", "setconfig"}
+
+
+def _assert_alias_refs(query: str, alias_columns: dict[str, set[str]]) -> None:
+    """Every ``alias.<attr>`` in *query* must be a known column of its catalog."""
+    for alias, valid in alias_columns.items():
+        refs = re.findall(rf"\b{alias}\.([a-z_]+)", query)
+        unknown = set(refs) - valid
+        assert not unknown, f"unknown {alias}.* attributes (likely typos): {unknown}"
+
 
 def test_sequence_queries_use_correct_type_column() -> None:
     """Regression: atttypod (typo) was used instead of atttypmod, causing
@@ -44,3 +68,33 @@ def test_all_queries_are_nonempty_strings() -> None:
     for name in names:
         value = getattr(queries, name)
         assert isinstance(value, str) and value.strip(), f"{name} is empty"
+
+
+def test_extension_query_uses_valid_catalog_columns() -> None:
+    _assert_alias_refs(
+        queries.GET_EXTENSIONS,
+        {"e": _VALID_PG_EXTENSION_ATTRS, "n": _VALID_PG_NAMESPACE_ATTRS},
+    )
+
+
+def test_database_properties_query_uses_valid_catalog_columns() -> None:
+    _assert_alias_refs(
+        queries.GET_DATABASE_PROPERTIES, {"d": _VALID_PG_DATABASE_ATTRS}
+    )
+    # Behaviour-relevant fields only (Phase 5 vision Q8).
+    for field in ("encoding", "datcollate", "datctype"):
+        assert field in queries.GET_DATABASE_PROPERTIES
+    for excluded in ("datconnlimit", "datistemplate", "datallowconn"):
+        assert excluded not in queries.GET_DATABASE_PROPERTIES
+
+
+def test_database_settings_query_uses_valid_catalog_columns() -> None:
+    _assert_alias_refs(
+        queries.GET_DATABASE_SETTINGS,
+        {"s": _VALID_PG_DB_ROLE_SETTING_ATTRS, "d": _VALID_PG_DATABASE_ATTRS},
+    )
+
+
+def test_database_settings_query_filters_role_level() -> None:
+    """Phase 5 vision Q5: only db-level settings (setrole = 0) are carried over."""
+    assert "s.setrole = 0" in queries.GET_DATABASE_SETTINGS

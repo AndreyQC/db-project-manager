@@ -296,3 +296,43 @@ GET_PROCEDURES = """
       AND p.prokind = 'p'
     ORDER BY n.nspname, p.proname
 """
+
+# --- extensions (Phase 5) ---
+
+GET_EXTENSIONS = """
+    SELECT
+        e.extname AS name,
+        n.nspname AS schema,
+        e.extversion AS version,
+        obj_description(e.oid, 'pg_extension') AS comment
+    FROM pg_extension e
+    LEFT JOIN pg_namespace n ON n.oid = e.extnamespace
+    ORDER BY e.extname
+"""
+
+# --- database properties / settings (Phase 5) ---
+
+# Properties of the current database that affect DDL/DML behaviour.
+# Only behaviour-relevant fields are extracted (datconnlimit / datistemplate /
+# datallowconn are operational properties of the source server — NOT carried over).
+GET_DATABASE_PROPERTIES = """
+    SELECT
+        pg_encoding_to_char(d.encoding) AS encoding,
+        d.datcollate AS lc_collate,
+        d.datctype AS lc_ctype
+    FROM pg_database d
+    WHERE d.datname = current_database()
+"""
+
+# Explicitly set database-level parameters only (setrole = 0 filters out
+# role-specific settings — roles are out of scope for the tool).
+# Each setconfig element is a "param=value" string; splitting is adapter-side.
+GET_DATABASE_SETTINGS = """
+    SELECT
+        unnest(s.setconfig) AS setting
+    FROM pg_db_role_setting s
+    JOIN pg_database d ON d.oid = s.setdatabase
+    WHERE d.datname = current_database()
+      AND s.setrole = 0
+    ORDER BY 1
+"""
