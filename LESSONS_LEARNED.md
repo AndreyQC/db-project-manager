@@ -411,3 +411,23 @@
 - **Урок #3:** reserved keywords в `keywords.yaml` содержат YAML-bareword-ловушки
   (`YES`/`NO`/`ON`/`OFF` парсятся в `True`/`False`). При загрузке всегда фильтруй
   `isinstance(k, str)` — иначе сравнение токенов упадёт на `bool.lower()`.
+
+### 37. Extension-owned функции надо исключать из reverse-engineer
+- **Симптом:** deploy падал с `InvalidFunctionDefinition: изменить имя входного
+  параметра "string" нельзя` на `CREATE OR REPLACE FUNCTION public.regexp_match(...)`.
+- **Причина:** `regexp_match(citext, citext)` — это функция, созданная extension `citext`.
+  Reverse-engineer через `pg_proc` вытянул её как пользовательскую и положил в
+  codebase. При deploy PG отказывается переопределять extension-функцию: её тело
+  и сигнатура принадлежат extension, а reverse-engineer потерял оригинальные
+  имена параметров (`string`, `pattern`).
+- **Корневая причина:** `GET_FUNCTIONS`/`GET_PROCEDURES` не фильтровали
+  extension-owned объекты. Владение tracked в `pg_depend` с `deptype='e'`.
+- **Фикс:** `NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.objid = p.oid AND
+  d.deptype = 'e')` в обоих запросах. Extension-функции уже создаются через
+  `CREATE EXTENSION` (Phase 5) — отдельная эмиссия их как пользовательских
+  дублирует и ломает deploy.
+- **Урок:** любой reverse-engineer, читающий системный каталог, должен исключать
+  объекты, принадлежащие extension (`pg_depend.deptype='e'`) — иначе extension
+  «утекает» в пользовательский codebase и ломает deploy. Это особенно важно для
+  rich extensions вроде `citext`, `uuid-ossp`, `pgcrypto`, которые регистрируют
+  десятки функций. Фиксировать контракт тестом на присутствие фильтра в SQL.
