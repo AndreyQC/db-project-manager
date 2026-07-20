@@ -47,7 +47,9 @@
               "type": "PRIMARY KEY",
               "schema": "bookings",
               "table_name": "aircrafts",
-              "columns": ["aircraft_code"],
+              "columns": [
+                "aircraft_code"
+              ],
               "referenced_table_schema": null,
               "referenced_table_name": null,
               "referenced_column_name": null,
@@ -102,7 +104,9 @@
               "type": "FOREIGN KEY",
               "schema": "bookings",
               "table_name": "flights",
-              "columns": ["aircraft_code"],
+              "columns": [
+                "aircraft_code"
+              ],
               "referenced_table_schema": "bookings",
               "referenced_table_name": "aircrafts",
               "referenced_column_name": "aircraft_code",
@@ -114,7 +118,9 @@
           "indexes": [
             {
               "name": "flights_aircraft_code_idx",
-              "columns": ["aircraft_code"],
+              "columns": [
+                "aircraft_code"
+              ],
               "index_type": "btree",
               "unique": false,
               "filter_condition": null
@@ -129,8 +135,14 @@
           "comment": "Представление рейсов",
           "definition": "\n SELECT flight_id, aircraft_code\n   FROM bookings.flights;",
           "columns": [
-            {"name": "flight_id", "comment": null},
-            {"name": "aircraft_code", "comment": "Код самолета"}
+            {
+              "name": "flight_id",
+              "comment": null
+            },
+            {
+              "name": "aircraft_code",
+              "comment": "Код самолета"
+            }
           ]
         }
       ],
@@ -187,5 +199,30 @@
       ],
       "enums": []
     }
-  ]
+  ],
+  "extensions": [
+    {
+      "name": "citext",
+      "schema": "public",
+      "version": "1.6",
+      "comment": "case-insensitive text"
+    }
+  ],
+  "database": {
+    "properties": {
+      "encoding": "UTF8",
+      "lc_collate": "C",
+      "lc_ctype": "C"
+    },
+    "settings": [
+      {
+        "name": "work_mem",
+        "value": "64MB"
+      },
+      {
+        "name": "search_path",
+        "value": "$user, public"
+      }
+    ]
+  }
 }

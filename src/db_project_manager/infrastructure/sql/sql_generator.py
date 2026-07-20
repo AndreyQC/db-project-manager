@@ -63,6 +63,13 @@ def _template_helpers() -> dict[str, Any]:
         """Quote a qualified name parts (e.g. schema, name) joined by dot."""
         return ".".join(qi(p) for p in parts)
 
+    def qs(value: str) -> str:
+        """Quote a SQL string literal (parameter values in ALTER ... SET).
+
+        Doubles embedded single-quotes per SQL standard.
+        """
+        return "'" + str(value).replace("'", "''") + "'"
+
     def type_mod(col: dict[str, Any]) -> str:
         np, ns = col.get("numeric_precision"), col.get("numeric_scale")
         cml = col.get("character_maximum_length")
@@ -98,6 +105,7 @@ def _template_helpers() -> dict[str, Any]:
     return {
         "_qi": qi,
         "_qqi": qqi,
+        "_qs": qs,
         "_type_mod": type_mod,
         "_null_mod": null_mod,
         "_default_mod": default_mod,
@@ -153,11 +161,67 @@ class SQLGenerator:
         output_path.mkdir(parents=True, exist_ok=True)
         logger.info(f"Генерация SQL-скриптов в: {output_path}")
 
+        # Phase 5: global (schema-less) objects first — extensions and db settings.
+        self._generate_global(structure, output_path, object_catalog)
+
         for schema_info in structure.get("schemas", []):
             self._generate_schema(schema_info, output_path, object_catalog)
 
         logger.info("Генерация SQL-скриптов завершена")
         return output_path
+
+    # --- global (schema-less) rendering: extensions, database settings ---
+
+    def _generate_global(
+        self,
+        structure: dict[str, Any],
+        output_path: Path,
+        object_catalog: str | None,
+    ) -> None:
+        """Render top-level objects that do not belong to any schema:
+        extensions -> <output>/extensions/, db settings -> <output>/settings/.
+        """
+        for ext in structure.get("extensions") or []:
+            ext_dir = output_path / "extensions"
+            ext_dir.mkdir(parents=True, exist_ok=True)
+            self._render_one(
+                "extension.sql.j2",
+                {
+                    "name": ext["name"],
+                    "schema": ext.get("schema"),
+                    # Version is NOT pinned in DDL (Phase 5 vision Q3); the
+                    # installed version is carried in the autodoc header.
+                    "version": None,
+                    "cascade": False,
+                    "comment": ext.get("comment"),
+                },
+                ext_dir,
+                f"extension {ext['name']}.sql",
+                object_catalog=object_catalog or "",
+                object_schema=None,
+                object_type="extension",
+                object_name=ext["name"],
+                autodoc_extra={"extension_version": ext.get("version")},
+            )
+
+        database = structure.get("database") or {}
+        settings = database.get("settings") or []
+        properties = database.get("properties") or {}
+        if not settings and not properties:
+            return
+        settings_dir = output_path / "settings"
+        settings_dir.mkdir(parents=True, exist_ok=True)
+        self._render_one(
+            "database_setting.sql.j2",
+            {"database_name": object_catalog or "", "settings": settings},
+            settings_dir,
+            "database settings.sql",
+            object_catalog=object_catalog or "",
+            object_schema=None,
+            object_type="database_setting",
+            object_name="database settings",
+            autodoc_extra={"properties": properties} if properties else None,
+        )
 
     # --- per-schema rendering ---
 
@@ -255,6 +319,7 @@ class SQLGenerator:
         object_type: str,
         object_name: str,
         object_signature: str = "",
+        autodoc_extra: dict[str, Any] | None = None,
     ) -> None:
         template = self.env.get_template(template_name)
         script = template.render(**context)
@@ -266,6 +331,7 @@ class SQLGenerator:
                 object_type=object_type,
                 object_name=object_name,
                 object_signature=object_signature,
+                extra=autodoc_extra,
             )
         path = out_dir / file_name
         path.write_text(script, encoding="utf-8")

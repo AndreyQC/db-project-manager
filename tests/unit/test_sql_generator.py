@@ -344,3 +344,68 @@ class TestNoNumericModSet:
 
     def test_no_numeric_mod_set_contains_bool(self) -> None:
         assert "bool" in _NO_NUMERIC_MOD
+
+
+# --- Phase 5: extensions and database settings ---
+
+
+def test_extension_rendered_at_top_level(structure, tmp_path) -> None:
+    """Extensions are schema-less: <output>/extensions/extension <name>.sql."""
+    gen = SQLGenerator()
+    out = gen.generate_scripts(structure, tmp_path / "out", object_catalog="mydb")
+
+    path = out / "extensions" / "extension citext.sql"
+    assert path.is_file()
+    text = path.read_text(encoding="utf-8")
+    assert 'CREATE EXTENSION IF NOT EXISTS "citext"' in text
+    # Version is NOT pinned in DDL (vision Q3) — carried in autodoc instead.
+    assert "VERSION" not in text.split("[[autodoc-yaml]>]")[-1]
+    assert "extension_version" in text
+
+
+def test_database_settings_rendered_with_properties_in_autodoc(structure, tmp_path) -> None:
+    gen = SQLGenerator()
+    out = gen.generate_scripts(structure, tmp_path / "out", object_catalog="mydb")
+
+    path = out / "settings" / "database settings.sql"
+    assert path.is_file()
+    text = path.read_text(encoding="utf-8")
+    assert 'ALTER DATABASE "mydb" SET work_mem = \'64MB\';' in text
+    assert 'ALTER DATABASE "mydb" SET search_path = \'$user, public\';' in text
+    # properties survive via the autodoc header (roundtrip, not substring)
+    from db_project_manager.infrastructure.sql.autodoc import extract_header
+
+    parsed = extract_header(text)
+    assert parsed is not None
+    assert parsed["object"]["object_type"] == "database_setting"
+    assert parsed["object"]["object_schema"] is None
+    assert parsed["object"]["properties"] == {
+        "encoding": "UTF8", "lc_collate": "C", "lc_ctype": "C",
+    }
+
+
+def test_no_extensions_no_settings_no_extra_dirs(tmp_path) -> None:
+    """Structure without the Phase 5 keys produces no extensions/settings dirs."""
+    gen = SQLGenerator()
+    out = gen.generate_scripts({"schemas": []}, tmp_path / "out")
+    assert not (out / "extensions").exists()
+    assert not (out / "settings").exists()
+
+
+def test_settings_file_created_for_properties_only(tmp_path) -> None:
+    """Properties without SET-parameters still produce the settings file
+    (body is comments only; properties live in autodoc)."""
+    structure = {
+        "schemas": [],
+        "database": {"properties": {"encoding": "UTF8"}, "settings": []},
+    }
+    gen = SQLGenerator()
+    out = gen.generate_scripts(structure, tmp_path / "out", object_catalog="mydb")
+    assert (out / "settings" / "database settings.sql").is_file()
+
+
+def test_extension_schema_less_object_key(structure, tmp_path) -> None:
+    gen = SQLGenerator()
+    out = gen.generate_scripts(structure, tmp_path / "out", object_catalog="mydb")
+    text = (out / "extensions" / "extension citext.sql").read_text(encoding="utf-8")
+    assert "object_key: pg_database/mydb/type/extension/name/citext" in text
