@@ -124,7 +124,7 @@ class PgSqlParser(ObjectGraphParser):
         # Match each object name / full_name against every file's word stream.
         names_index = self._build_names_index(graph)
         for entry in parsed:
-            edges = self._scan_edges(entry["words"], entry["vertex"], names_index)
+            edges = self._scan_edges(entry["words"], entry["vertex"], names_index, graph)
             for edge in edges:
                 graph.add_edge(edge)
 
@@ -247,6 +247,7 @@ class PgSqlParser(ObjectGraphParser):
         words: list[str],
         vertex: Vertex,
         names_index: dict[str, str],
+        graph: DependencyGraph,
     ) -> list[Edge]:
         """Scan a file's normalized word stream for references to other objects.
 
@@ -272,15 +273,35 @@ class PgSqlParser(ObjectGraphParser):
             if not dest_key or dest_key == self_vertex_key:
                 continue
 
-            # For nextval references, prefer schema-qualified lookup using the
-            # source object's schema. E.g. table in schema 'qr' with
-            # nextval('audit_log_id_seq') -> try 'qr.audit_log_id_seq' first.
-            relation, action = self._classify_at(scan_words, i)
-            if relation is None:
-                continue
-            if relation == Relation.SEQUENCE_NEXTVAL_IN and self_schema:
-                qualified = f"{self_schema}.{token}"
-                dest_key = names_index.get(qualified) or dest_key
+            # Function/procedure call: if the matched name resolves to a
+            # function or procedure vertex, treat it as a call → DEPENDS_ON.
+            # Parens are stripped by the normalizer so we cannot check for '(';
+            # instead we rely on the destination vertex's object_type. This
+            # catches bare calls (sp_helper(x)) and schema-qualified calls
+            # (qr.sp_helper(x)) regardless of surrounding SQL context (SELECT,
+            # FROM, CASE WHEN, WHERE). The only risk is a column name matching
+            # a function name — but the index contains object names only, not
+            # column names, so collisions are rare.
+            dest_vertex = graph.vertices.get(dest_key)
+            if dest_vertex is not None and dest_vertex.object_type in {"function", "procedure"}:
+                # FROM/JOIN of a function is a table-function call — keep the
+                # existing PROVIDE_DATA_TO classification for ordering purposes.
+                prev = scan_words[i - 1] if i >= 1 else ""
+                if prev not in {"from", "join"}:
+                    relation = Relation.DEPENDS_ON
+                    action = "call"
+                else:
+                    relation, action = Relation.PROVIDE_DATA_TO, "select function"
+            else:
+                # For nextval references, prefer schema-qualified lookup using the
+                # source object's schema. E.g. table in schema 'qr' with
+                # nextval('audit_log_id_seq') -> try 'qr.audit_log_id_seq' first.
+                relation, action = self._classify_at(scan_words, i)
+                if relation is None:
+                    continue
+                if relation == Relation.SEQUENCE_NEXTVAL_IN and self_schema:
+                    qualified = f"{self_schema}.{token}"
+                    dest_key = names_index.get(qualified) or dest_key
 
             edge = Edge(
                 source_object_key=self_vertex_key,

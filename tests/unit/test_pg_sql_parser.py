@@ -277,6 +277,34 @@ def test_extension_and_database_setting_supported_types() -> None:
     assert "database_setting" in types
 
 
+# --- Phase 6 follow-up: function-call edges (DEPENDS_ON/call) ---
+
+
+SP_CALLER = "pg_database/demo/schema/app/type/function/name/sp_caller/signature/75666699"
+
+
+def test_function_call_in_case_when_creates_depends_on_edge(graph) -> None:
+    """Regression: a function calling another inside CASE WHEN (or any non-FROM
+    context) must produce a DEPENDS_ON edge. Previously missed because
+    _classify_at only handled FK/nextval/JOIN/DML/SELECT."""
+    # sp_caller exists.
+    assert SP_CALLER in graph.vertices
+    # Edge: sp_caller -> sp_y with DEPENDS_ON / action="call".
+    call_edges = [
+        e for e in graph.edges
+        if e.source_object_key == SP_CALLER and e.destination_object_key == SP_Y
+    ]
+    assert call_edges, "expected DEPENDS_ON edge sp_caller -> sp_y, got none"
+    assert all(e.relation == Relation.DEPENDS_ON for e in call_edges)
+    assert all(e.action == "call" for e in call_edges)
+
+
+def test_function_call_edge_count(graph) -> None:
+    """At least one function-call edge exists in the fixture after the fix."""
+    call_edges = [e for e in graph.edges if e.action == "call"]
+    assert call_edges, "no DEPENDS_ON/call edges detected (regression)"
+
+
 def test_extension_file_inside_skip_dirs_ignored(tmp_path) -> None:
     """Files inside .dbm_graph/.git/etc. are skipped (shared with other types)."""
     parser = PgSqlParser()

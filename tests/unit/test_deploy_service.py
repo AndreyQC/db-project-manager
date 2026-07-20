@@ -298,7 +298,8 @@ def test_database_setting_script_db_name_replaced_in_deploy(tmp_path: Path) -> N
     assert props.get("lc_collate") == "C"
     assert props.get("lc_ctype") == "C"
     assert props.get("template") == "template0"
-    # 12 vertices in fixture: 1 schema + 3 tables + 1 seq + 1 view + 1 matview (build:false)
-    # + 3 functions + 2 procs + 1 extension + 1 database_setting.
-    # routes matview has build:false so it is filtered out -> 11 deployable.
-    assert result.objects_total == 11
+    # routes matview has build:false so it is filtered out. After adding
+    # sp_caller (Phase 6 follow-up regression fixture) the deployable count is 12:
+    # 1 schema + 3 tables + 1 seq + 1 view + 4 functions + 2 procs + 1 extension
+    # + 1 database_setting (routes matview excluded).
+    assert result.objects_total == 12
