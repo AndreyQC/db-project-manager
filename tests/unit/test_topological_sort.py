@@ -176,6 +176,56 @@ def test_topology_breaks_tie_within_type() -> None:
     assert order == ["A", "B"]
 
 
+# --- Phase 5: extension and database_setting priorities (vision Q6) ---
+
+
+def test_extension_before_schema() -> None:
+    """extension (-2) deploys before schema (0)."""
+    g = DependencyGraph()
+    g.add_vertex(_v("ext", "extension"))
+    g.add_vertex(_v("sch", "schema"))
+    g.add_vertex(_v("tbl", "table"))
+    order = [v.object_type for v in sort_by_type_and_topology(g)]
+    assert order.index("extension") < order.index("schema")
+
+
+def test_database_setting_before_schema() -> None:
+    """database_setting (-1) deploys before schema (0)."""
+    g = DependencyGraph()
+    g.add_vertex(_v("sch", "schema"))
+    g.add_vertex(_v("dbs", "database_setting"))
+    order = [v.object_type for v in sort_by_type_and_topology(g)]
+    assert order.index("database_setting") < order.index("schema")
+
+
+def test_extension_before_database_setting() -> None:
+    """extension (-2) deploys before database_setting (-1) — explicit ordering."""
+    g = DependencyGraph()
+    g.add_vertex(_v("dbs", "database_setting"))
+    g.add_vertex(_v("ext", "extension"))
+    order = [v.object_type for v in sort_by_type_and_topology(g)]
+    assert order.index("extension") < order.index("database_setting")
+
+
+def test_phase5_ordering_full() -> None:
+    """Full ordering: extension → database_setting → schema → sequence → table → view."""
+    g = DependencyGraph()
+    for key, obj_type in (
+        ("vw", "view"),
+        ("tbl", "table"),
+        ("seq", "sequence"),
+        ("sch", "schema"),
+        ("dbs", "database_setting"),
+        ("ext", "extension"),
+    ):
+        g.add_vertex(_v(key, obj_type))
+    order = [v.object_type for v in sort_by_type_and_topology(g)]
+    assert order == [
+        "extension", "database_setting", "schema",
+        "sequence", "table", "view",
+    ]
+
+
 # --- integration with the parser fixture shape ---
 
 

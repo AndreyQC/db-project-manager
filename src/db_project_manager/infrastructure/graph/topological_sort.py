@@ -23,6 +23,9 @@ from db_project_manager.domain.graph import CycleError, DependencyGraph, Vertex
 #: Deploy priority by object type. Lower number = deployed earlier.
 #: Unknown types get a high value so they go after known ones (defensive).
 TYPE_PRIORITIES: dict[str, int] = {
+    # Phase 5: extensions and db settings deploy before anything else.
+    "extension": -2,          # before schema
+    "database_setting": -1,   # after extension, before schema
     "schema": 0,
     "sequence": 1,
     "external_table": 2,
