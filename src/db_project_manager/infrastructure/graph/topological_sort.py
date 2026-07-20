@@ -96,10 +96,40 @@ def sort_by_type_and_topology(graph: DependencyGraph) -> list[Vertex]:
     This is the deploy order: type priority wins (schema before table before
     view), topological order breaks ties within the same type. Within a type,
     vertices are further sorted by object_key for reproducibility.
+
+    IMPORTANT: disconnected vertices (no path between them) get a dummy topo_index
+    based on when they were first seen in the topological queue. This means two
+    disconnected objects of different types (e.g. sequence vs table with an
+    implicit nextval dependency) may end up in wrong relative order if we relied
+    solely on topology. By placing type_priority first we ensure that the deploy
+    order respects type-level constraints (sequence before table) even when no
+    explicit edge exists — this is necessary because the reverse-engineer
+    does not yet infer implicit dependencies from column DEFAULT expressions.
     """
     topo = topological_sort(graph)
-    # Assign topological index for tie-breaking.
-    topo_index = {v.object_key: i for i, v in enumerate(topo)}
+
+    # --- identify truly disconnected vertices (no edges in either direction) ---
+    # These get a large topo_index offset so type_priority dominates their order.
+    # This fixes the case where a sequence and table are disconnected but the
+    # table has a nextval DEFAULT referencing the sequence — without explicit edge
+    # the table would sort before the sequence alphabetically, breaking the deploy.
+    in_degree: dict[str, int] = {}
+    out_degree: dict[str, int] = {}
+    for edge in graph.edges:
+        in_degree[edge.source_object_key] = in_degree.get(edge.source_object_key, 0) + 1
+        out_degree[edge.destination_object_key] = out_degree.get(edge.destination_object_key, 0) + 1
+    for key in graph.vertices:
+        in_degree.setdefault(key, 0)
+        out_degree.setdefault(key, 0)
+    disconnected_keys = {
+        k for k in graph.vertices
+        if in_degree[k] == 0 and out_degree[k] == 0
+    }
+
+    topo_index: dict[str, int] = {}
+    for i, v in enumerate(topo):
+        topo_index[v.object_key] = i + 1000 if v.object_key in disconnected_keys else i
+
     return sorted(
         topo,
         key=lambda v: (get_type_priority(v.object_type), topo_index[v.object_key], v.object_key),

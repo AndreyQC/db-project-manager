@@ -226,6 +226,22 @@ def test_phase5_ordering_full() -> None:
     ]
 
 
+def test_disconnected_sequence_before_table_by_type_priority() -> None:
+    """Regression for real-DB bug: audit_log table depends on audit_log_id_seq
+    via nextval DEFAULT, but they are disconnected in the graph (different schemas
+    or missing edge detection). Without explicit edge, topo_order puts the table
+    first (alpha), but type_priority (sequence=1, table=2) must win for
+    disconnected vertices so the sequence deploys before the table."""
+    g = DependencyGraph()
+    # audit_log_id_seq: isolated (no in/out edges in this simplified graph)
+    g.add_vertex(_v("audit_log_id_seq", "sequence"))
+    # audit_log: also isolated in the simplified graph
+    g.add_vertex(_v("audit_log", "table"))
+    order = [v.object_type for v in sort_by_type_and_topology(g)]
+    # sequence (priority=1) must come before table (priority=2)
+    assert order == ["sequence", "table"]
+
+
 # --- integration with the parser fixture shape ---
 
 
