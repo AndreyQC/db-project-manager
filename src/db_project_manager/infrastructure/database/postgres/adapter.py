@@ -202,7 +202,22 @@ class PGDatabaseAdapter(DatabaseAdapter):
             self._connection.execute(text(sql))
             logger.info(f"Создана база данных: {name}" + (f" ({', '.join(p for p in parts[1:])} )" if len(parts) > 1 else ""))
         except Exception as e:
-            logger.error(f"Ошибка создания базы данных {name}: {e}")
+            # Fallback: if locale/encoding is not supported on the target server,
+            # retry with template0 (standard locale) and without custom locale settings.
+            # This is the risk mitigation from Phase 5 vision §6.
+            if not template:
+                fallback_sql = f'CREATE DATABASE "{name}" TEMPLATE template0;'
+                logger.warning(
+                    f"Не удалось создать БД с указанными локалью/кодировкой ({e}). "
+                    f"Повторная попытка через template0..."
+                )
+                try:
+                    self._connection.execute(text(fallback_sql))
+                    logger.info(f"Создана база данных (fallback template0): {name}")
+                    return
+                except Exception as fe:
+                    logger.error(f"Ошибка создания базы данных (fallback тоже не удался): {fe}")
+                    raise DatabaseError(f"Ошибка создания базы данных: {fe}") from fe
             raise DatabaseError(f"Ошибка создания базы данных {name}: {e}") from e
 
     def drop_database(self, name: str) -> None:
