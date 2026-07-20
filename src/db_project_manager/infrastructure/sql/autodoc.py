@@ -47,6 +47,7 @@ def build_metadata(
     object_type: str,
     object_name: str,
     object_signature: str = "",
+    extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the autodoc metadata dict for an object.
 
@@ -55,6 +56,11 @@ def build_metadata(
             functions/procedures. Empty for non-overloaded objects — in that
             case the field is omitted from the metadata entirely so table/view
             autodoc headers stay clean.
+        extra: Optional additional keys merged into the ``object`` mapping.
+            Phase 5 uses this for ``extension_version`` (informational, the
+            installed version on the source DB) and ``properties`` (db-level
+            CREATE DATABASE properties carried by the ``database_setting``
+            object). Keys must not collide with the standard object fields.
     """
     object_key = _build_object_key(
         object_catalog=object_catalog,
@@ -72,6 +78,11 @@ def build_metadata(
     }
     if object_signature:
         obj["object_signature"] = object_signature
+    if extra:
+        collision = set(extra) & set(obj)
+        if collision:
+            raise ValueError(f"extra keys collide with standard fields: {collision}")
+        obj.update(extra)
     return {"object": obj, "project": {"build": True}}
 
 
@@ -126,6 +137,7 @@ def ensure_header(
     object_type: str,
     object_name: str,
     object_signature: str = "",
+    extra: dict[str, Any] | None = None,
 ) -> str:
     """Prepend an autodoc header if absent; keep an existing one as-is.
 
@@ -134,6 +146,7 @@ def ensure_header(
     Args:
         object_signature: Canonical signature hash for overloaded functions/
             procedures. See :func:`build_metadata`.
+        extra: Optional additional object fields. See :func:`build_metadata`.
     """
     if MARKER_OPEN in script and MARKER_CLOSE in script:
         return script
@@ -143,5 +156,6 @@ def ensure_header(
         object_type=object_type,
         object_name=object_name,
         object_signature=object_signature,
+        extra=extra,
     )
     return render_header(metadata) + script

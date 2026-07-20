@@ -156,3 +156,71 @@ def test_no_signature_in_header_for_table() -> None:
     parsed = extract_header(decorated)
     assert parsed is not None
     assert "object_signature" not in parsed["object"]
+
+
+# --- extra fields: extension_version / properties (Phase 5) ---
+
+
+def test_extension_schema_less_key_and_version_roundtrip() -> None:
+    """Extensions are schema-less (object_schema=None); the installed version is
+    carried informationally (Phase 5 vision Q3 — no VERSION pinning in DDL)."""
+    body = 'CREATE EXTENSION IF NOT EXISTS "citext";\n'
+    decorated = ensure_header(
+        body,
+        object_catalog="db",
+        object_schema=None,
+        object_type="extension",
+        object_name="citext",
+        extra={"extension_version": "1.6"},
+    )
+    parsed = extract_header(decorated)
+    assert parsed is not None
+    assert parsed["object"]["object_key"] == "pg_database/db/type/extension/name/citext"
+    assert parsed["object"]["extension_version"] == "1.6"
+
+
+def test_database_setting_properties_roundtrip() -> None:
+    """db-level CREATE DATABASE properties survive ensure_header -> extract_header.
+    Roundtrip (not substring) — YAML quoting is an implementation detail
+    (LESSONS_LEARNED §28)."""
+    body = "ALTER DATABASE mydb SET work_mem = '64MB';\n"
+    properties = {"encoding": "UTF8", "lc_collate": "C", "lc_ctype": "C", "template": "template0"}
+    decorated = ensure_header(
+        body,
+        object_catalog="db",
+        object_schema=None,
+        object_type="database_setting",
+        object_name="database settings",
+        extra={"properties": properties},
+    )
+    parsed = extract_header(decorated)
+    assert parsed is not None
+    assert parsed["object"]["object_key"] == (
+        "pg_database/db/type/database_setting/name/database settings"
+    )
+    assert parsed["object"]["properties"] == properties
+
+
+def test_extra_collision_with_standard_fields_rejected() -> None:
+    """extra must not silently overwrite object identity fields."""
+    import pytest
+
+    with pytest.raises(ValueError, match="collide"):
+        build_metadata(
+            object_catalog="db",
+            object_schema=None,
+            object_type="extension",
+            object_name="citext",
+            extra={"object_name": "hacked"},
+        )
+
+
+def test_no_extra_keeps_header_unchanged() -> None:
+    """Backward compatibility: without extra the metadata has exactly the
+    standard fields (plus optional signature)."""
+    meta = build_metadata(
+        object_catalog="db", object_schema="s", object_type="table", object_name="t"
+    )
+    assert set(meta["object"]) == {
+        "object_catalog", "object_schema", "object_type", "object_name", "object_key",
+    }
