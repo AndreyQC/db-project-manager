@@ -265,6 +265,10 @@ GET_FUNCTIONS = """
       AND n.nspname NOT LIKE 'pg_%'
       AND n.nspname != 'information_schema'
       AND p.prokind = 'f'
+      AND NOT EXISTS (
+          SELECT 1 FROM pg_depend d
+          WHERE d.objid = p.oid AND d.deptype = 'e'
+      )
     ORDER BY n.nspname, p.proname
 """
 
@@ -294,6 +298,10 @@ GET_PROCEDURES = """
       AND n.nspname NOT LIKE 'pg_%'
       AND n.nspname != 'information_schema'
       AND p.prokind = 'p'
+      AND NOT EXISTS (
+          SELECT 1 FROM pg_depend d
+          WHERE d.objid = p.oid AND d.deptype = 'e'
+      )
     ORDER BY n.nspname, p.proname
 """
 

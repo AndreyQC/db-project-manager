@@ -98,3 +98,17 @@ def test_database_settings_query_uses_valid_catalog_columns() -> None:
 def test_database_settings_query_filters_role_level() -> None:
     """Phase 5 vision Q5: only db-level settings (setrole = 0) are carried over."""
     assert "s.setrole = 0" in queries.GET_DATABASE_SETTINGS
+
+
+def test_function_query_excludes_extension_owned() -> None:
+    """Regression: functions owned by an extension (deptype='e' in pg_depend)
+    must be filtered out — they are created via CREATE EXTENSION, and emitting
+    them as user objects causes 'cannot change name of input parameter' on
+    deploy (the extension's own definition has different arg names).
+    """
+    assert "deptype = 'e'" in queries.GET_FUNCTIONS
+
+
+def test_procedure_query_excludes_extension_owned() -> None:
+    """Same extension-ownership filter as for functions (see above)."""
+    assert "deptype = 'e'" in queries.GET_PROCEDURES
