@@ -322,3 +322,21 @@
 - **Урок:** идентификаторы в SQL без схемы (bare `nextval('seq')`) должны
   резолвиться через контекст схемы **текущего объекта**, а не через глобальный
   поиск. Всегда проверяй cross-schema сценарии.
+
+### 34. Reverse-engineer обязан выдавать fully-qualified имена в DEFAULT
+- **Симптом:** deploy validate падал с `UndefinedTable: relation "audit_log_id_seq"
+  does not exist` — последовательность в схеме `qr`, а `nextval('audit_log_id_seq')`
+  в DEFAULT таблицы `qr.audit_log` без схемы.
+- **Корневая причина:** `information_schema.columns.column_default` содержит
+  ровно то, что задал разработчик при `CREATE TABLE` — **без схемы**, если не указано.
+  Reverse-engineer вытягивал значение как есть, и при deploy на временной БД
+  с другим `search_path` PostgreSQL не находил последовательность.
+- **Фикс на корне:** при reverse-engineer в `_build_table` helper
+  `_qualify_default_schema(default, schema)` подставляет схему таблицы в bare
+  sequence refs в `nextval(...)`/`currval(...)`. Уже-qualified имена остаются
+  как есть. Несeq defaults (`now()`, литералы) не трогаются.
+- **Урок:** любой инструмент, генерирующий DDL из каталога, должен **нормализовать
+  идентификаторы к fully-qualified виду** на этапе reverse-engineer, а не
+  рассчитывать, что `search_path` на целевой БД совпадёт с исходной. Bare имена —
+  мина, которая взрывается на любой БД с отличным `search_path` (включая
+  временную БД из `template0`, где `search_path` дефолтный).
