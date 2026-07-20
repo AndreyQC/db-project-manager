@@ -35,6 +35,32 @@ def _validate_db_name(name: str) -> str:
     return name
 
 
+# Functions whose string argument is a sequence name; we qualify it with the
+# table's schema when it is bare (no schema prefix). Matches 'seq' inside
+# nextval('seq'::regclass), currval('seq'), etc.
+_SEQ_REF_RE = re.compile(
+    r"(?P<prefix>(?:nextval|currval)\s*\(\s*')"
+    r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)"
+    r"(?P<suffix>'\s*::\s*regclass\s*\)|'\s*\))"
+)
+
+
+def _qualify_default_schema(default: Any, schema: str) -> Any:
+    """Add the table's schema prefix to bare sequence names in a column default.
+
+    ``nextval('audit_log_id_seq'::regclass)`` in a table of schema ``qr`` becomes
+    ``nextval('qr.audit_log_id_seq'::regclass)`` so the generated DDL is
+    self-contained and deploy order is robust regardless of search_path.
+
+    Already-qualified names (``schema.seq``) are left as-is.
+    """
+    if not default or not isinstance(default, str) or not schema:
+        return default
+    return _SEQ_REF_RE.sub(
+        lambda m: f"{m['prefix']}{schema}.{m['name']}{m['suffix']}", default
+    )
+
+
 class PGDatabaseAdapter(DatabaseAdapter):
     """Adapter for PostgreSQL (and Greenplum) catalogs."""
 
@@ -312,7 +338,7 @@ class PGDatabaseAdapter(DatabaseAdapter):
                 "name": col[0],
                 "type": col[1],
                 "nullable": col[2] == "YES",
-                "default": col[3],
+                "default": _qualify_default_schema(col[3], schema),
                 "character_maximum_length": col[4],
                 "numeric_precision": col[5],
                 "numeric_scale": col[6],

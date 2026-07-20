@@ -11,7 +11,10 @@ from typing import Any
 import pytest
 
 from db_project_manager.infrastructure.database.postgres import queries as q
-from db_project_manager.infrastructure.database.postgres.adapter import PGDatabaseAdapter
+from db_project_manager.infrastructure.database.postgres.adapter import (
+    PGDatabaseAdapter,
+    _qualify_default_schema,
+)
 
 _EXTENSIONS_ROWS = [
     ("citext", "public", "1.6", "case-insensitive text"),
@@ -105,3 +108,34 @@ def test_structure_contains_extensions_and_database(monkeypatch: pytest.MonkeyPa
         "properties": {"encoding": "UTF8", "lc_collate": "C", "lc_ctype": "C"},
         "settings": [{"name": "work_mem", "value": "64MB"}],
     }
+
+
+# --- Phase 5 hotfix: qualify bare sequence names in column defaults ---
+
+
+@pytest.mark.parametrize(
+    "default,schema,expected",
+    [
+        ("nextval('audit_log_id_seq'::regclass)", "qr",
+         "nextval('qr.audit_log_id_seq'::regclass)"),
+        ("nextval('audit_log_id_seq')", "qr", "nextval('qr.audit_log_id_seq')"),
+        ("currval('audit_log_id_seq')", "qr", "currval('qr.audit_log_id_seq')"),
+        # Already qualified — left as-is.
+        ("nextval('qr.audit_log_id_seq'::regclass)", "qr",
+         "nextval('qr.audit_log_id_seq'::regclass)"),
+        # Non-sequence defaults — left as-is.
+        ("now()", "qr", "now()"),
+        ("'literal'::text", "qr", "'literal'::text"),
+        (None, "qr", None),
+        ("", "qr", ""),
+    ],
+)
+def test_qualify_default_schema(default: str, schema: str, expected: str) -> None:
+    assert _qualify_default_schema(default, schema) == expected
+
+
+def test_qualify_default_schema_in_different_schema() -> None:
+    """A sequence referenced from a table in 'public' should get 'public.' prefix."""
+    assert _qualify_default_schema(
+        "nextval('my_seq'::regclass)", "public"
+    ) == "nextval('public.my_seq'::regclass)"
