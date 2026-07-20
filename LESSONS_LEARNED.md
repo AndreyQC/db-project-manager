@@ -379,3 +379,35 @@
   шаблона. Bare refs в телах функций/представлений — отдельная задача
   (требует парсинга SQL, а не строковой замены), но они должны быть документированы
   как ограничение MVP.
+
+### 36. Qualify-refs пост-процессор: regex-vs-AST tradeoff и значение протокола
+- **Симптом:** функция `sp_company_products_mine` вызывала `sp_company_id_for_user`
+  без схемы в теле — deploy падал с `UndefinedFunction` на временной БД с дефолтным
+  `search_path`.
+- **Подход:** пост-процессор `QualifyRefsService` после reverse-engineer:
+  1. Строит индекс объектов из графа: `{bare_name → schema}` (только уникальные;
+     ambiguous → skip).
+  2. Для каждого `.sql` файла regex-матчит function-call (`name(`) и
+     `FROM/JOIN name` на raw text.
+  3. Префиксирует схемой bare refs, skip'ает reserved keywords, self-refs,
+     already-qualified.
+  4. Помечает изменения в autodoc (`qualify_report: [...]`).
+  5. Пишет `_qualify_report.md` в корень codebase.
+- **Tradeoff regex vs AST:** regex проще, без зависимостей, достаточно для 95%
+  случаев (function calls, plain FROM/JOIN). Не покрывает: CTE с тем же именем,
+  dynamic SQL, идентификаторы в строковых литералах, `$function$` тела (regex
+  может квалифицировать внутри литерала — но lookbehind помогает). AST (sqlglot)
+  точнее, но требует парсинга PG-диалекта, зависимость + сложность. Для MVP
+  выбран regex; AST — в BACKLOG если false positives появятся в проде.
+- **Протокол — критичен:** `_qualify_report.md` даёт аудит: что изменено, что
+  пропущено (ambiguous имена с конкретными схемами), сколько reserved-keyword
+  skip'ов. Без протокола пользователь не знает, доверять ли авто-квалификации.
+- **Урок #1:** пост-процессор, меняющий SQL, должен быть **idempotent** и
+  **transparent** — протокол + autodoc-markers позволяют понять, что произошло,
+  и безопасно повторять.
+- **Урок #2:** ambiguous имена (одинаковые в разных схемах) — это **корректное
+  поведение skip'а**, не баг. Инструмент не может угадать схему; пусть разработчик
+  решит руками. В протоколе ambiguous показаны со всеми схемами и файлами.
+- **Урок #3:** reserved keywords в `keywords.yaml` содержат YAML-bareword-ловушки
+  (`YES`/`NO`/`ON`/`OFF` парсятся в `True`/`False`). При загрузке всегда фильтруй
+  `isinstance(k, str)` — иначе сравнение токенов упадёт на `bool.lower()`.

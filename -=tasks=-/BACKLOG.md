@@ -106,6 +106,24 @@
 
 ---
 
+## P3+. AST-based qualify через sqlglot (follow-up к Phase 6)
+
+**Контекст:** Phase 6 `QualifyRefsService` использует regex для поиска bare refs.
+Покрывает function-call и FROM/JOIN, но не CTE с тем же именем, dynamic SQL,
+идентификаторы в строковых литералах и `$function$` телах.
+
+**Триггер к реализации:** появление false positives/negatives в проде (deploy
+падает на функции, где regex квалифицировал что-то лишнее или пропустил нужное).
+
+**Реализация:** парсинг через `sqlglot` (Python, поддерживает PG диалект),
+AST-traversal для точного определения Table/Func nodes, квалификация только
+реальных идентификаторов объектов.
+
+**Не блокирует текущую работу** — regex-MVP + `_qualify_report.md` достаточно
+для большинства схем. Известное ограничение зафиксировано в `LESSONS_LEARNED.md` §36.
+
+---
+
 ## P3+. Пин версий extensions
 
 **Контекст:** Phase 5 vision Q3: версия extension **не** пишется в `VERSION '<ver>'`
