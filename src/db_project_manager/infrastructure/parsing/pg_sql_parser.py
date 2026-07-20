@@ -155,12 +155,19 @@ class PgSqlParser(ObjectGraphParser):
             object_key = str(obj_meta.get("object_key", ""))
             catalog = str(obj_meta.get("object_catalog", _FALLBACK_CATALOG))
             build = bool(autodoc.get("project", {}).get("build", True))
+            # Phase 4: signature is embedded in the autodoc for overloaded
+            # functions/procedures. object_key already carries it as a
+            # /signature/<hash> suffix (written by SQLGenerator), so the parser
+            # does not rebuild the key — it only restores the signature field
+            # for downstream consumers (Vertex serialization, future edge work).
+            signature = str(obj_meta.get("object_signature", "") or "")
             vertex = Vertex(
                 object_key=object_key,
                 object_catalog=catalog,
                 object_schema=schema,
                 object_type=object_type,
                 object_name=name,
+                object_signature=signature,
                 object_source_file=_relative_posix(path, root),
                 build=build,
             )

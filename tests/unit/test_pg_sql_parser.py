@@ -89,6 +89,72 @@ def test_supported_object_types() -> None:
     assert "sequence" in types
 
 
+# --- Phase 4: overloaded functions/procedures ---
+
+
+# Two overloads of sp_x: distinct object_keys via /signature/<hash> suffix.
+SP_X_INT = "pg_database/demo/schema/app/type/function/name/sp_x/signature/19f12f3f"
+SP_X_TEXT = "pg_database/demo/schema/app/type/function/name/sp_x/signature/982d9e3e"
+SP_Y = "pg_database/demo/schema/app/type/function/name/sp_y/signature/75666699"
+
+
+def test_overloaded_functions_produce_distinct_vertices(graph) -> None:
+    """The core Phase 4 fix: two functions named sp_x with different signatures
+    must coexist in the graph instead of one silently overwriting the other
+    (the old bug — both shared the same object_key)."""
+    assert SP_X_INT in graph.vertices
+    assert SP_X_TEXT in graph.vertices
+    assert SP_X_INT != SP_X_TEXT
+
+
+def test_overloaded_functions_share_object_name(graph) -> None:
+    """Both overloads have the same object_name 'sp_x' — they differ only by signature."""
+    v_int = graph.get_vertex(SP_X_INT)
+    v_text = graph.get_vertex(SP_X_TEXT)
+    assert v_int.object_name == "sp_x"
+    assert v_text.object_name == "sp_x"
+    assert v_int.object_signature == "19f12f3f"
+    assert v_text.object_signature == "982d9e3e"
+
+
+def test_singleton_function_vertex(graph) -> None:
+    """A singleton function sp_y(uuid) — no overload siblings — is parsed normally
+    and gets its /signature/<hash> key (deterministic identity)."""
+    v = graph.get_vertex(SP_Y)
+    assert v is not None
+    assert v.object_name == "sp_y"
+    assert v.object_signature == "75666699"
+    assert v.object_type == "function"
+
+
+def test_function_source_file_uses_short_or_sha_name(graph) -> None:
+    """object_source_file matches the actual file name on disk: overloaded files
+    carry the __<hash> suffix, singleton files keep the short name."""
+    v_int = graph.get_vertex(SP_X_INT)
+    v_text = graph.get_vertex(SP_X_TEXT)
+    v_y = graph.get_vertex(SP_Y)
+    assert v_int.object_source_file.endswith("app/functions/function sp_x__19f12f3f.sql")
+    assert v_text.object_source_file.endswith("app/functions/function sp_x__982d9e3e.sql")
+    assert v_y.object_source_file.endswith("app/functions/function sp_y.sql")
+
+
+def test_overloads_survive_filter_build_true(graph) -> None:
+    """Both overloads have build=true and must survive deploy filtering."""
+    filtered = graph.filter_build_true()
+    assert SP_X_INT in filtered.vertices
+    assert SP_X_TEXT in filtered.vertices
+    assert SP_Y in filtered.vertices
+
+
+def test_overloads_use_posix_relative_source_path(graph) -> None:
+    """Regression for LESSONS_LEARNED §20: source paths are forward-slash
+    everywhere (no backslashes on Windows)."""
+    for key in (SP_X_INT, SP_X_TEXT, SP_Y):
+        path = graph.get_vertex(key).object_source_file
+        assert "\\" not in path
+        assert "/" in path
+
+
 # --- edges: foreign keys (REFERENCES_BY) ---
 
 
