@@ -36,7 +36,11 @@ from db_project_manager.infrastructure.database.registry import get_adapter
 
 #: Object types considered early DDL: structural, downstream of any failure
 #: here makes further deploy meaningless -> fail-fast + cleanup.
-EARLY_DDL_TYPES = {"schema", "sequence", "table", "external_table", "index", "constraint"}
+EARLY_DDL_TYPES = {
+    "schema", "sequence", "table", "external_table", "index", "constraint",
+    # Phase 5: extensions and db settings must succeed or the rest is meaningless.
+    "extension", "database_setting",
+}
 
 #: Late object types: independent enough to log per-object errors and continue.
 LATE_OBJECT_TYPES = {"view", "materialized_view", "function", "procedure", "trigger"}
@@ -144,13 +148,28 @@ class DeployValidateService:
         deploy_vertices = self.graph_service.deploy_order(codebase_dir, build_only=True)
         total = len(deploy_vertices)
 
+        # Extract db-level CREATE DATABASE properties from the database_setting
+        # vertex (if present). These are carried in vertex.extra["db_properties"]
+        # from the autodoc header written by SQLGenerator (P5.S03/S05).
+        db_props: dict[str, str] = {}
+        for v in deploy_vertices:
+            if v.object_type == "database_setting" and v.extra:
+                db_props = v.extra.get("db_properties") or {}
+                break
+
         # 4. Name + create temp DB.
         prefix_value = sanitize_prefix(prefix or codebase_dir.name)
         timestamp = adapter.get_server_timestamp_utc()
         db_name = f"{prefix_value}_{timestamp}"
 
         self._emit(progress, f"Создание временной базы данных: {db_name}", 0, total)
-        adapter.create_database(db_name)
+        adapter.create_database(
+            db_name,
+            encoding=db_props.get("encoding"),
+            lc_collate=db_props.get("lc_collate"),
+            lc_ctype=db_props.get("lc_ctype"),
+            template=db_props.get("template"),
+        )
 
         # Reconnect to the freshly created DB by overriding the cfg's database.
         result = DeployResult(success=True, db_name=db_name, objects_total=total)
@@ -163,7 +182,7 @@ class DeployValidateService:
             for i, vertex in enumerate(deploy_vertices, start=1):
                 self._emit(progress, f"[{i}/{total}] {vertex.object_type} {vertex.object_name}", i, total)
                 try:
-                    self._deploy_object(adapter, codebase_dir, vertex)
+                    self._deploy_object(adapter, codebase_dir, vertex, db_name)
                     result.objects_done = i
                 except DatabaseError as e:
                     obj_err = ObjectError(
@@ -217,7 +236,11 @@ class DeployValidateService:
     # --- helpers ---
 
     def _deploy_object(
-        self, adapter: DatabaseAdapter, codebase_dir: Path, vertex: Vertex
+        self,
+        adapter: DatabaseAdapter,
+        codebase_dir: Path,
+        vertex: Vertex,
+        target_db_name: str,
     ) -> None:
         """Read the object's SQL file and execute it."""
         source = codebase_dir / vertex.object_source_file
@@ -226,6 +249,13 @@ class DeployValidateService:
         script = source.read_text(encoding="utf-8-sig")
         # Strip the autodoc header so only SQL reaches the server.
         script = self._strip_autodoc(script)
+        # Phase 5: for database_setting, replace the original db name in
+        # ALTER DATABASE ... SET statements with the actual target DB name.
+        # The original name is stored in object_catalog (written by SQLGenerator).
+        if vertex.object_type == "database_setting" and vertex.object_catalog:
+            script = script.replace(
+                f'"{vertex.object_catalog}"', f'"{target_db_name}"'
+            )
         adapter.execute_script(script)
 
     @staticmethod

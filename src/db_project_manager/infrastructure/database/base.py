@@ -55,8 +55,20 @@ class DatabaseAdapter(ABC):
         """
 
     @abstractmethod
-    def create_database(self, name: str) -> None:
-        """Create a fresh database. Name must be validated by the caller."""
+    def create_database(
+        self,
+        name: str,
+        *,
+        encoding: str | None = None,
+        lc_collate: str | None = None,
+        lc_ctype: str | None = None,
+        template: str | None = None,
+    ) -> None:
+        """Create a fresh database. Name must be validated by the caller.
+
+        Optional arguments replicate the source database properties so that a
+        validation deploy reproduces the source environment accurately.
+        """
 
     @abstractmethod
     def drop_database(self, name: str) -> None:

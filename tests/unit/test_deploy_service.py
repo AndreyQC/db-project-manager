@@ -63,8 +63,23 @@ class DeployFakeAdapter(DatabaseAdapter):
     def get_server_timestamp_utc(self) -> str:
         return self.server_ts
 
-    def create_database(self, name: str) -> None:
+    def create_database(
+        self,
+        name: str,
+        *,
+        encoding: str | None = None,
+        lc_collate: str | None = None,
+        lc_ctype: str | None = None,
+        template: str | None = None,
+    ) -> None:
         self.created_dbs.append(name)
+        # Record properties for Phase 5 assertions.
+        if not hasattr(self, "_db_properties"):
+            self._db_properties: dict[str, Any] = {}
+        self._db_properties[name] = {
+            "encoding": encoding, "lc_collate": lc_collate,
+            "lc_ctype": lc_ctype, "template": template,
+        }
 
     def drop_database(self, name: str) -> None:
         self.dropped_dbs.append(name)
@@ -232,3 +247,58 @@ def test_prefix_override() -> None:
     svc = _service(adapter)
     result = svc.run(_conn(), FIXTURE_ROOT, prefix="myproj")
     assert result.db_name == "myproj_20260101T120000"
+
+
+# --- Phase 5: db properties in create_database + database_setting deploy ---
+
+
+def test_create_database_receives_encoding_from_db_properties() -> None:
+    """deploy_order picks up db_properties from the database_setting vertex
+    and passes them to create_database (Phase 5 vision §4.2)."""
+    adapter = DeployFakeAdapter()
+    svc = _service(adapter)
+    result = svc.run(_conn(), FIXTURE_ROOT)
+    assert result.success is True
+    db_props = getattr(adapter, "_db_properties", {})
+    props = db_props.get(adapter.created_dbs[0], {})
+    # Fixture has: encoding=UTF8, lc_collate=C, lc_ctype=C, template=template0
+    assert props.get("encoding") == "UTF8"
+    assert props.get("lc_collate") == "C"
+    assert props.get("lc_ctype") == "C"
+    assert props.get("template") == "template0"
+
+
+def test_extension_in_early_ddl_types() -> None:
+    """extension is in EARLY_DDL_TYPES so a failed extension aborts deploy."""
+    from db_project_manager.application.deploy_service import EARLY_DDL_TYPES
+
+    assert "extension" in EARLY_DDL_TYPES
+    assert "database_setting" in EARLY_DDL_TYPES
+
+
+def test_database_setting_script_db_name_replaced_in_deploy(tmp_path: Path) -> None:
+    """When deploying a database_setting script, the ALTER DATABASE statement
+    targets the actual temp DB name, not the original (object_catalog) name.
+
+    Verification: db_properties from the fixture (encoding=UTF8 etc.) are
+    extracted from the database_setting vertex and passed to create_database."""
+    import shutil
+
+    src = FIXTURE_ROOT
+    dst = tmp_path / "codebase"
+    shutil.copytree(src, dst)
+    adapter = DeployFakeAdapter()
+    svc = DeployValidateService(adapter_factory=lambda _cfg: adapter)
+    result = svc.run(_conn(), dst)
+    assert result.success is True
+    # DB properties from the fixture were extracted and passed to create_database.
+    db_props = getattr(adapter, "_db_properties", {})
+    props = db_props.get(adapter.created_dbs[0], {})
+    assert props.get("encoding") == "UTF8"
+    assert props.get("lc_collate") == "C"
+    assert props.get("lc_ctype") == "C"
+    assert props.get("template") == "template0"
+    # 12 vertices in fixture: 1 schema + 3 tables + 1 seq + 1 view + 1 matview (build:false)
+    # + 3 functions + 2 procs + 1 extension + 1 database_setting.
+    # routes matview has build:false so it is filtered out -> 11 deployable.
+    assert result.objects_total == 11

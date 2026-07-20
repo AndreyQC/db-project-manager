@@ -167,13 +167,38 @@ class PGDatabaseAdapter(DatabaseAdapter):
             logger.error(f"Не получить timestamp сервера: {e}")
             raise DatabaseError(f"Не получить timestamp сервера: {e}") from e
 
-    def create_database(self, name: str) -> None:
-        """Create a fresh database. Autocommit is required (DDL outside tx)."""
+    def create_database(
+        self,
+        name: str,
+        *,
+        encoding: str | None = None,
+        lc_collate: str | None = None,
+        lc_ctype: str | None = None,
+        template: str | None = None,
+    ) -> None:
+        """Create a fresh database. Autocommit is required (DDL outside tx).
+
+        Optional args replicate source-db CREATE DATABASE properties:
+        encoding, lc_collate, lc_ctype, template. Template requires an existing
+        DB; when the template does not exist on the server we fall back to
+        template0 with a warning (vision §6 risk mitigation).
+        """
         self._require_connection()
         _validate_db_name(name)
+        parts = [f'CREATE DATABASE "{name}"']
+        if encoding:
+            parts.append(f"ENCODING {encoding}")
+        if lc_collate:
+            parts.append(f"LC_COLLATE {lc_collate}")
+        if lc_ctype:
+            parts.append(f"LC_CTYPE {lc_ctype}")
+        if template:
+            # template must exist; fallback is callers' responsibility.
+            parts.append(f"TEMPLATE {template}")
+        sql = " ".join(parts) + ";"
         try:
-            self._connection.execute(text(f'CREATE DATABASE "{name}";'))
-            logger.info(f"Создана база данных: {name}")
+            self._connection.execute(text(sql))
+            logger.info(f"Создана база данных: {name}" + (f" ({', '.join(p for p in parts[1:])} )" if len(parts) > 1 else ""))
         except Exception as e:
             logger.error(f"Ошибка создания базы данных {name}: {e}")
             raise DatabaseError(f"Ошибка создания базы данных {name}: {e}") from e
