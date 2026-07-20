@@ -68,47 +68,6 @@ LINE 13:     "public_email" citext NULL,
 
 ---
 
-## P2. Refinement: object_key для singleton-функций без хеша (обращение Phase 4 решения)
-
-**Контекст:** в Phase 4 (S02/S03) `object_key` для **любой** function/procedure с аргументами
-получает суффикс `/signature/<hash>` — независимо от наличия перегрузок. Это дизайн-инварианта
-Option A «детерминированности ключа» (зафиксирована в `Phase_4_vision_final.md` §4.2).
-
-**Проблема:** перегрузки в реальных БД **редки**. Из-за этого во всех ключах функций
-появляется шум `/signature/75666699` — читаемость `.dbm_graph/vertices.json` и логов
-ухудшается без реальной пользы для большинства объектов.
-
-**Предлагаемое изменение (по решению пользователя):** вернуться к Option B —
-суффикс `/signature/<hash>` в `object_key` только когда есть **реальная коллизия**
-(имя shared между >1 объектом в той же schema/type). Singleton-функции возвращаются
-к ключу `pg_database/<db>/schema/<s>/type/function/name/<name>` (как до Phase 4).
-
-**Trade-off, который надо явно зафиксировать в vision Phase 5/рефакторинга:**
-
-| | Option A (текущий) | Option B (предлагаемый) |
-|---|---|---|
-| Ключ — функция от соседей? | нет (детерминирован) | да (зависит от наличия перегрузок) |
-| Шум для singleton'ов | есть | нет |
-| Одинаков ли ключ для того же объекта на разных БД? | да | может отличаться (на одной БД перегрузка есть, на другой нет) |
-
-Для `deploy validate` и `graph build` это безопасно (граф всегда перестраивается из
-файлов); для возможного будущего «переноса графа между БД» — divergence. Решение
-пользователя: предпочтение читаемости, т.к. перенос графа не планируется.
-
-**Затронутые файлы:**
-- `src/db_project_manager/infrastructure/sql/autodoc.py` — `_build_object_key` должен знать о соседях (новый параметр `overloaded: bool`).
-- `src/db_project_manager/infrastructure/sql/sql_generator.py` — `_render_kind` уже знает о группах; нужно прокинуть `overloaded`-флаг в `build_metadata`.
-- `src/db_project_manager/infrastructure/parsing/pg_sql_parser.py` — без изменений (берёт ключ из автодока как есть).
-- Тесты: `tests/unit/test_autodoc.py`, `tests/unit/test_sql_generator.py` — обратить assertion «key has signature» на «singleton key has NO signature».
-
-**Кандидат на отдельный refinement-коммит или часть Phase 5.** Объём небольшой, но
-обращает зафиксированное в vision Phase 4 решение — нужна явная документация
-(обновить `Phase_4_vision_final.md` §4.2 или новый refinement-документ).
-
-**Документ-источник:** `-=CHECKPOINTS=-/20260720_001_checkpoint.md` (Design decision).
-
----
-
 ## P2. Разрешение перегруженных вызовов в edge detection
 
 **Контекст:** Phase 4 зафиксировала MVP-ограничение — `_build_names_index`
