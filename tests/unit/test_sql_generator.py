@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from db_project_manager.infrastructure.sql.sql_generator import SQLGenerator
+from db_project_manager.infrastructure.sql.sql_generator import SQLGenerator, _NO_NUMERIC_MOD
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
 
@@ -126,11 +126,113 @@ def test_autodoc_disabled(structure, tmp_path) -> None:
 
 
 # -------------------------------------------------------------------------- #
-# type_mod helpers (tested in isolation via a minimal generator instance)
+# Phase 4: overloaded functions/procedures — short names + SHA suffix
 # -------------------------------------------------------------------------- #
 
-import pytest
-from db_project_manager.infrastructure.sql.sql_generator import SQLGenerator, _NO_NUMERIC_MOD
+
+def test_singleton_function_gets_short_name(structure, tmp_path) -> None:
+    """A function whose name has no overloads must use the short form."""
+    from db_project_manager.domain.signature import signature_hash
+    gen = SQLGenerator()
+    out = gen.generate_scripts(structure, tmp_path / "out")
+    functions_dir = out / "app" / "functions"
+    # sp_y has only one variant -> short name, no suffix.
+    assert (functions_dir / "function sp_y.sql").is_file()
+    # No sp_y file with a __ suffix exists.
+    assert not list(functions_dir.glob("function sp_y__*.sql"))
+    # Sanity: the expected hash is computed from the fixture's argument_types.
+    _ = signature_hash("uuid")  # imported for clarity; not asserted here
+
+
+def test_overloaded_functions_get_distinct_sha_suffixes(structure, tmp_path) -> None:
+    """Two overloads of sp_x must each get a unique __<hash>.sql file."""
+    from db_project_manager.domain.signature import signature_hash
+    gen = SQLGenerator()
+    out = gen.generate_scripts(structure, tmp_path / "out")
+    functions_dir = out / "app" / "functions"
+
+    hash_int = signature_hash("int4")
+    hash_text = signature_hash("text")
+    assert hash_int != hash_text  # sanity
+
+    expected_int = f"function sp_x__{hash_int}.sql"
+    expected_text = f"function sp_x__{hash_text}.sql"
+    assert (functions_dir / expected_int).is_file()
+    assert (functions_dir / expected_text).is_file()
+    # No short form for the overloaded name.
+    assert not (functions_dir / "function sp_x.sql").is_file()
+
+
+def test_overloaded_procedures_get_distinct_sha_suffixes(structure, tmp_path) -> None:
+    """Two overloads of sp_proc_x must each get a unique __<hash>.sql file."""
+    from db_project_manager.domain.signature import signature_hash
+    gen = SQLGenerator()
+    out = gen.generate_scripts(structure, tmp_path / "out")
+    procedures_dir = out / "app" / "procedures"
+
+    hash_int_text = signature_hash("int4, text")
+    hash_int = signature_hash("int4")
+    assert hash_int_text != hash_int  # sanity
+
+    assert (procedures_dir / f"procedure sp_proc_x__{hash_int_text}.sql").is_file()
+    assert (procedures_dir / f"procedure sp_proc_x__{hash_int}.sql").is_file()
+    assert not (procedures_dir / "procedure sp_proc_x.sql").is_file()
+
+
+def test_overload_file_contains_signature_in_autodoc(structure, tmp_path) -> None:
+    """The autodoc header of an overloaded function must carry:
+    - object_signature field with the hash value
+    - object_key ending with /signature/<hash>
+
+    The hash is 8 hex chars but may be all-digits (e.g. '75666699'), which
+    PyYAML quotes — we assert via ``in`` to stay robust to quoting.
+    """
+    from db_project_manager.domain.signature import signature_hash
+    gen = SQLGenerator()
+    out = gen.generate_scripts(structure, tmp_path / "out", object_catalog="mydb")
+    functions_dir = out / "app" / "functions"
+
+    hash_int = signature_hash("int4")
+    text = (functions_dir / f"function sp_x__{hash_int}.sql").read_text(encoding="utf-8")
+    assert "object_signature:" in text
+    assert hash_int in text
+    assert f"object_key: pg_database/mydb/schema/app/type/function/name/sp_x/signature/{hash_int}" in text
+
+
+def test_singleton_function_key_carries_signature_too(structure, tmp_path) -> None:
+    """object_key is a pure function of object identity (catalog/schema/type/name/
+    signature), independent of whether siblings overload the same name. A singleton
+    function WITH arguments gets /signature/<hash> in its key — same rule as
+    overloaded functions. This keeps the key deterministic across DBs.
+
+    The short FILE NAME (no __suffix) is governed separately by overload detection
+    in _render_kind; the KEY always reflects the signature when non-empty.
+
+    Note: PyYAML quotes the value (e.g. '75666699') because an unquoted 8-digit
+    number would parse as an int — so we use ``in`` for the value assertion
+    rather than an exact substring.
+    """
+    from db_project_manager.domain.signature import signature_hash
+    gen = SQLGenerator()
+    out = gen.generate_scripts(structure, tmp_path / "out", object_catalog="mydb")
+    text = (out / "app" / "functions" / "function sp_y.sql").read_text(encoding="utf-8")
+    hash_uuid = signature_hash("uuid")
+    assert f"/signature/{hash_uuid}" in text
+    assert hash_uuid in text  # appears in object_signature line (possibly quoted)
+
+
+def test_table_autodoc_unaffected_by_signature_support(structure, tmp_path) -> None:
+    """Regression: tables must not carry object_signature in their autodoc."""
+    gen = SQLGenerator()
+    out = gen.generate_scripts(structure, tmp_path / "out", object_catalog="mydb")
+    text = (out / "bookings" / "tables" / "table aircrafts.sql").read_text(encoding="utf-8")
+    assert "object_signature" not in text
+    assert "/signature/" not in text
+
+
+# -------------------------------------------------------------------------- #
+# type_mod helpers (tested in isolation via a minimal generator instance)
+# -------------------------------------------------------------------------- #
 
 
 def _type_mod_for(type_: str, np=None, ns=None, cml=None) -> str:

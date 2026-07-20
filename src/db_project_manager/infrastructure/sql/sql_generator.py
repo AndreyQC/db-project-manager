@@ -6,6 +6,11 @@ SQL files using Jinja2 templates. Output layout:
     <output>/<schema>/<type>s/<type> <name>.sql
 
 e.g. <output>/bookings/tables/table aircrafts.sql
+
+For functions/procedures the file name is kept short (``function sp_x.sql``)
+unless the same name is shared by multiple overloads — in that case each file
+gets a ``__<signature_hash>`` suffix built from the canonical argument types
+(``function sp_x__a1b2c3d4.sql``). See ``domain.signature`` for the hash format.
 """
 
 from __future__ import annotations
@@ -16,6 +21,7 @@ from typing import Any
 from jinja2 import Environment, FileSystemLoader
 from loguru import logger
 
+from db_project_manager.domain.signature import signature_hash
 from db_project_manager.infrastructure.sql.autodoc import ensure_header
 
 # Types that do NOT accept (numeric_precision, numeric_scale) modifiers in DDL.
@@ -193,18 +199,49 @@ class SQLGenerator:
         kind_dir = schema_dir / kind
         kind_dir.mkdir(parents=True, exist_ok=True)
         schema_name = schema_info.get("name")
-        for item in items:
-            ctx, file_name = ctx_builder(item)
-            self._render_one(
-                f"{object_type}.sql.j2",
-                ctx,
-                kind_dir,
-                file_name,
-                object_catalog=object_catalog or "",
-                object_schema=item.get("schema", schema_name),
-                object_type=object_type,
-                object_name=item.get("name", ""),
-            )
+
+        # First pass: each ctx_builder returns (ctx, base_name, signature).
+        # base_name is the short form (no signature); signature is the canonical
+        # hash for functions/procedures, "" for everything else.
+        prepared = [(*ctx_builder(item), item) for item in items]
+
+        # Group by base_name to detect overloaded functions/procedures sharing
+        # the same name. When a group has more than one entry, each file gets a
+        # __<signature_hash> suffix to stay unique; singletons keep the short name.
+        groups: dict[str, list] = {}
+        for ctx, base_name, signature, item in prepared:
+            groups.setdefault(base_name, []).append((ctx, signature, item))
+
+        for base_name, group in groups.items():
+            overloaded = len(group) > 1
+            for ctx, signature, item in group:
+                file_name = self._with_suffix(base_name, signature) if overloaded else base_name
+                self._render_one(
+                    f"{object_type}.sql.j2",
+                    ctx,
+                    kind_dir,
+                    file_name,
+                    object_catalog=object_catalog or "",
+                    object_schema=item.get("schema", schema_name),
+                    object_type=object_type,
+                    object_name=item.get("name", ""),
+                    object_signature=signature,
+                )
+
+    @staticmethod
+    def _with_suffix(base_name: str, signature: str) -> str:
+        """Insert ``__<signature>`` before the ``.sql`` extension.
+
+        'function sp_x.sql' + 'a1b2c3d4' -> 'function sp_x__a1b2c3d4.sql'.
+        When signature is empty (should not happen for an overloaded group, but
+        kept defensive), the base name is returned unchanged.
+        """
+        if not signature:
+            return base_name
+        stem, dot, ext = base_name.rpartition(".")
+        if not dot:  # no extension — append anyway
+            return f"{base_name}__{signature}"
+        return f"{stem}__{signature}{dot}{ext}"
 
     def _render_one(
         self,
@@ -217,6 +254,7 @@ class SQLGenerator:
         object_schema: str | None,
         object_type: str,
         object_name: str,
+        object_signature: str = "",
     ) -> None:
         template = self.env.get_template(template_name)
         script = template.render(**context)
@@ -227,6 +265,7 @@ class SQLGenerator:
                 object_schema=object_schema,
                 object_type=object_type,
                 object_name=object_name,
+                object_signature=object_signature,
             )
         path = out_dir / file_name
         path.write_text(script, encoding="utf-8")
@@ -235,15 +274,15 @@ class SQLGenerator:
     # --- context builders (one per object kind) ---
 
     @staticmethod
-    def _sequence_ctx(seq: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    def _sequence_ctx(seq: dict[str, Any]) -> tuple[dict[str, Any], str, str]:
         ctx = {k: seq.get(k) for k in (
             "schema", "name", "comment", "owning_table", "owning_column", "data_type",
             "start", "increment", "maxvalue", "minvalue", "cache", "cycle", "last_value",
         )}
-        return ctx, f"sequence {seq['name']}.sql"
+        return ctx, f"sequence {seq['name']}.sql", ""
 
     @staticmethod
-    def _table_ctx(table: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    def _table_ctx(table: dict[str, Any]) -> tuple[dict[str, Any], str, str]:
         constraints = table.get("constraints") or []
         ctx = {
             "schema": table["schema"],
@@ -254,24 +293,28 @@ class SQLGenerator:
             "foreign_keys": [c for c in constraints if c.get("type") == "FOREIGN KEY"],
             "indexes": table.get("indexes") or [],
         }
-        return ctx, f"table {table['name']}.sql"
+        return ctx, f"table {table['name']}.sql", ""
 
     @staticmethod
-    def _view_ctx(view: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    def _view_ctx(view: dict[str, Any]) -> tuple[dict[str, Any], str, str]:
         ctx = {k: view.get(k) for k in ("schema", "name", "comment", "definition", "columns")}
-        return ctx, f"view {view['name']}.sql"
+        return ctx, f"view {view['name']}.sql", ""
 
     @staticmethod
-    def _matview_ctx(mv: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    def _matview_ctx(mv: dict[str, Any]) -> tuple[dict[str, Any], str, str]:
         ctx = {k: mv.get(k) for k in ("schema", "name", "tablespace", "data_status", "comment", "definition", "columns")}
-        return ctx, f"materialized_view {mv['name']}.sql"
+        return ctx, f"materialized_view {mv['name']}.sql", ""
 
     @staticmethod
-    def _function_ctx(fn: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    def _function_ctx(fn: dict[str, Any]) -> tuple[dict[str, Any], str, str]:
+        signature = signature_hash(fn.get("argument_types", ""))
         ctx = {k: fn.get(k) for k in ("schema", "name", "argument_types", "definition", "comment")}
-        return ctx, f"function {fn['name']}({fn.get('argument_types', '')}).sql"
+        # base_name is the short form (no signature); _render_kind adds the
+        # __<hash> suffix when this name is shared by multiple overloads.
+        return ctx, f"function {fn['name']}.sql", signature
 
     @staticmethod
-    def _procedure_ctx(proc: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    def _procedure_ctx(proc: dict[str, Any]) -> tuple[dict[str, Any], str, str]:
+        signature = signature_hash(proc.get("argument_types", ""))
         ctx = {k: proc.get(k) for k in ("schema", "name", "argument_types", "definition", "comment")}
-        return ctx, f"procedure {proc['name']}({proc.get('argument_types', '')}).sql"
+        return ctx, f"procedure {proc['name']}.sql", signature

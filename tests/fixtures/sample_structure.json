@@ -138,6 +138,54 @@
       "functions": [],
       "procedures": [],
       "enums": []
+    },
+    {
+      "name": "app",
+      "comment": "Схема с перегруженными функциями (фикстура для Phase 4)",
+      "sequences": [],
+      "tables": [],
+      "views": [],
+      "materialized_views": [],
+      "functions": [
+        {
+          "schema": "app",
+          "name": "sp_x",
+          "argument_types": "int4",
+          "definition": "CREATE OR REPLACE FUNCTION app.sp_x(a int4) RETURNS int4 LANGUAGE sql AS $$ SELECT a $$",
+          "comment": null
+        },
+        {
+          "schema": "app",
+          "name": "sp_x",
+          "argument_types": "text",
+          "definition": "CREATE OR REPLACE FUNCTION app.sp_x(a text) RETURNS text LANGUAGE sql AS $$ SELECT a $$",
+          "comment": null
+        },
+        {
+          "schema": "app",
+          "name": "sp_y",
+          "argument_types": "uuid",
+          "definition": "CREATE OR REPLACE FUNCTION app.sp_y(id uuid) RETURNS boolean LANGUAGE sql AS $$ SELECT true $$",
+          "comment": "Одиночная функция (без перегрузки)"
+        }
+      ],
+      "procedures": [
+        {
+          "schema": "app",
+          "name": "sp_proc_x",
+          "argument_types": "int4, text",
+          "definition": "CREATE OR REPLACE PROCEDURE app.sp_proc_x(a int4, b text) LANGUAGE plpgsql AS $$ BEGIN NULL; END $$",
+          "comment": null
+        },
+        {
+          "schema": "app",
+          "name": "sp_proc_x",
+          "argument_types": "int4",
+          "definition": "CREATE OR REPLACE PROCEDURE app.sp_proc_x(a int4) LANGUAGE plpgsql AS $$ BEGIN NULL; END $$",
+          "comment": null
+        }
+      ],
+      "enums": []
     }
   ]
 }
