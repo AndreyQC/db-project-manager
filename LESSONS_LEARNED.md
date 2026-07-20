@@ -431,3 +431,25 @@
   «утекает» в пользовательский codebase и ломает deploy. Это особенно важно для
   rich extensions вроде `citext`, `uuid-ossp`, `pgcrypto`, которые регистрируют
   десятки функций. Фиксировать контракт тестом на присутствие фильтра в SQL.
+
+### 38. Function-call edges требуют отдельной ветки в `_scan_edges`
+- **Симптом:** функция `sp_service_task_list_graves` вызывала
+  `qr.sp_service_task_user_can_view_private_details(...)` внутри `CASE WHEN`,
+  но ребро `DEPENDS_ON` не создавалось — `_classify_at` не знал про вызовы функций.
+- **Причина:** `_classify_at` покрывал только FK / nextval / JOIN / DML / SELECT,
+  но не вызов функции в произвольной позиции (`CASE WHEN f(...)`, `WHERE f(...)`,
+  `SELECT f(...)`). После normalize скобки превращаются в пробелы, поэтому
+  проверка `next_token == "("` тоже не работала.
+- **Фикс:** в `_scan_edges` добавлена отдельная ветка — если matched-токен
+  резолвится в вершину типа `function`/`procedure`, создаётся ребро
+  `DEPENDS_ON` с `action="call"`. Для `FROM/JOIN function` сохраняем
+  `PROVIDE_DATA_TO` (table-function вызов, важен для порядка деплоя).
+- **Урок:** edge-detection по контексту (`SELECT`/`FROM`/`JOIN`/`nextval`) —
+  хорошо для таблиц/sequences, но функции вызываются в **любом** SQL-контексте.
+  Вместо угадывания контекста, определяй тип вызова по **типу destination**:
+  matched-name резолвится в `function`/`procedure` → это вызов, независимо от
+  окружения. Это надёжнее, чем парсить SQL на предмет "что это — SELECT или
+  CASE WHEN".
+- **Реальный эффект:** на codebase `qr_pamyat` граф вырос с 539 до 716 рёбер
+  (+177 function-call edges), появилась корректная топосортировка функций,
+  которые зависят от других функций.
