@@ -303,3 +303,22 @@
   на `template0`; без него validate ломается на любом сервере с отличным набором
   локалей. Документируй это ограничение в PREPAREENV.md если инструмент будет
   использоваться в environments с нестандартными локалями.
+
+### 33. Sequence nextval lookup требует схемы источника, а не bare name
+- **Симптом:** `audit_log` (схема `qr`) падала с `UndefinedTable: relation
+  "audit_log_id_seq" does not exist` при deploy — последовательность в схеме `qr`,
+  но `nextval('audit_log_id_seq')` без схемы.
+- **Корневая причина:** `_scan_edges` делал lookup токена `audit_log_id_seq` по
+  `names_index` — искал `audit_log_id_seq` и находил вершину, но topological sort
+  между таблицей и последовательностью в разных схемах (или с несогласованным
+  схемным префиксом в `nextval`) не создавал рёбер. Плюс disconnected vertices
+  сортировались по alpha, а не по type priority.
+- **Фикс (двойной):**
+  1. `_scan_edges`: при `SEQUENCE_NEXTVAL_IN`优先 использовать схему таблицы-
+    источника для lookup: `qr.audit_log_id_seq` → последовательность в схеме `qr`.
+  2. `sort_by_type_and_topology`: disconnected vertices (in-degree=0, out-degree=0)
+    получают topo_index += 1000, чтобы type priority доминировала (sequence=1
+    до table=2 даже без explicit edge).
+- **Урок:** идентификаторы в SQL без схемы (bare `nextval('seq')`) должны
+  резолвиться через контекст схемы **текущего объекта**, а не через глобальный
+  поиск. Всегда проверяй cross-schema сценарии.
