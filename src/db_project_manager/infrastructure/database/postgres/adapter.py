@@ -229,8 +229,20 @@ class PGDatabaseAdapter(DatabaseAdapter):
 
             schemas.append(schema_info)
 
-        logger.info(f"Структура получена: схем = {len(schemas)}")
-        return {"schemas": schemas, "reserved_keywords": get_reserved()}
+        extensions = self._get_extensions()
+        database = {
+            "properties": self._get_database_properties(),
+            "settings": self._get_database_settings(),
+        }
+
+        logger.info(f"Структура получена: схем = {len(schemas)}, extensions = {len(extensions)}")
+        return {
+            "schemas": schemas,
+            "reserved_keywords": get_reserved(),
+            # Phase 5: extensions and db-level settings are global, not per-schema.
+            "extensions": extensions,
+            "database": database,
+        }
 
     # --- helpers: low-level readers (kept close to the POC result shape) ---
 
@@ -422,6 +434,42 @@ class PGDatabaseAdapter(DatabaseAdapter):
         ]
         logger.info(f"Функций в '{schema}': {len(infos)}")
         return infos
+
+    # --- Phase 5: extensions and database settings (global, not per-schema) ---
+
+    def _get_extensions(self) -> list[dict[str, Any]]:
+        rows = self._exec(q.GET_EXTENSIONS)
+        infos = [
+            {"name": r[0], "schema": r[1], "version": r[2], "comment": r[3]}
+            for r in rows
+        ]
+        logger.info(f"Extensions найдено: {len(infos)}")
+        return infos
+
+    def _get_database_properties(self) -> dict[str, Any]:
+        """Behaviour-relevant properties of the current database (vision Q8)."""
+        rows = self._exec(q.GET_DATABASE_PROPERTIES)
+        if not rows:
+            logger.warning("pg_database не вернул свойств для текущей БД")
+            return {}
+        encoding, lc_collate, lc_ctype = rows[0]
+        return {"encoding": encoding, "lc_collate": lc_collate, "lc_ctype": lc_ctype}
+
+    def _get_database_settings(self) -> list[dict[str, Any]]:
+        """Explicitly set db-level parameters (setrole = 0 — vision Q5).
+
+        Each pg_db_role_setting.setconfig element is a "param=value" string.
+        """
+        rows = self._exec(q.GET_DATABASE_SETTINGS)
+        settings: list[dict[str, Any]] = []
+        for (setting,) in rows:
+            name, sep, value = str(setting).partition("=")
+            if not sep or not name:
+                logger.warning(f"Пропущен нераспознанный параметр БД: {setting!r}")
+                continue
+            settings.append({"name": name, "value": value})
+        logger.info(f"Параметров уровня БД: {len(settings)}")
+        return settings
 
     def _get_procedures(self, schema: str) -> list[dict[str, Any]]:
         rows = self._exec(q.GET_PROCEDURES, {"schema": schema})
