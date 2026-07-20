@@ -9,6 +9,7 @@ from db_project_manager.infrastructure.sql.autodoc import (
     ensure_header,
     extract_header,
     render_header,
+    update_header,
 )
 
 
@@ -224,3 +225,70 @@ def test_no_extra_keeps_header_unchanged() -> None:
     assert set(meta["object"]) == {
         "object_catalog", "object_schema", "object_type", "object_name", "object_key",
     }
+
+
+# --- update_header: mutate existing header in place (Phase 6) ---
+
+
+def test_update_header_adds_qualify_report() -> None:
+    """update_header mutates the parsed metadata and re-renders the YAML block,
+    preserving the SQL body and the comment wrapper."""
+    body = "SELECT 1;\n"
+    decorated = ensure_header(
+        body, object_catalog="db", object_schema="s", object_type="view", object_name="v"
+    )
+
+    def _add_qualify(metadata: dict) -> None:
+        metadata["qualify_report"] = ["sp_x", "users"]
+
+    updated = update_header(decorated, _add_qualify)
+    parsed = extract_header(updated)
+    assert parsed is not None
+    assert parsed["qualify_report"] == ["sp_x", "users"]
+    # Body preserved verbatim.
+    assert updated.rstrip().endswith("SELECT 1;")
+    # No duplicated markers.
+    assert updated.count(MARKER_OPEN) == 1
+    assert updated.count(MARKER_CLOSE) == 1
+
+
+def test_update_header_preserves_existing_fields() -> None:
+    """Existing object fields (object_type, object_name, ...) survive mutation."""
+    body = "CREATE TABLE s.t (id int);\n"
+    decorated = ensure_header(
+        body, object_catalog="db", object_schema="s", object_type="table", object_name="t"
+    )
+
+    def _noop(metadata: dict) -> None:
+        metadata["new_field"] = "value"
+
+    updated = update_header(decorated, _noop)
+    parsed = extract_header(updated)
+    assert parsed is not None
+    assert parsed["object"]["object_type"] == "table"
+    assert parsed["object"]["object_name"] == "t"
+    assert parsed["new_field"] == "value"
+
+
+def test_update_header_noop_without_header() -> None:
+    """No header → script returned unchanged."""
+    plain = "SELECT 1;\n"
+    assert update_header(plain, lambda m: m.update({"x": 1})) == plain
+
+
+def test_update_header_extends_existing_qualify_report() -> None:
+    """Running update_header twice appends rather than overwrites."""
+    body = "SELECT 1;\n"
+    decorated = ensure_header(
+        body, object_catalog="db", object_schema="s", object_type="view", object_name="v"
+    )
+    # First pass: add one ref.
+    decorated = update_header(decorated, lambda m: m.update({"qualify_report": ["a"]}))
+    # Second pass: append another.
+    decorated = update_header(
+        decorated,
+        lambda m: m.setdefault("qualify_report", []).append("b"),
+    )
+    parsed = extract_header(decorated)
+    assert parsed is not None
+    assert parsed["qualify_report"] == ["a", "b"]

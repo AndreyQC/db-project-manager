@@ -23,6 +23,7 @@ The block is optional; when absent, render_header() produces one to prepend.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 import yaml
@@ -159,3 +160,28 @@ def ensure_header(
         extra=extra,
     )
     return render_header(metadata) + script
+
+
+def update_header(script: str, mutator: Callable[[dict[str, Any]], None]) -> str:
+    """Apply *mutator* to the parsed autodoc metadata and re-render in place.
+
+    Unlike :func:`ensure_header`, this MUTATES an existing header — it parses the
+    YAML between the markers, lets *mutator* modify the dict in place, then writes
+    the new YAML back between the same markers, preserving the surrounding
+    comment block and the SQL body after it.
+
+    No-op when no header is present (or YAML is unparseable).
+
+    Used by the qualify-refs post-processor to record which bare identifiers
+    were qualified, without re-rendering the whole file.
+    """
+    if MARKER_OPEN not in script or MARKER_CLOSE not in script:
+        return script
+    metadata = extract_header(script)
+    if metadata is None:
+        return script
+    mutator(metadata)
+    new_yaml = yaml.safe_dump(metadata, allow_unicode=True, sort_keys=False)
+    open_idx = script.index(MARKER_OPEN) + len(MARKER_OPEN)
+    close_idx = script.index(MARKER_CLOSE)
+    return script[:open_idx] + new_yaml + script[close_idx:]
