@@ -43,6 +43,9 @@ SUPPORTED_TYPES: tuple[str, ...] = (
     "function",
     "procedure",
     "trigger",
+    # Phase 5: schema-less global objects.
+    "extension",
+    "database_setting",
 )
 
 #: Mapping from keyword after CREATE -> object_type. Order matters: longest
@@ -63,6 +66,9 @@ _CREATE_KEYWORD_TO_TYPE: tuple[tuple[tuple[str, ...], str], ...] = (
     (("procedure",), "procedure"),
     (("proc",), "procedure"),
     (("trigger",), "trigger"),
+    # Phase 5: schema-less global objects (autodoc path is primary; token path as fallback).
+    (("extension",), "extension"),
+    (("database", "setting"), "database_setting"),
 )
 
 #: Default catalog name used in object_key when autodoc is missing.
@@ -161,6 +167,11 @@ class PgSqlParser(ObjectGraphParser):
             # does not rebuild the key — it only restores the signature field
             # for downstream consumers (Vertex serialization, future edge work).
             signature = str(obj_meta.get("object_signature", "") or "")
+            # Phase 5: extra carries db_properties for database_setting
+            # (encoding/locale from CREATE DATABASE — needed by deploy P5.S07).
+            extra: dict[str, Any] = {}
+            if object_type == "database_setting" and "properties" in obj_meta:
+                extra["db_properties"] = obj_meta["properties"]
             vertex = Vertex(
                 object_key=object_key,
                 object_catalog=catalog,
@@ -170,6 +181,7 @@ class PgSqlParser(ObjectGraphParser):
                 object_signature=signature,
                 object_source_file=_relative_posix(path, root),
                 build=build,
+                **({"extra": extra} if extra else {}),
             )
             return vertex, words
 

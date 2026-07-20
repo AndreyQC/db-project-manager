@@ -237,3 +237,52 @@ def test_no_self_edges(graph) -> None:
 def test_edge_endpoints_resolve(graph) -> None:
     """All edges point to known vertices (no dangling references in fixture)."""
     assert graph.dangling_edges() == []
+
+
+# --- Phase 5: extensions and database_settings ---
+
+
+EXT_KEY = "pg_database/demo/type/extension/name/citext"
+DB_SET_KEY = "pg_database/demo/type/database_setting/name/database settings"
+
+
+def test_extension_vertex_schema_less(graph) -> None:
+    """extension is schema-less (object_schema=None); key has no schema/ segment."""
+    v = graph.get_vertex(EXT_KEY)
+    assert v is not None
+    assert v.object_schema is None
+    assert v.object_type == "extension"
+    assert v.object_name == "citext"
+    assert v.object_source_file.endswith("extensions/extension citext.sql")
+
+
+def test_database_setting_vertex_schema_less(graph) -> None:
+    """database_setting is schema-less; carries db_properties from autodoc."""
+    v = graph.get_vertex(DB_SET_KEY)
+    assert v is not None
+    assert v.object_schema is None
+    assert v.object_type == "database_setting"
+    assert v.extra is not None
+    assert v.extra.get("db_properties") == {
+        "encoding": "UTF8",
+        "lc_collate": "C",
+        "lc_ctype": "C",
+        "template": "template0",
+    }
+
+
+def test_extension_and_database_setting_supported_types() -> None:
+    types = PgSqlParser().supported_object_types()
+    assert "extension" in types
+    assert "database_setting" in types
+
+
+def test_extension_file_inside_skip_dirs_ignored(tmp_path) -> None:
+    """Files inside .dbm_graph/.git/etc. are skipped (shared with other types)."""
+    parser = PgSqlParser()
+    # Explicitly create .dbm_graph subdir (tmp_path may not auto-create nested dirs on Windows).
+    dbm = tmp_path / ".dbm_graph"
+    dbm.mkdir()
+    (dbm / "ext.sql").write_text("CREATE EXTENSION citext", encoding="utf-8")
+    result = parser.parse_directory(tmp_path)
+    assert "pg_database" not in result.vertices
