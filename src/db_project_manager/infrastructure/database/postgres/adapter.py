@@ -187,14 +187,16 @@ class PGDatabaseAdapter(DatabaseAdapter):
         _validate_db_name(name)
         parts = [f'CREATE DATABASE "{name}"']
         if encoding:
-            parts.append(f"ENCODING {encoding}")
+            # ENCODING accepts a number or a quoted string.
+            parts.append(f"ENCODING '{encoding}'")
         if lc_collate:
-            parts.append(f"LC_COLLATE {lc_collate}")
+            # Locale values with dots/spaces MUST be single-quoted.
+            parts.append(f"LC_COLLATE '{lc_collate}'")
         if lc_ctype:
-            parts.append(f"LC_CTYPE {lc_ctype}")
+            parts.append(f"LC_CTYPE '{lc_ctype}'")
         if template:
             # template must exist; fallback is callers' responsibility.
-            parts.append(f"TEMPLATE {template}")
+            parts.append(f"TEMPLATE \"{template}\"")
         sql = " ".join(parts) + ";"
         try:
             self._connection.execute(text(sql))
