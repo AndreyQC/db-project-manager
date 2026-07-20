@@ -340,3 +340,42 @@
   рассчитывать, что `search_path` на целевой БД совпадёт с исходной. Bare имена —
   мина, которая взрывается на любой БД с отличным `search_path` (включая
   временную БД из `template0`, где `search_path` дефолтный).
+
+### 35. Fully-qualified имена объектов — общий принцип для всего генерируемого DDL
+- **Принцип:** любой идентификатор объекта в сгенерированном SQL должен быть
+  вида `"<schema>"."<name>"` (для scheme-scoped объектов) или `"<name>"` (для
+  глобальных: extensions, database_setting). Bare имена (`nextval('seq')`,
+  `REFERENCES table(id)`, `CREATE TABLE t (...)`) — **недопустимы** в коде,
+  который пойдёт в deploy на любую БД с произвольным `search_path`.
+- **Почему это критично:**
+  1. **`search_path` на целевой БД может отличаться** от исходной: дефолтный
+     `$user, public`, или schema-изоляция, или пользовательская конфигурация
+     через `ALTER DATABASE SET search_path = ...`. Bare reference резолвится
+     по `search_path` — и часто не в ту схему.
+  2. **Временная БД из `template0`** (наш fallback при несовместимой локали) —
+     её `search_path` это дефолт `"$user", public`, и **любая** ссылка на схему
+     `qr`, `app`, `bookings` без префикса молча упадёт.
+  3. **Двусмысленность** при одинаковых именах в разных схемах (`public.users`
+     vs `app.users`) — bare name резолвится случайно, в зависимости от того,
+     какая схема первой в `search_path`.
+- **Где в `db-pm` обеспечивается:**
+  - **CREATE/ALTER/COMMENT на объекты** — шаблоны (`table.sql.j2`, `view.sql.j2`,
+    и т.д.) используют `_qqi(schema, name)` → `"schema"."name"`.
+  - **FK REFERENCES** — `_qqi(referenced_schema, referenced_table)`.
+  - **Sequence в DEFAULT** — `_qualify_default_schema` (Phase 5 lesson 34).
+  - **Идентификаторы внутри DEFAULT-выражений** (`nextval('schema.seq'::regclass)`).
+- **Где НЕ обеспечивается (известные пробелы — будущая работа):**
+  - **Тела функций/процедур** — `pg_get_functiondef()` возвращает тело как есть;
+    если функция внутри использует bare refs (`SELECT * FROM users`), они
+    останутся bare. Это правильно с точки зрения точности reverse, но опасно
+    при deploy на БД с другим `search_path`. → BACKLOG P3+.
+  - **Определения views/matviews** — `pg_get_viewdef()` тоже возвращает как есть.
+    PG обычно сама квалифицирует имена в view definition (в `pg_rewrite`), но
+    edge cases возможны.
+  - **CHECK constraints** — `pg_get_constraintdef` возвращает как есть.
+- **Урок:** fully-qualified имена — не «опция», а **контракт** инструмента,
+  генерирующего DDL. Проверяй каждое место, где идентификатор попадает в вывод,
+  и фиксируй контракт тестом: `assert '"schema"."name"' in rendered` для каждого
+  шаблона. Bare refs в телах функций/представлений — отдельная задача
+  (требует парсинга SQL, а не строковой замены), но они должны быть документированы
+  как ограничение MVP.
