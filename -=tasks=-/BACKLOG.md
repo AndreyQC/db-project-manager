@@ -22,53 +22,40 @@
 
 ---
 
-## P1. Поддержка PostgreSQL extensions (end-to-end)
+## P1. Разрешение перегруженных вызовов в edge detection
 
-**Симптом:** `db-pm deploy validate` падает на таблице с колонкой типа `citext`:
-```
-тип "citext" не существует
-LINE 13:     "public_email" citext NULL,
-```
+**Контекст:** Phase 4 зафиксировала MVP-ограничение — `_build_names_index`
+(`pg_sql_parser.py:212-224`) индексирует объекты по голому `object_name` через
+`setdefault`. При перегрузках вызовы в SQL создают рёбра к «первой попавшейся» вершине.
 
-**Корневая причина:** reverse-engineer тянет тип колонки как сырой `udt_name`
-(`information_schema.columns`) и кладёт в DDL как есть. При `deploy validate`
-создаётся **пустая** временная БД без `CREATE EXTENSION citext` → тип не определён.
+**Цель:** по аргументам вызова функции (`sp_x(123)` → `int4`) определять, к какой
+именно перегрузке вести ребро.
 
-**Текущее состояние support extensions (все слои, кроме шаблона, оборваны):**
+**Сложность:** полноценный type inference — нужно определять типы выражений-аргументов
+(литералы, колонки, результаты других вызовов). Это объёмная задача.
 
-| Этап | Поддержка |
-|------|-----------|
-| `templates/extension.sql.j2` | ✅ есть, синтаксис обновлён в Phase 2 |
-| Reverse-engineer (запросы к `pg_extension`) | ❌ нет |
-| Структура БД (`get_database_structure`) | ❌ нет ключа `extensions` |
-| SQLGenerator (рендер) | ❌ шаблон не вызывается |
-| Парсер (`SUPPORTED_TYPES`) | ❌ тип не распознаётся |
-| Топосорт (`TYPE_PRIORITIES`) | ❌ нет `extension` (попадёт в UNKNOWN=100) |
-| Deploy (pre-step) | ❌ нет |
+**MVP-вариант:** покрывать только простые случаи — литералы и прямые ссылки на колонки
+с известным типом. Для неразрешимых вызовов — ребро к первой перегрузке (как сейчас),
+с warning в лог.
 
-**Целевой охват (по решению пользователя — «Полный цикл»):**
-
-1. **Reverse-engineer:** запросы к `pg_extension` + `pg_available_extensions`;
-   агрегация extension-ов на верхнем уровне `structure` (не внутри schema — extensions
-   глобальны, хотя могут иметь `SCHEMA <name>`).
-2. **Структура:** `structure["extensions"]` = список `{name, schema, version, cascade, comment}`.
-3. **SQLGenerator:** рендер `extension.sql.j2` в `<output>/extensions/extension <name>.sql`
-   (вне schema-директорий — extensions не привязаны к schema).
-4. **Парсер:** `extension` в `SUPPORTED_TYPES` + `("extension",)` в `_CREATE_KEYWORD_TO_TYPE`.
-5. **Топосорт:** `extension` в `TYPE_PRIORITIES` с **приоритетом −1** (раньше `schema`=0),
-   т.к. schema может зависеть от extension (например, extension создан в конкретной schema).
-6. **Deploy:** extensions деплоятся первыми автоматически (через топосорт).
-7. **Граф зависимостей:** ребро `DEPENDS_ON` от таблицы/функции к extension, если объект
-   использует тип из этого extension (обнаружение через `pg_type.typtype='e'` или
-   `typnamespace` принадлежности extension; для колонок — `atttypid` → `pg_type`).
-
-**Кандидат на Phase 5.** Энд-ту-энд задача, задевает 6 подсистем.
-
-**Документ-источник:** `-=CHECKPOINTS=-/20260720_001_checkpoint.md` (Known gaps).
+**Кандидат на Phase 6+** (после extensions и миграций). Зафиксировано в
+`Phase_4_vision_final.md` §6 (Q3).
 
 ---
 
-## P2. Разрешение перегруженных вызовов в edge detection
+## P2. DEPENDS_ON рёбра от объектов к extension
+
+**Контекст:** Phase 5 поставила extensions с приоритетом −2, что гарантирует
+порядок «extensions до всего остального». Точечные рёбра `DEPENDS_ON` нужны, если
+появится сценарий, где **часть** объектов зависит от конкретного extension, а часть —
+нет, и нужно более точное управление порядком внутри групп.
+
+**Реализация:** детект через `pg_depend` / `pg_type.typtype='e'` /
+`atttypid` → `pg_type` → extension (по `typnamespace`).
+Запросы сложнее, чем кажутся; пока выигрыша в порядке деплоя нет —
+`extension: -2` уже достаточно.
+
+**Кандидат на Phase 6+** (связан с P1 — overload resolution).
 
 **Контекст:** Phase 4 зафиксировала MVP-ограничение — `_build_names_index`
 (`pg_sql_parser.py:212-224`) индексирует объекты по голому `object_name` через
@@ -98,19 +85,50 @@ LINE 13:     "public_email" citext NULL,
 перегруженные функции, прогнать `reverse-engineer → graph build → deploy validate`
 на чистой временной БД. Контроль: обе перегрузки деплоятся.
 
-**Кандидат на Phase 5** (вместе с extensions — они тоже потребуют real-DB проверки).
+**Статус: ЗАКРЫТ** — реализован в Phase 5 (P5.S08):
+`tests/integration/test_phase5_extensions_e2e.py`.
 
 ---
 
-## P3. Устаревший roadmap `phase_00/003_roadmap_migration.md`
+## P3. DEPENDS_ON рёбра от объектов к extension
+
+**Контекст:** Phase 5 поставила extensions с приоритетом −2, что гарантирует
+порядок «extensions до всего остального». Точечные рёбра `DEPENDS_ON` нужны, если
+появится сценарий, где **часть** объектов зависит от конкретного extension, а часть —
+нет, и нужно более точное управление порядком внутри групп.
+
+**Реализация:** детект через `pg_depend` / `pg_type.typtype='e'` /
+`atttypid` → `pg_type` → extension (по `typnamespace`).
+Запросы сложнее, чем кажутся; пока выигрыша в порядке деплоя нет —
+`extension: -2` уже достаточно.
+
+**Кандидат на Phase 6+** (связан с P1 — overload resolution).
+
+---
+
+## P3+. Пин версий extensions
+
+**Контекст:** Phase 5 vision Q3: версия extension **не** пишется в `VERSION '<ver>'`
+DDL — только информационно в autodoc. При деплое на кластер с другой версией
+пакета молча используется кластерная версия.
+
+**Реализация:** опциональный флаг `--pin-extension-versions` в генераторе;
+`VERSION '<ver>'` из `extension_version` autodoc вставляется в рендер.
+Требует конфиг-флага на уровне generation, не на уровне deploy.
+
+**Кандидат на Phase 6+**.
+
+---
+
+## P3+. Устаревший roadmap `phase_00/003_roadmap_migration.md`
 
 **Проблема:** §10 «Фазы реализации» описывает Phase 3 как «Миграции и расширение СУБД»,
 но фактически Phase 3 сделана как SSH-туннель (`-=tasks=-/phase_03/`). Фразы «Фаза 3 —
 MSSQL и MySQL адаптеры» и «Фаза 2 — Snowflake» рассинхронизированы с реальностью.
 
 **Действие:** либо переписать §10 под фактические фазы (1=фундамент, 2=граф+deploy,
-3=SSH, 4=перегрузки), либо пометить раздел устаревшим со ссылкой на этот беклог и
-каталоги `phase_NN/` как источник правды.
+3=SSH, 4=перегрузки, 5=extensions), либо пометить раздел устаревшим со ссылкой
+на этот беклог и каталоги `phase_NN/` как источник правды.
 
 **Кандидат на doc-cleanup коммит** (не блокирует ничего).
 

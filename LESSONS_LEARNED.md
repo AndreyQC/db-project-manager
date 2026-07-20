@@ -250,3 +250,41 @@
   (`extract_header(decorated)["object"]["object_signature"]`), а не substring-матчинг
   по сырой строке. Roundtrip устойчив к стилям кавычек/отступов YAML.
 
+---
+
+## Phase 5 — PostgreSQL extensions и настройки базы
+
+### 29. Schema-less объекты проходят через весь конвейер без изменений
+- **Симптом:** `extension` и `database_setting` не привязаны к схеме; на всём пути
+  `object_schema=None` → `schema/` сегмент опускается в `object_key`, `_render_one`
+  получает `object_schema=None`, autodoc пишет ключ без `schema/`, парсер создаёт
+  вершину с `object_schema=None`.
+- **Решение:** ни одного хака не потребовалось — существующий код уже поддерживал
+  nullable `object_schema`. Добавили `extension`/`database_setting` в
+  `SUPPORTED_TYPES`, `_CREATE_KEYWORD_TO_TYPE`, `TYPE_PRIORITIES`, `EARLY_DDL_TYPES`.
+- **Урок:** новые типы объектов, не привязанные к схеме, можно добавлять по
+  образцу существующих, если сразу проверять все слои конвейера (queries →
+  structure → generator → autodoc → parser → toposort → deploy).
+
+### 30. Pydantic v2 отвергает `extra=None` — не передавай поле при пустом словаре
+- **Симптом:** `Vertex(..., extra=None)` падало с `Input should be a valid
+  dictionary [type=dict_type, input_value=None, input_type=NoneType]` на всех
+  файлах без `extra`.
+- **Причина:** Pydantic v2 не разрешает `None` для `dict`-поля; предыдущая версия
+  пропускала.
+- **Решение:** `**({"extra": extra} if extra else {})` — не передавать `extra`
+  вовсе, когда словарь пустой.
+- **Урок:** при добавлении новых необязательных полей в модели с Pydantic-валидацией
+  всегда проверяй, что `None` корректно обрабатывается (или не используется).
+
+### 31. Windows `tmp_path` не создаёт промежуточные директории через `Path.write_text`
+- **Симптом:** `(tmp_path / ".dbm_graph" / "ext.sql").write_text(...)` падало с
+  `FileNotFoundError` на Windows при использовании pytest `tmp_path`.
+- **Причина:** `Path.write_text` вызывает `os.open` с флагами `O_CREAT|O_WRONLY|O_TRUNC`
+  без `O_DIRECTORY` — если промежуточная директория не существует, она не
+  создаётся (в отличие от Linux/macOS где `Path.mkdir` часто делается неявно или
+  файловая система по-другому обрабатывает флаг).
+- **Решение:** явно `dbm.mkdir()` перед записью вложенного файла.
+- **Урок:** при работе с `tmp_path` в кросс-платформенном коде всегда создавай
+  промежуточные директории явно (`mkdir -p` equivalent), а не полагайся на то,
+  что они уже существуют.
