@@ -262,14 +262,25 @@ class PgSqlParser(ObjectGraphParser):
         scan_words = self._strip_autodoc(words)
 
         self_vertex_key = vertex.object_key
+        self_schema = vertex.object_schema
         for i, token in enumerate(scan_words):
+            # Context-aware sequence lookup: for nextval tokens, try the source
+            # object's schema first (e.g. qr.audit_log_id_seq from table qr.audit_log),
+            # then fall back to bare name. This handles cases where the table's
+            # schema differs from public and nextval() omits the schema qualifier.
             dest_key = names_index.get(token)
             if not dest_key or dest_key == self_vertex_key:
                 continue
 
+            # For nextval references, prefer schema-qualified lookup using the
+            # source object's schema. E.g. table in schema 'qr' with
+            # nextval('audit_log_id_seq') -> try 'qr.audit_log_id_seq' first.
             relation, action = self._classify_at(scan_words, i)
             if relation is None:
                 continue
+            if relation == Relation.SEQUENCE_NEXTVAL_IN and self_schema:
+                qualified = f"{self_schema}.{token}"
+                dest_key = names_index.get(qualified) or dest_key
 
             edge = Edge(
                 source_object_key=self_vertex_key,
