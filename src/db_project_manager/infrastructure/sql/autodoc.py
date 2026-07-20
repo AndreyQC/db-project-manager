@@ -46,21 +46,33 @@ def build_metadata(
     object_schema: str | None,
     object_type: str,
     object_name: str,
+    object_signature: str = "",
 ) -> dict[str, Any]:
-    """Build the autodoc metadata dict for an object."""
+    """Build the autodoc metadata dict for an object.
+
+    Args:
+        object_signature: Canonical signature hash (8 hex chars) for overloaded
+            functions/procedures. Empty for non-overloaded objects — in that
+            case the field is omitted from the metadata entirely so table/view
+            autodoc headers stay clean.
+    """
     object_key = _build_object_key(
-        object_catalog=object_catalog, object_schema=object_schema, object_type=object_type, object_name=object_name
+        object_catalog=object_catalog,
+        object_schema=object_schema,
+        object_type=object_type,
+        object_name=object_name,
+        object_signature=object_signature,
     )
-    return {
-        "object": {
-            "object_catalog": object_catalog,
-            "object_schema": object_schema,
-            "object_type": object_type,
-            "object_name": object_name,
-            "object_key": object_key,
-        },
-        "project": {"build": True},
+    obj = {
+        "object_catalog": object_catalog,
+        "object_schema": object_schema,
+        "object_type": object_type,
+        "object_name": object_name,
+        "object_key": object_key,
     }
+    if object_signature:
+        obj["object_signature"] = object_signature
+    return {"object": obj, "project": {"build": True}}
 
 
 def _build_object_key(
@@ -69,9 +81,18 @@ def _build_object_key(
     object_schema: str | None,
     object_type: str,
     object_name: str,
+    object_signature: str = "",
 ) -> str:
+    """Build the object_key. For overloaded functions/procedures (non-empty
+    ``object_signature``) a ``/signature/<hash>`` suffix is appended so each
+    overload gets a distinct key. For all other objects the format is unchanged
+    (backward-compatible with existing ``.dbm_graph/`` stores).
+    """
     schema_part = f"schema/{object_schema}/" if object_schema else ""
-    return f"pg_database/{object_catalog}/{schema_part}type/{object_type}/name/{object_name}"
+    key = f"pg_database/{object_catalog}/{schema_part}type/{object_type}/name/{object_name}"
+    if object_signature:
+        key += f"/signature/{object_signature}"
+    return key
 
 
 def render_header(metadata: dict[str, Any]) -> str:
@@ -104,10 +125,15 @@ def ensure_header(
     object_schema: str | None,
     object_type: str,
     object_name: str,
+    object_signature: str = "",
 ) -> str:
     """Prepend an autodoc header if absent; keep an existing one as-is.
 
     Use this to decorate freshly rendered SQL bodies.
+
+    Args:
+        object_signature: Canonical signature hash for overloaded functions/
+            procedures. See :func:`build_metadata`.
     """
     if MARKER_OPEN in script and MARKER_CLOSE in script:
         return script
@@ -116,5 +142,6 @@ def ensure_header(
         object_schema=object_schema,
         object_type=object_type,
         object_name=object_name,
+        object_signature=object_signature,
     )
     return render_header(metadata) + script
