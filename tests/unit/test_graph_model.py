@@ -52,6 +52,31 @@ def test_vertex_extra_ignored() -> None:
     assert v.extra == {}
 
 
+def test_vertex_object_signature_default_empty() -> None:
+    v = Vertex(object_key="k", object_type="table")
+    assert v.object_signature == ""
+
+
+def test_vertex_object_signature_serializes() -> None:
+    v = Vertex(object_key="k", object_type="function", object_signature="a1b2c3d4")
+    assert v.object_signature == "a1b2c3d4"
+    # Field must be present in model_dump so graph_store serializes it.
+    assert v.model_dump(mode="json")["object_signature"] == "a1b2c3d4"
+
+
+def test_add_vertex_distinguishes_overloads_by_signature() -> None:
+    """Two functions with the same name but different object_key (one with
+    signature suffix, one without) must coexist in the graph instead of
+    overwriting each other. Phase 4 fixes the silent-overwrite bug."""
+    g = DependencyGraph()
+    key_int = "pg_database/db/schema/app/type/function/name/sp_x/signature/a1b2c3d4"
+    key_text = "pg_database/db/schema/app/type/function/name/sp_x/signature/e5f6a7b8"
+    g.add_vertex(Vertex(object_key=key_int, object_type="function", object_name="sp_x", object_signature="a1b2c3d4"))
+    g.add_vertex(Vertex(object_key=key_text, object_type="function", object_name="sp_x", object_signature="e5f6a7b8"))
+    assert len(g.vertices) == 2
+    assert {v.object_signature for v in g.vertices.values()} == {"a1b2c3d4", "e5f6a7b8"}
+
+
 def test_edge_dedup_key() -> None:
     e = Edge(
         source_object_key=FLIGHTS,

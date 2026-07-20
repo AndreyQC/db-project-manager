@@ -49,6 +49,11 @@ class Vertex(BaseModel):
     object_schema: str | None = None
     object_type: str = Field(..., description="schema|table|view|function|...")
     object_name: str = ""
+    #: Canonical signature hash (8 hex chars) for overloaded functions/procedures.
+    #: Empty for non-overloaded objects. Populated by the parser from the
+    #: autodoc header; included in ``object_key`` when non-empty so overloads
+    #: get distinct keys instead of silently overwriting each other in the graph.
+    object_signature: str = Field("", description="Canonical signature hash for overloaded functions/procedures")
     object_source_file: str = Field("", description="Path to the source SQL file")
     build: bool = Field(True, description="Whether this object is deployed (project.build in autodoc)")
     extra: dict[str, Any] = Field(default_factory=dict, description="Raw autodoc fields not covered above")
