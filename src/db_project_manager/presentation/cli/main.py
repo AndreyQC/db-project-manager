@@ -95,6 +95,43 @@ def reverse_engineer(
     typer.secho(f"✓ Скрипты сгенерированы в: {result}", fg=typer.colors.GREEN)
 
 
+@app.command("qualify-refs")
+def qualify_refs(
+    directory: Annotated[Path, typer.Option("--dir", help="Codebase root (output of reverse-engineer).")],
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Only scan and report; do not modify files."),
+    ] = False,
+) -> None:
+    """Qualify bare object references in codebase SQL files (Phase 6).
+
+    Walks the codebase, finds bare references to known objects (functions,
+    procedures, tables, views) and prefixes them with their schema so the
+    generated DDL is deploy-safe regardless of search_path. Writes a
+    ``_qualify_report.md`` to the codebase root with the changes and skips.
+    """
+    configure_logging()
+    from db_project_manager.application.qualify_refs_service import (
+        QualifyRefsError,
+        QualifyRefsService,
+    )
+
+    service = QualifyRefsService()
+    try:
+        report = service.run(directory, dry_run=dry_run)
+    except QualifyRefsError as e:
+        typer.secho(f"Ошибка: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from e
+
+    mode = "dry-run" if dry_run else "готово"
+    typer.secho(
+        f"✓ Qualify-refs {mode}: файлов просканировано={report.files_scanned}, "
+        f"изменено={len(report.changes)}, ambiguous={len(report.ambiguous)}; "
+        f"отчёт: {directory / '_qualify_report.md'}",
+        fg=typer.colors.GREEN,
+    )
+
+
 # --- graph subapp ---
 
 

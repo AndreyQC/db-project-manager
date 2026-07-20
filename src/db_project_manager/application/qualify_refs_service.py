@@ -128,14 +128,18 @@ class QualifyRefsService:
             report.files_scanned += 1
             self._process_file(sql_file, codebase_dir, graph, unique, ambiguous, report, dry_run=dry_run)
 
-        if not dry_run:
-            self._write_report(codebase_dir, report)
+        # Report is always written — even in dry-run it shows what WOULD change.
+        self._write_report(codebase_dir, report)
+        if dry_run:
+            logger.info(
+                f"Qualify-refs (dry-run): файлов={report.files_scanned}, "
+                f"бы изменено={len(report.changes)}, ambiguous={len(report.ambiguous)}"
+            )
+        else:
             logger.info(
                 f"Qualify-refs: файлов просканировано={report.files_scanned}, "
                 f"изменено={len(report.changes)}, ambiguous={len(report.ambiguous)}"
             )
-        else:
-            logger.info("Qualify-refs (dry-run): отчёт собран, файлы не изменялись")
 
         return report
 
