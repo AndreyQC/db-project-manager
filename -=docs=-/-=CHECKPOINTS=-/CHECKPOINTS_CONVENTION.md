@@ -1,14 +1,14 @@
 # Checkpoints — conventions
 
 Purpose of `-=CHECKPOINTS=-`: give a new agent session (or a returning human)
-**fast project context** without reading the full `-=tasks=-` history or chat
+**fast project context** without reading the full `-=tasks=-` and `-=PHASES=-` history or chat
 logs. A checkpoint is a snapshot of *where the project is right now*.
 
 ---
 
 ## 1. When to write a checkpoint
 
-- At the **end of a phase** (Phase N complete) — always.
+- At the **end of a PHASE** (Phase N complete) — always.
 - At the **end of a working session** if substantial work was done (new
   feature, refactor, or a tricky bug fix worth recording) — optional but
   recommended.
@@ -61,10 +61,10 @@ gaps list (§5) — they carry the most value.
 - **Dense, not decorative.** Less prose, more paths, hashes, counts, bullet
   lists. The reader is skimming for facts, not a narrative.
 - **Concrete paths** — always relative to repo root (e.g.
-  `src/db_project_manager/domain/graph.py`, not "the graph module").
+  `app\src\store\dictionaries.ts`, not "the graph module").
 - **Commit hashes** for the last state — lets the reader `git show` to verify.
 - **No new design** here — checkpoints describe *what is*, not *what should be*.
-  Design discussion belongs in `-=tasks=-/phase_NN/*_draft.md`.
+  Design discussion belongs in `-=tasks=-/YYYY-MM-DD/YYYYMMDD_NN_<desc>_draft.md`.
 - **Cross-link, don't duplicate.** If a decision is explained in
   `Phase_2_vision_final.md` Q4, link it; don't re-explain in the checkpoint.
 - **Plain markdown, ASCII tables, no emojis.** Works in any viewer, diffs
@@ -96,5 +96,5 @@ after that, checkpoints are individual commits.
 | Append-only (drafts kept) | Newest = current truth; older ones are historical snapshots |
 | Read when designing the next step | Read first, every new session |
 
-A new session should read **the latest checkpoint first**, then dive into
-`-=tasks=-/phase_NN/` only for the specific phase it's working on.
+A new session should read **the latest checkpoint first**, then dive into `-=PHASES=-` and
+`-=tasks=-/YYYY-MM-DD/` only for the specific phase it's working on.
