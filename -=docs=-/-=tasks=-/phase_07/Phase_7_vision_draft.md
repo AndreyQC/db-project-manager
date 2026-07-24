@@ -178,12 +178,16 @@ Worker: существующий `DeployValidateWorker`.
 | Поле | Контрол | Дефолт/prefill |
 |------|---------|----------------|
 | Каталог кодовой базы | `QLineEdit` + «Выбрать…» | последнее; иначе `default_output_dir` |
-| Формат экспорта | `QComboBox`: `json` / `graphml` / `dot` / «только build» | последнее; дефолт `json` |
+| Формат экспорта | `QComboBox`: `graphml` / `json` / `dot` / «только build» | последнее; дефолт `graphml` (Gephi) |
 | Проверить граф (циклы, висячие ссылки) | `QCheckBox` | дефолт on |
 
 Worker: новый `GraphBuildWorker` — `BuildGraphService.build_and_store(dir)`,
 опционально `export_graph(...)` и toposort-валидация (см. CLI `graph validate`).
-См. USER_INPUT U5 про «просмотр в приложении».
+Просмотр — во внешнем **Gephi**: существующий экспортер
+(`infrastructure/graph/export.py`) уже пишет GraphML «for Gephi / yEd»
+с атрибутами узлов (`object_type`, `object_schema`, `build`) и рёбер
+(`relation`, `action`), поэтому новый формат не нужен; дефолт действия —
+`graphml`. Родной для Gephi формат GEXF — опционально, BACKLOG.
 
 ---
 
@@ -219,7 +223,7 @@ Worker: новый `GraphBuildWorker` — `BuildGraphService.build_and_store(dir
     },
     "graph_prepare": {
       "codebase_dir": "C:/work/qr_codebase",
-      "format": "json",
+      "format": "graphml",
       "validate": true
     }
   }
@@ -239,7 +243,7 @@ Worker: новый `GraphBuildWorker` — `BuildGraphService.build_and_store(dir
 |----------|-------------------|
 | reverse_engineer | `db-pm reverse-engineer --connection-file connections\qr_pamyat.yaml --output C:\work\qr_codebase` |
 | deploy_validate | `db-pm deploy validate --dir C:\work\qr_codebase --connection-file connections\test_server.yaml --prefix qr --keep-db --continue-on-error` |
-| graph_prepare | `db-pm graph build --dir C:\work\qr_codebase && db-pm graph export --dir C:\work\qr_codebase --format json` |
+| graph_prepare | `db-pm graph build --dir C:\work\qr_codebase && db-pm graph export --dir C:\work\qr_codebase --format graphml` |
 
 - Путь к файлу подключения — через `ConnectionStore.path_for(name)`
   (каталог `connections/` уже существует и gitignore'нут, CLI читает именно его).
@@ -309,51 +313,36 @@ uv run ruff check src/ tests/
 
 ---
 
-## 13. USER_INPUT — открытые вопросы
+## 13. USER_INPUT — решения (закрыто 2026-07-24)
 
-### U1. Номер фазы
-Checkpoint 20260720_004 резервирует «Phase 7» за overload resolution
-(BACKLOG P1). Эта GUI-работа пришла раньше.
-**Рекомендация ИИ:** назначить GUI-панель **Phase 7** (выполняется сейчас), а
-overload resolution сдвинуть в Phase 8; при закрытии фазы обновить checkpoint.
-Альтернатива: оформить GUI как Phase 8, оставив 7 зарезервированной.
+### U1. Номер фазы — РЕШЕНО
+**GUI-панель = Phase 7** (выполняется сейчас); overload resolution
+(BACKLOG P1) сдвигается в Phase 8. При закрытии фазы обновить checkpoint.
 
-### U2. Расположение dropdown
-ТЗ: «справа от элемента списка с подключениями».
-**Рекомендация ИИ:** dropdown на уровне панели **справа от всего списка**
-(вариант из §3.1), а не per-row в каждой строке: действия контекстно связаны с
-подключением, но диалоги всё равно содержат свой выбор подключения; per-row
-вариант требует `setIndexWidget` и усложняет модель списка без выигрыша в UX.
-Альтернатива: per-row dropdown в строке выбранного элемента — отложить в BACKLOG.
+### U2. Расположение dropdown — РЕШЕНО
+Dropdown на уровне панели **справа от всего списка** (вариант §3.1), не per-row.
+Per-row dropdown в строке выбранного элемента — при желании отдельной задачей.
 
-### U3. Расположение и имя файла настроек
-**Рекомендация ИИ:** `./gui_settings.json` в корне проекта (рядом с
-`config.yaml`), добавить в `.gitignore`. Альтернативы: `%APPDATA%/db-pm/`
-(теряется переносимость вместе с проектом), `connections/gui_settings.json`
-(смешение зон ответственности).
+### U3. Расположение и имя файла настроек — РЕШЕНО
+`./gui_settings.json` в корне проекта (рядом с `config.yaml`), добавить в
+`.gitignore` (как `connections/*`).
 
-### U4. «Подготовить граф для просмотра в приложении» — что такое просмотр
-Сейчас в приложении нет graph viewer'а (есть только `ProjectViewer` для файлов).
-**Рекомендация ИИ (MVP):** действие = `graph build` + `export` в выбранный
-формат + опциональная валидация; результат — путь к `.dbm_graph/graph.<fmt>` в
-status log. Встроенный просмотрщик графа в GUI — отдельная фаза/BACKLOG.
-Альтернатива: уже в этой фазе добавить простой viewer (например, дерево из
-`graph show` в QTextEdit) — рост объёма фазы.
+### U4. «Подготовить граф для просмотра» — РЕШЕНО (уточнение пользователя)
+Просмотр — во внешнем **Gephi**. Существующий `graphml`-экспорт уже
+Gephi-совместим (`export.py` пишет атрибуты узлов/рёбер) — новый формат не
+нужен; дефолт формата действия `graph_prepare` = `graphml`. Нативный GEXF —
+опционально в BACKLOG. Встроенный viewer графа в GUI не делаем.
 
-### U5. Дефолт чекбокса «Проверить граф» в graph_prepare
-**Рекомендация ИИ:** on по умолчанию (валидация дешёвая, ловит циклы до deploy).
+### U5. Дефолт чекбокса «Проверить граф» — ПРИНЯТА рекомендация ИИ
+On по умолчанию.
 
-### U6. Формат label настроек в контейнере
-**Рекомендация ИИ:** многострочный read-only `QPlainTextEdit` (3–4 строки,
-ключ: значение) + отдельная однострочная `QLineEdit` для CLI — CLI может быть
-длинной и должна выделяться/скроллиться независимо. Альтернатива: одна
-сводная строка — плохо читается при длинных путях.
+### U6. Формат label настроек — ПРИНЯТА рекомендация ИИ
+Многострочный read-only `QPlainTextEdit` (ключ: значение) + отдельная
+однострочная `QLineEdit` для CLI-строки.
 
-### U7. «Выполнить» без предварительной настройки
-**Рекомендация ИИ:** разрешить — выполняет с текущими (последними/дефолтными)
-настройками; если обязательные поля пусты (`required_fields`) — сначала
-автоматически открывается диалог «Настроить…». Альтернатива: требовать явного
-«Настроить…» перед первым запуском — лишний клик при валидных дефолтах.
+### U7. «Выполнить» без предварительной настройки — ПРИНЯТА рекомендация ИИ
+Разрешено: выполняет с последними/дефолтными настройками; при пустых
+`required_fields` сначала автоматически открывается диалог «Настроить…».
 
 ---
 
