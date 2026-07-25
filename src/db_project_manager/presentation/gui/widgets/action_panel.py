@@ -47,6 +47,11 @@ FIELD_LABELS = {
     "validate_graph": "проверить граф",
 }
 
+# Per-action label overrides (same field name, different meaning).
+ACTION_FIELD_LABELS = {
+    "graph_prepare": {"output_dir": "каталог для файла экспорта"},
+}
+
 
 class ActionPanelWidget(QGroupBox):
     """Container with action dropdown, settings summary and run/copy buttons."""
@@ -120,13 +125,17 @@ class ActionPanelWidget(QGroupBox):
         spec = self.current_spec()
         saved = self.settings_store.get_action_settings(spec.action_id)
         settings = spec.settings_model.model_validate(saved)
-        return self._apply_defaults(settings)
+        return self._apply_defaults(spec, settings)
 
-    def _apply_defaults(self, settings: BaseModel) -> BaseModel:
-        """Fill empty connection/dir fields from the list selection and config."""
+    def _apply_defaults(self, spec: ActionSpec, settings: BaseModel) -> BaseModel:
+        """Fill empty REQUIRED fields from the list selection and config.
+
+        Optional fields (e.g. graph export output_dir) are left empty so the
+        action's own default (<codebase>/.dbm_graph/) applies.
+        """
         updates: dict[str, str] = {}
-        for field in type(settings).model_fields:
-            value = getattr(settings, field)
+        for field in spec.required_fields:
+            value = getattr(settings, field, None)
             if isinstance(value, str) and not value:
                 if field == "connection":
                     selected = self.get_selected_connection()
@@ -146,9 +155,10 @@ class ActionPanelWidget(QGroupBox):
         settings = self.current_settings()
 
         lines = []
+        labels = {**FIELD_LABELS, **ACTION_FIELD_LABELS.get(spec.action_id, {})}
         for field in type(settings).model_fields:
             value = getattr(settings, field)
-            label = FIELD_LABELS.get(field, field)
+            label = labels.get(field, field)
             if isinstance(value, bool):
                 display = "да" if value else "нет"
             else:

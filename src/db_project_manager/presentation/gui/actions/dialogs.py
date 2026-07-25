@@ -63,9 +63,11 @@ class BaseActionDialog(QDialog):
 
     # --- helpers ---
 
-    def _dir_row(self, value: str, caption: str) -> QLineEdit:
+    def _dir_row(self, value: str, caption: str, placeholder: str = "") -> QLineEdit:
         """A read-only-ish path edit with a «Выбрать…» browse button."""
         edit = QLineEdit(value)
+        if placeholder:
+            edit.setPlaceholderText(placeholder)
         row = QHBoxLayout()
         row.addWidget(edit, stretch=1)
         browse = QPushButton("Выбрать…")
@@ -176,6 +178,11 @@ class GraphPrepareDialog(BaseActionDialog):
         self._validate = QCheckBox("Проверить граф (циклы, висячие ссылки)")
         self._validate.setChecked(settings.validate_graph)
         self._form.addRow(self._validate)
+        self._output_dir = self._dir_row(
+            settings.output_dir,
+            "Каталог для файла экспорта:",
+            placeholder="по умолчанию: <кодовая база>/.dbm_graph",
+        )
         self._add_buttons()
 
     def settings(self) -> GraphPrepareSettings:
@@ -183,4 +190,5 @@ class GraphPrepareDialog(BaseActionDialog):
             codebase_dir=self._codebase_dir.text().strip(),
             format=self._format.currentData(),
             validate_graph=self._validate.isChecked(),
+            output_dir=self._output_dir.text().strip(),
         )

@@ -39,3 +39,5 @@ class GraphPrepareSettings(BaseModel):
     format: str = "graphml"  # graphml (Gephi) | json | dot | none
     # Named validate_graph: "validate" would shadow BaseModel.validate.
     validate_graph: bool = True
+    # Optional export destination dir. Empty = <codebase>/.dbm_graph/.
+    output_dir: str = ""

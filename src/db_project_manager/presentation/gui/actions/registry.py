@@ -88,7 +88,10 @@ def _make_graph_prepare_worker(store, settings: GraphPrepareSettings):
     from db_project_manager.presentation.gui.widgets.workers import GraphBuildWorker
 
     return GraphBuildWorker(
-        settings.codebase_dir, fmt=settings.format, validate=settings.validate_graph
+        settings.codebase_dir,
+        fmt=settings.format,
+        validate=settings.validate_graph,
+        output_dir=settings.output_dir or None,
     )
 
 

@@ -51,7 +51,11 @@ def build_cli_graph_prepare(settings: GraphPrepareSettings, store: ConnectionSto
     directory = _quote(settings.codebase_dir)
     commands = [f"db-pm graph build --dir {directory}"]
     if settings.format != FORMAT_NONE:
-        commands.append(f"db-pm graph export --dir {directory} --format {settings.format}")
+        export_cmd = f"db-pm graph export --dir {directory} --format {settings.format}"
+        if settings.output_dir:
+            export_file = f"{settings.output_dir}/graph.{settings.format}"
+            export_cmd += f" --output {_quote(export_file)}"
+        commands.append(export_cmd)
     if settings.validate_graph:
         commands.append(f"db-pm graph validate --dir {directory}")
     return " && ".join(commands)

@@ -94,6 +94,21 @@ def test_graph_prepare_build_only(tmp_path):
     assert build_cli_graph_prepare(s, store) == "db-pm graph build --dir C:/out/qr"
 
 
+def test_graph_prepare_custom_output_dir(tmp_path):
+    store = _store(tmp_path)
+    s = GraphPrepareSettings(
+        codebase_dir="C:/out/qr",
+        format="graphml",
+        validate_graph=False,
+        output_dir="C:/graphs",
+    )
+    cmd = build_cli_graph_prepare(s, store)
+    assert cmd == (
+        "db-pm graph build --dir C:/out/qr && "
+        "db-pm graph export --dir C:/out/qr --format graphml --output C:/graphs/graph.graphml"
+    )
+
+
 def test_paths_with_spaces_are_quoted(tmp_path):
     store = _store(tmp_path)
     s = ReverseEngineerSettings(connection="qr", output_dir="C:/my dir/qr")
@@ -161,7 +176,12 @@ def test_contract_graph_prepare(tmp_path, monkeypatch):
 
     store = _store(tmp_path)
     cmd = build_cli_graph_prepare(
-        GraphPrepareSettings(codebase_dir=str(tmp_path), format="graphml", validate_graph=True),
+        GraphPrepareSettings(
+            codebase_dir=str(tmp_path),
+            format="graphml",
+            validate_graph=True,
+            output_dir=str(tmp_path / "graphs"),
+        ),
         store,
     )
     for subcommand in cmd.split(" && "):

@@ -56,11 +56,20 @@ class ReverseEngineerWorker(QRunnable):
 class GraphBuildWorker(QRunnable):
     """Build the dependency graph (optionally export + validate) off the UI thread."""
 
-    def __init__(self, codebase_dir: str | Path, *, fmt: str = "graphml", validate: bool = True) -> None:
+    def __init__(
+        self,
+        codebase_dir: str | Path,
+        *,
+        fmt: str = "graphml",
+        validate: bool = True,
+        output_dir: str | Path | None = None,
+    ) -> None:
         super().__init__()
         self.codebase_dir = Path(codebase_dir)
         self.fmt = fmt
         self.validate = validate
+        # Optional export destination; None = <codebase>/.dbm_graph/.
+        self.output_dir = Path(output_dir) if output_dir else None
         self.signals = WorkerSignals()
 
     def run(self) -> None:  # noqa: C901 (Qt entrypoint)
@@ -90,7 +99,9 @@ class GraphBuildWorker(QRunnable):
 
             result: Path = graph_dir
             if self.fmt != "none":
-                result = graph_dir / f"graph.{self.fmt}"
+                export_dir = self.output_dir or graph_dir
+                export_dir.mkdir(parents=True, exist_ok=True)
+                result = export_dir / f"graph.{self.fmt}"
                 export_graph(graph, self.fmt, result)
                 self.signals.status.emit(f"Экспорт графа ({self.fmt}): {result}")
 

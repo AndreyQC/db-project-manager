@@ -95,3 +95,21 @@ def test_panel_unblocked_after_run(qapp, tmp_path, monkeypatch):
     assert settings.get_last_action() == "graph_prepare"
     assert settings.get_action_settings("graph_prepare")["codebase_dir"] == str(codebase)
     assert (codebase / ".dbm_graph" / "graph.graphml").exists()
+
+
+def test_graph_export_custom_output_dir(qapp, tmp_path):
+    """GraphBuildWorker writes the export to output_dir when set (not .dbm_graph)."""
+    from db_project_manager.presentation.gui.widgets.workers import GraphBuildWorker
+
+    codebase = tmp_path / "codebase"
+    codebase.mkdir()
+    export_dir = tmp_path / "graphs"
+
+    worker = GraphBuildWorker(codebase, fmt="graphml", validate=True, output_dir=export_dir)
+    results: list = []
+    worker.signals.finished.connect(lambda result: results.append(result))
+    worker.run()
+
+    assert results and results[0] == export_dir / "graph.graphml"
+    assert (export_dir / "graph.graphml").exists()
+    assert not (codebase / ".dbm_graph" / "graph.graphml").exists()
