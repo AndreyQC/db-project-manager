@@ -1,26 +1,23 @@
 """Main window — thin presentation layer.
 
-Holds connection list, output directory chooser, the run button, a status log,
-a progress bar, and the read-only project viewer. All business logic lives in
-application services; this class only wires UI to signals.
+Holds the connection list (add/edit/delete), the action panel (dropdown of
+registered actions with configure/run/copy-CLI), a status log, a progress bar,
+and the read-only project viewer. All business logic lives in application
+services; this class only wires UI to signals.
 """
 
 from __future__ import annotations
 
 import os
-from pathlib import Path
 
-from PySide6.QtCore import Qt, QThreadPool
+from pydantic import BaseModel
+from PySide6.QtCore import QThreadPool
 from PySide6.QtWidgets import (
-    QFileDialog,
     QGroupBox,
     QHBoxLayout,
-    QLabel,
-    QLineEdit,
     QMainWindow,
     QMessageBox,
     QProgressBar,
-    QPushButton,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -31,14 +28,13 @@ from db_project_manager.infrastructure.config.connection_store import (
     ConnectionStore,
     ConnectionStoreError,
 )
+from db_project_manager.infrastructure.config.gui_settings import GuiSettingsStore
 from db_project_manager.infrastructure.logging_setup import configure as configure_logging
+from db_project_manager.presentation.gui.actions.registry import get_action
+from db_project_manager.presentation.gui.widgets.action_panel import ActionPanelWidget
 from db_project_manager.presentation.gui.widgets.connection_dialog import ConnectionDialog
 from db_project_manager.presentation.gui.widgets.connection_list import ConnectionListWidget
 from db_project_manager.presentation.gui.widgets.project_viewer import ProjectViewer
-from db_project_manager.presentation.gui.widgets.workers import (
-    DeployValidateWorker,
-    ReverseEngineerWorker,
-)
 
 
 class MainWindow(QMainWindow):
@@ -48,7 +44,12 @@ class MainWindow(QMainWindow):
         configure_logging(level=self.cfg.logging.level, logs_dir=self.cfg.paths.logs_dir)
 
         self.store = ConnectionStore()
+        self.settings_store = GuiSettingsStore()
         self.thread_pool = QThreadPool.globalInstance()
+        # Strong refs to running workers: QThreadPool owns the C++ QRunnable,
+        # but the Python wrapper (and its signals object) must stay alive until
+        # 'finished' is delivered, otherwise the slot never fires.
+        self._active_workers: dict = {}
 
         self.setWindowTitle("DB Project Manager")
         self.setMinimumSize(900, 650)
@@ -64,7 +65,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
         root = QVBoxLayout(central)
 
-        # Top row: connections + output dir + run.
+        # Top row: connections + action panel.
         top = QHBoxLayout()
 
         connections_group = QGroupBox("Подключения")
@@ -77,28 +78,16 @@ class MainWindow(QMainWindow):
         clayout.addWidget(self.connection_list)
         top.addWidget(connections_group)
 
-        actions_group = QGroupBox("Действия")
-        alayout = QVBoxLayout(actions_group)
+        self.action_panel = ActionPanelWidget(
+            self.store,
+            self.settings_store,
+            self.cfg,
+            get_selected_connection=self.connection_list.selected_name,
+        )
+        self.action_panel.execute_requested.connect(self._on_execute)
+        self.action_panel.status_message.connect(self._append_status)
+        top.addWidget(self.action_panel, stretch=1)
 
-        out_row = QHBoxLayout()
-        out_row.addWidget(QLabel("Папка вывода:"))
-        self.output_edit = QLineEdit(self.cfg.paths.default_output_dir)
-        self.output_edit.setReadOnly(True)
-        out_row.addWidget(self.output_edit, stretch=1)
-        browse_btn = QPushButton("Выбрать…")
-        browse_btn.clicked.connect(self._on_select_output)
-        out_row.addWidget(browse_btn)
-        alayout.addLayout(out_row)
-
-        self.run_btn = QPushButton("Сгенерировать скрипты объектов БД")
-        self.run_btn.clicked.connect(self._on_run)
-        alayout.addWidget(self.run_btn)
-
-        self.deploy_btn = QPushButton("Deploy validate…")
-        self.deploy_btn.clicked.connect(self._on_deploy)
-        alayout.addWidget(self.deploy_btn)
-
-        top.addWidget(actions_group, stretch=1)
         root.addLayout(top, stretch=0)
 
         # Progress + status.
@@ -152,138 +141,54 @@ class MainWindow(QMainWindow):
             self.store.delete(name)
             self._refresh_connections()
 
-    # --- output dir ---
+    # --- action execution ---
 
-    def _on_select_output(self) -> None:
-        start = self.output_edit.text() or str(Path.home())
-        directory = QFileDialog.getExistingDirectory(self, "Папка вывода SQL-скриптов", start)
-        if directory:
-            self.output_edit.setText(directory)
-            self.cfg.paths.default_output_dir = directory
-            self._viewer.set_root(directory)
-
-    # --- run ---
-
-    def _on_run(self) -> None:
-        name = self.connection_list.selected_name()
-        if not name:
-            QMessageBox.warning(self, "Запуск", "Выберите подключение.")
-            return
+    def _on_execute(self, action_id: str, settings: BaseModel) -> None:
+        """Build the action's worker and run it on the thread pool."""
+        spec = get_action(action_id)
         try:
-            conn_cfg = self.store.load_by_name(name)
+            worker = spec.make_worker(self.store, settings)
         except ConnectionStoreError as e:
-            QMessageBox.critical(self, "Запуск", f"Не удалось загрузить подключение: {e}")
+            QMessageBox.critical(self, spec.title, f"Не удалось загрузить подключение: {e}")
             return
 
-        output_dir = self.output_edit.text().strip()
-        if not output_dir:
-            QMessageBox.warning(self, "Запуск", "Укажите папку вывода.")
-            return
-
-        self._set_running(True)
-        self.progress_bar.setVisible(True)
-        self.progress_bar.setRange(0, 4)
-        self.progress_bar.setValue(0)
-        self.status_edit.clear()
-        self._append_status(f"Запуск reverse-engineer: {name}")
-
-        worker = ReverseEngineerWorker(conn_cfg, output_dir)
-        worker.signals.progress.connect(self._on_progress)
-        worker.signals.status.connect(self._append_status)
-        worker.signals.error.connect(self._on_error)
-        worker.signals.finished.connect(self._on_finished)
-        self.thread_pool.start(worker)
-
-    def _on_progress(self, message: str, current: int, total: int) -> None:
-        self.progress_bar.setRange(0, total)
-        self.progress_bar.setValue(current)
-
-    def _on_error(self, message: str) -> None:
-        self._append_status(f"ОШИБКА: {message}")
-        QMessageBox.critical(self, "Ошибка", message)
-
-    def _on_finished(self, result) -> None:
-        self._set_running(False)
-        self.progress_bar.setVisible(False)
-        if result is not None:
-            self._append_status(f"Готово: {result}")
-            self._viewer.set_root(Path(result).parent if Path(result).parent.exists() else result)
-
-    def _set_running(self, running: bool) -> None:
-        self.run_btn.setEnabled(not running)
-        self.deploy_btn.setEnabled(not running)
-
-    def _append_status(self, message: str) -> None:
-        self.status_edit.append(message)
-
-    # --- deploy validate ---
-
-    def _on_deploy(self) -> None:
-        """Open the deploy-validate dialog and run it on a background worker."""
-        from PySide6.QtWidgets import QCheckBox, QDialog, QDialogButtonBox, QFormLayout, QLineEdit
-
-        name = self.connection_list.selected_name()
-        if not name:
-            QMessageBox.warning(self, "Deploy", "Выберите подключение к серверу.")
-            return
-
-        codebase_dir = self.output_edit.text().strip()
-        if not codebase_dir:
-            QMessageBox.warning(self, "Deploy", "Укажите папку кодовой базы (поле 'Папка вывода').")
-            return
-
-        # Options dialog (Q3: GUI checkbox for keep_db, off by default).
-        dlg = QDialog(self)
-        dlg.setWindowTitle("Validation deploy")
-        form = QFormLayout(dlg)
-        prefix_edit = QLineEdit()
-        prefix_edit.setPlaceholderText("по умолчанию: имя каталога кодовой базы")
-        keep_check = QCheckBox("Оставить временную БД после деплоя (для отладки)")
-        continue_check = QCheckBox("Продолжать при ошибках в views/functions/procedures")
-        form.addRow("Префикс имени БД:", prefix_edit)
-        form.addRow(keep_check)
-        form.addRow(continue_check)
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
-            Qt.Orientation.Horizontal,
-        )
-        buttons.accepted.connect(dlg.accept)
-        buttons.rejected.connect(dlg.reject)
-        form.addRow(buttons)
-        if dlg.exec() != QDialog.DialogCode.Accepted:
-            return
-
-        try:
-            conn_cfg = self.store.load_by_name(name)
-        except Exception as e:  # noqa: BLE001
-            QMessageBox.critical(self, "Deploy", f"Не удалось загрузить подключение: {e}")
-            return
-
-        prefix_value = prefix_edit.text().strip() or None
         self._set_running(True)
         self.progress_bar.setVisible(True)
         self.progress_bar.setRange(0, 0)  # indeterminate until first progress
         self.status_edit.clear()
-        self._append_status(f"Validation deploy: кодовая база '{codebase_dir}', подключение '{name}'")
+        self._append_status(f"Запуск: {spec.title}")
 
-        worker = DeployValidateWorker(
-            conn_cfg,
-            codebase_dir,
-            prefix=prefix_value,
-            keep_db=keep_check.isChecked(),
-            continue_on_error=continue_check.isChecked(),
-        )
         worker.signals.progress.connect(self._on_progress)
         worker.signals.status.connect(self._append_status)
         worker.signals.error.connect(self._on_error)
-        worker.signals.finished.connect(self._on_deploy_finished)
+        # No lambda/partial here: PySide6 holds only a weak ref to such
+        # receivers, so a closure created here would be garbage-collected
+        # before 'finished' fires. A bound method (self) survives.
+        worker.signals.finished.connect(self._on_worker_finished)
+        self._active_workers[worker.signals] = (worker, action_id, settings)
         self.thread_pool.start(worker)
 
-    def _on_deploy_finished(self, result) -> None:
+    def _on_worker_finished(self, result) -> None:
+        entry = self._active_workers.pop(self.sender(), None)
+        if entry is None:
+            return
+        _worker, action_id, settings = entry
+        self._on_action_finished(action_id, settings, result)
+
+    def _on_action_finished(self, action_id: str, settings: BaseModel, result) -> None:
         self._set_running(False)
         self.progress_bar.setVisible(False)
         if result is None:
             return  # error already reported via _on_error
+        self.action_panel.mark_executed()
+        if action_id == "deploy_validate":
+            self._report_deploy_result(result)
+        else:
+            self._append_status(f"Готово: {result}")
+            if action_id == "reverse_engineer":
+                self._viewer.set_root(settings.output_dir)
+
+    def _report_deploy_result(self, result) -> None:
         # DeployResult has .success / .db_name / .errors / objects_done/total
         success = getattr(result, "success", False)
         db_name = getattr(result, "db_name", "?")
@@ -304,3 +209,19 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(
                 self, "Deploy", f"Деплой завершился с ошибками ({len(errors)}).\nБаза: {db_name}"
             )
+
+    # --- shared worker plumbing ---
+
+    def _on_progress(self, message: str, current: int, total: int) -> None:
+        self.progress_bar.setRange(0, total)
+        self.progress_bar.setValue(current)
+
+    def _on_error(self, message: str) -> None:
+        self._append_status(f"ОШИБКА: {message}")
+        QMessageBox.critical(self, "Ошибка", message)
+
+    def _set_running(self, running: bool) -> None:
+        self.action_panel.set_running(running)
+
+    def _append_status(self, message: str) -> None:
+        self.status_edit.append(message)

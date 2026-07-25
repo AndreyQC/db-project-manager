@@ -53,6 +53,67 @@ class ReverseEngineerWorker(QRunnable):
             self.signals.finished.emit(None)
 
 
+class GraphBuildWorker(QRunnable):
+    """Build the dependency graph (optionally export + validate) off the UI thread."""
+
+    def __init__(
+        self,
+        codebase_dir: str | Path,
+        *,
+        fmt: str = "graphml",
+        validate: bool = True,
+        output_dir: str | Path | None = None,
+    ) -> None:
+        super().__init__()
+        self.codebase_dir = Path(codebase_dir)
+        self.fmt = fmt
+        self.validate = validate
+        # Optional export destination; None = <codebase>/.dbm_graph/.
+        self.output_dir = Path(output_dir) if output_dir else None
+        self.signals = WorkerSignals()
+
+    def run(self) -> None:  # noqa: C901 (Qt entrypoint)
+        from db_project_manager.application.graph_service import BuildGraphService
+        from db_project_manager.domain.graph import CycleError
+        from db_project_manager.infrastructure.graph.export import export_graph
+        from db_project_manager.infrastructure.graph.topological_sort import topological_sort
+
+        try:
+            service = BuildGraphService()
+            self.signals.status.emit(f"Построение графа: {self.codebase_dir}")
+            graph_dir = service.build_and_store(self.codebase_dir)
+            graph = service.build(self.codebase_dir)
+            self.signals.status.emit(
+                f"Граф построен: вершин={len(graph.vertices)}, рёбер={len(graph.edges)}; {graph_dir}"
+            )
+
+            if self.validate:
+                topological_sort(graph)  # raises CycleError on cycles
+                dangling = graph.dangling_edges()
+                if dangling:
+                    names = ", ".join(
+                        f"{e.source_object_key} -> {e.destination_object_key}" for e in dangling[:20]
+                    )
+                    raise ValueError(f"Висячие ссылки ({len(dangling)}): {names}")
+                self.signals.status.emit("Граф валиден: циклов и висячих ссылок нет.")
+
+            result: Path = graph_dir
+            if self.fmt != "none":
+                export_dir = self.output_dir or graph_dir
+                export_dir.mkdir(parents=True, exist_ok=True)
+                result = export_dir / f"graph.{self.fmt}"
+                export_graph(graph, self.fmt, result)
+                self.signals.status.emit(f"Экспорт графа ({self.fmt}): {result}")
+
+            self.signals.finished.emit(result)
+        except CycleError as e:
+            self.signals.error.emit(f"Граф содержит циклы: {', '.join(sorted(e.unresolved))}")
+            self.signals.finished.emit(None)
+        except Exception as e:  # noqa: BLE001
+            self.signals.error.emit(f"Непредвиденная ошибка: {e}")
+            self.signals.finished.emit(None)
+
+
 class DeployValidateWorker(QRunnable):
     """Run validation deploy off the UI thread."""
 
