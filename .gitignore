@@ -140,3 +140,5 @@ logs/
 # Generated graph artifacts (deterministically rebuilt from codebase via db-pm graph build)
 **/.dbm_graph/
 
+# GUI action panel settings (local paths, per-machine)
+gui_settings.json
