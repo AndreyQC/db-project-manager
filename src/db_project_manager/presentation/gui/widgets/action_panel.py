@@ -125,7 +125,7 @@ class ActionPanelWidget(QGroupBox):
     def _apply_defaults(self, settings: BaseModel) -> BaseModel:
         """Fill empty connection/dir fields from the list selection and config."""
         updates: dict[str, str] = {}
-        for field in settings.model_fields:
+        for field in type(settings).model_fields:
             value = getattr(settings, field)
             if isinstance(value, str) and not value:
                 if field == "connection":
@@ -146,7 +146,7 @@ class ActionPanelWidget(QGroupBox):
         settings = self.current_settings()
 
         lines = []
-        for field in settings.model_fields:
+        for field in type(settings).model_fields:
             value = getattr(settings, field)
             label = FIELD_LABELS.get(field, field)
             if isinstance(value, bool):

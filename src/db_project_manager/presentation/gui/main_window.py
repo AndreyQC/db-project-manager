@@ -46,6 +46,10 @@ class MainWindow(QMainWindow):
         self.store = ConnectionStore()
         self.settings_store = GuiSettingsStore()
         self.thread_pool = QThreadPool.globalInstance()
+        # Strong refs to running workers: QThreadPool owns the C++ QRunnable,
+        # but the Python wrapper (and its signals object) must stay alive until
+        # 'finished' is delivered, otherwise the slot never fires.
+        self._active_workers: dict = {}
 
         self.setWindowTitle("DB Project Manager")
         self.setMinimumSize(900, 650)
@@ -157,10 +161,19 @@ class MainWindow(QMainWindow):
         worker.signals.progress.connect(self._on_progress)
         worker.signals.status.connect(self._append_status)
         worker.signals.error.connect(self._on_error)
-        worker.signals.finished.connect(
-            lambda result, aid=action_id, s=settings: self._on_action_finished(aid, s, result)
-        )
+        # No lambda/partial here: PySide6 holds only a weak ref to such
+        # receivers, so a closure created here would be garbage-collected
+        # before 'finished' fires. A bound method (self) survives.
+        worker.signals.finished.connect(self._on_worker_finished)
+        self._active_workers[worker.signals] = (worker, action_id, settings)
         self.thread_pool.start(worker)
+
+    def _on_worker_finished(self, result) -> None:
+        entry = self._active_workers.pop(self.sender(), None)
+        if entry is None:
+            return
+        _worker, action_id, settings = entry
+        self._on_action_finished(action_id, settings, result)
 
     def _on_action_finished(self, action_id: str, settings: BaseModel, result) -> None:
         self._set_running(False)

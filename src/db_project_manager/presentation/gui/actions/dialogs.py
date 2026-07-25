@@ -41,12 +41,19 @@ FORMAT_LABELS = {
 
 
 class BaseActionDialog(QDialog):
-    """Common skeleton: form + OK/Cancel, settings roundtrip."""
+    """Common skeleton: form + OK/Cancel, settings roundtrip.
+
+    Subclasses build their fields and then MUST call ``_add_buttons()`` last,
+    so the button box stays at the bottom of the dialog.
+    """
 
     def __init__(self, title: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle(title)
         self._form = QFormLayout(self)
+
+    def _add_buttons(self) -> None:
+        """Append the OK/Cancel button box as the last row of the form."""
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
@@ -100,8 +107,9 @@ class ReverseEngineerDialog(BaseActionDialog):
     ) -> None:
         super().__init__("Создать проект базы по подключению PG — настройки", parent)
         self._connection = self._connections_combo(store, settings.connection)
-        self._form.insertRow(0, "Подключение:", self._connection)
+        self._form.addRow("Подключение:", self._connection)
         self._output_dir = self._dir_row(settings.output_dir, "Каталог вывода:")
+        self._add_buttons()
 
     def settings(self) -> ReverseEngineerSettings:
         return ReverseEngineerSettings(
@@ -134,6 +142,7 @@ class DeployValidateDialog(BaseActionDialog):
         )
         self._continue_on_error.setChecked(settings.continue_on_error)
         self._form.addRow(self._continue_on_error)
+        self._add_buttons()
 
     def settings(self) -> DeployValidateSettings:
         return DeployValidateSettings(
@@ -167,6 +176,7 @@ class GraphPrepareDialog(BaseActionDialog):
         self._validate = QCheckBox("Проверить граф (циклы, висячие ссылки)")
         self._validate.setChecked(settings.validate_graph)
         self._form.addRow(self._validate)
+        self._add_buttons()
 
     def settings(self) -> GraphPrepareSettings:
         return GraphPrepareSettings(
