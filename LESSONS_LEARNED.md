@@ -453,3 +453,50 @@
 - **Реальный эффект:** на codebase `qr_pamyat` граф вырос с 539 до 716 рёбер
   (+177 function-call edges), появилась корректная топосортировка функций,
   которые зависят от других функций.
+
+---
+
+## Phase 7 — GUI: панель действий
+
+### 39. CliRunner-контракт: argv без имени программы, shlex на Windows
+- **Симптом:** контракт-тест «GUI строит CLI-строку» падал с exit code 2
+  (usage error), хотя флаги были корректны.
+- **Причина:** `typer.testing.CliRunner.invoke(app, args)` ожидает argv **без**
+  имени программы, а сгенерированная строка начинается с `db-pm ...`.
+- **Решение:** при разборе строки отбрасывать первый токен. Разбор —
+  `shlex.split(cmd, posix=False)`: на Windows `posix=True` съедает бэкслеши
+  в путях (`connections\qr.yaml` → `connectionsqr.yaml`); после `posix=False`
+  кавычки снимаются вручную (`strip('"')`).
+- **Урок:** тест «GUI↔CLI контракт» через CliRunner — дешёвая страховка от
+  рассинхрона флагов, но сам способ разбора строки в argv платформенно-хрупок;
+  держи разбор в одном helper'е (`_argv`) и не дублируй.
+
+### 40. Pydantic: имя поля `validate` затеняет `BaseModel.validate`
+- **Симптом:** `UserWarning: Field name "validate" in "GraphPrepareSettings"
+  shadows an attribute in parent "BaseModel"` при импорте модели.
+- **Решение:** переименовать поле (`validate_graph`). Не подавлять warning —
+  затенение методов BaseModel (`validate`, `schema`, `copy`, `dict`, `json`)
+  — источник трудных багов при вызове API модели.
+- **Урок:** при добавлении полей в pydantic-модель прогоняй импорт и смотри
+  warnings — pydantic v2 сам сообщает о коллизиях имён с BaseModel.
+
+### 41. Headless smoke-тест Qt-окна через QT_QPA_PLATFORM=offscreen
+- PySide6-виджеты в проекте сознательно не покрываются unit-тестами, но
+  конструктор главного окна можно проверить без дисплея:
+  `QT_QPA_PLATFORM=offscreen uv run python -c "..."` — создаёт QApplication и
+  MainWindow, позволяет дёрнуть combo/signals и прочитать текст виджетов.
+- **Урок:** offscreen-платформа — дешёвый способ smoke-проверки GUI в CLI-сессии
+  (и в CI при необходимости): не заменяет ручное тестирование, но ловит
+  ошибки конструирования/связки сигналов сразу после рефакторинга.
+
+---
+
+## Контрольный список для Phase 8
+
+При реализации overload resolution в edge detection (BACKLOG P1):
+- [ ] `_build_names_index` — индексация по сигнатуре, не только по bare name
+  (LESSONS §26: object_key уже содержит signature hash).
+- [ ] Type inference для литералов и типов колонок — partial MVP, простые
+  случаи; ambiguous → deterministic fallback + протокол (как в qualify-refs §36).
+- [ ] Регрессионные тесты на перегрузках: ребро идёт к правильной перегрузке.
+- [ ] Прогон на `qr_pamyat`: число рёбер не должно уменьшиться (716+).
