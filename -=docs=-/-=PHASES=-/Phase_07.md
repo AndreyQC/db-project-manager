@@ -29,14 +29,15 @@
 | GUI actions | `presentation/gui/actions/cli.py` → `build_cli` для копируемой CLI-команды |
 | GUI actions | `presentation/gui/actions/dialogs.py` → диалоги «Настроить…» (3 шт.) |
 | GUI widgets | `presentation/gui/widgets/action_panel.py` → контейнер действия (dropdown, summary, кнопки, CLI-строка) |
-| GUI widgets | `presentation/gui/widgets/workers.py` → +`GraphBuildWorker` |
+| GUI widgets | `presentation/gui/widgets/workers.py` → +`GraphBuildWorker` (опциональный каталог экспорта) |
 | GUI | `presentation/gui/main_window.py` → интеграция панели; удалены старые кнопки и глобальная «Папка вывода» |
 | Config | `infrastructure/config/gui_settings.py` → `GuiSettingsStore` (JSON, атомарная запись, corrupt-safe) |
 | Repo | `.gitignore` → +`gui_settings.json` |
-| Tests | `test_gui_settings.py` (8), `test_action_cli.py` (9), `test_action_registry.py` (6) |
+| Tests | `test_gui_settings.py` (8), `test_action_cli.py` (10), `test_action_registry.py` (6), `test_action_panel_smoke.py` (5) |
 
 Ключевые коммиты: `dda2312`, `3a8ee9a`, `4c3c800`, `a481f10`, `1dee90d`,
-`ed199c2`, `1991560`, `0637678`.
+`ed199c2`, `1991560`, `0637678`. Hotfix по ручному тесту: `ac13a0b`.
+Доработка (каталог экспорта графа): `150c8a3`.
 
 ---
 
@@ -63,7 +64,7 @@
 
 ```bash
 unset SSL_CERT_FILE REQUESTS_CA_BUNDLE CURL_CA_BUNDLE && uv run pytest tests/unit/ -q
-# 301 passed (278 baseline + 23 новых) — OK
+# 307 passed (278 baseline + 29 новых) — OK
 uv run ruff check src/ tests/
 # All checks passed!
 ```
@@ -71,17 +72,20 @@ uv run ruff check src/ tests/
 Headless smoke (`QT_QPA_PLATFORM=offscreen`, LESSONS §41): MainWindow создаётся,
 dropdown содержит 3 действия, summary/CLI переключаются, дефолты подставляются — OK.
 
+**Ручной тест пользователем** — пройден после hotfix `ac13a0b`: найдены и
+исправлены 2 бага (блокировка панели из-за GC лямбды в `finished`, LESSONS §42;
+кнопки OK/Отмена не внизу диалогов, LESSONS §43), добавлены регрессионные
+offscreen-тесты. По пожеланию добавлен опциональный каталог экспорта графа
+(`150c8a3`, result §3.2).
+
 ---
 
 ## 5. Известные ограничения / NOT done
 
-- GUI-виджеты без unit-тестов (как и раньше; логика в тестируемых слоях).
 - Копируемая CLI — строка для ручного запуска; GUI исполняет через services.
-- GEXF-экспорт, per-row dropdown в списке подключений — BACKLOG.
+- GEXF-экспорт, per-row dropdown в списке подключений — BACKLOG P3.
 - Overload resolution (бывший «Phase 7» по BACKLOG P1) — перенесён в Phase 8
   (решение U1).
-- Живой прогон reverse/deploy из нового UI против реальной БД не выполнялся
-  (workers переиспользованы без изменений; smoke — offscreen).
 
 ---
 
