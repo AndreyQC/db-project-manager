@@ -49,13 +49,25 @@
 
 ```bash
 unset SSL_CERT_FILE REQUESTS_CA_BUNDLE CURL_CA_BUNDLE && uv run pytest tests/unit/ -q
-# 301 passed (baseline 278 + 23 новых: gui_settings 8, action_cli 9, registry 6)
+# 305 passed (baseline 278 + 27: gui_settings 8, action_cli 9, registry 6, smoke 4)
 uv run ruff check src/ tests/
 # All checks passed!
 ```
 
 Headless smoke (`QT_QPA_PLATFORM=offscreen`): MainWindow + ActionPanelWidget —
 OK (3 действия в dropdown, summary/CLI обновляются при переключении).
+
+### 3.1. Hotfix по результатам ручного теста (коммит `ac13a0b`)
+
+| Замечание | Причина | Фикс |
+|-----------|---------|------|
+| Dropdown оставался заблокированным после выполнения действия | `finished` подключён к лямбде — PySide6 держит слабую ссылку, слот умирал после GC; worker тоже без сильной ссылки | bound-метод `_on_worker_finished` + `self._active_workers` (LESSONS §42) |
+| OK/Отмена в середине диалога «Настроить…» | `BaseActionDialog` добавлял button box до полей подклассов | `_add_buttons()` вызывается последним в каждом диалоге (LESSONS §43) |
+
+Регрессионные тесты: `tests/unit/test_action_panel_smoke.py` (offscreen) —
+панель разблокируется после прогона, кнопки последние во всех трёх диалогах.
+Заодно устранён deprecation: `settings.model_fields` → `type(settings).model_fields`
+(pydantic 2.11).
 
 ---
 
