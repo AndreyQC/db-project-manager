@@ -1,0 +1,40 @@
+# Connection file example.
+# connections/ directory is git-ignored except this example file.
+# Real connections are created via GUI (Connection dialog) or manually copied here.
+#
+# The password field uses the crypto__<ENV_VAR>__<token> format:
+#   - <ENV_VAR> is an environment variable name holding the Fernet key (set on your machine / CI secrets).
+#   - <token> is the Fernet ciphertext.
+# To produce an encrypted password, run: db-pm crypto encrypt <ENV_VAR>   (reads password from stdin)
+# or use the GUI connection dialog (encrypts automatically on save).
+#
+# =============================================================================
+# SCENARIO A: Direct PostgreSQL connection
+# =============================================================================
+# connection_type: direct
+# host: localhost
+# port: 5432
+# database: mydb
+# username: myuser
+# password: crypto__ENVOS_CRYPTO_01__gAAAAABm...your-token...
+# type: postgres
+# options:
+#   sslmode: prefer
+
+# =============================================================================
+# SCENARIO B: PostgreSQL via SSH tunnel
+# =============================================================================
+# connection_type: ssh_tunnel
+# host: 127.0.0.1           # Local tunnel endpoint (ignored when using tunnel)
+# port: 5432
+# database: mydb
+# username: myuser
+# password: crypto__ENVOS_CRYPTO_01__gAAAAABm...your-token...
+# type: postgres
+# ssh_tunnel:
+#   ssh_host: 192.168.1.100  # Jump host IP
+#   ssh_port: 22
+#   ssh_user: root
+#   ssh_pass: crypto__ENVOS_CRYPTO_01__gAAAAABm...your-token...
+#   remote_bind_host: 127.0.0.1  # DB host as seen from jump host
+#   remote_bind_port: 5432

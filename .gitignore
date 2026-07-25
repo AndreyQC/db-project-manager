@@ -127,3 +127,16 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# --- db-project-manager specific ---
+# Secrets / local config (created by user, not committed)
+config.yaml
+config.local.yaml
+*.local.yaml
+connections/*
+!connections/example.yaml
+# Logs
+logs/
+# Generated graph artifacts (deterministically rebuilt from codebase via db-pm graph build)
+**/.dbm_graph/
+

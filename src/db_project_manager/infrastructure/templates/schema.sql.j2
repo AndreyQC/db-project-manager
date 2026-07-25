@@ -1,0 +1,7 @@
+-- Создание схемы {{ _qi(name) }}
+
+CREATE SCHEMA {{ _qi(name) }};
+
+{% if comment %}
+COMMENT ON SCHEMA {{ _qi(name) }} IS '{{ comment }}';
+{% endif %}

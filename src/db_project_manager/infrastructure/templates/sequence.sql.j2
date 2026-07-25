@@ -1,0 +1,12 @@
+-- Создание последовательности {{ _qi(schema) }}.{{ _qi(name) }}
+CREATE SEQUENCE {{ _qi(schema) }}.{{ _qi(name) }}
+    INCREMENT BY {{ increment }}
+    MINVALUE {{ minvalue }}
+    MAXVALUE {{ maxvalue }}
+    START {{ start }}
+    CACHE {{ cache }}
+    {{ cycle }};
+{% if comment %}
+-- Комментарий к последовательности
+COMMENT ON TABLE {{ _qi(schema) }}.{{ _qi(name) }} IS '{{ comment }}';
+{% endif %}

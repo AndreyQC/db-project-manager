@@ -1,0 +1,9 @@
+-- Создание расширения {{ _qi(name) }}
+CREATE EXTENSION IF NOT EXISTS {{ _qi(name) }}
+{% if schema %}SCHEMA {{ _qi(schema) }}{% endif %}
+{% if version %}VERSION {{ version }}{% endif %}
+{% if cascade %}CASCADE{% endif %};
+
+{% if comment %}
+COMMENT ON EXTENSION {{ _qi(name) }} IS '{{ comment }}';
+{% endif %}

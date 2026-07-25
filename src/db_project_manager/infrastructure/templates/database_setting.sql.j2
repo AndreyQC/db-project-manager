@@ -1,0 +1,6 @@
+-- Параметры уровня базы (ALTER DATABASE ... SET).
+-- Имя БД — исходное (из object_catalog); deploy-сервис подменяет его на имя
+-- целевой/временной БД перед выполнением (P5.S07).
+{% for s in settings %}
+ALTER DATABASE {{ _qi(database_name) }} SET {{ s.name }} = {{ _qs(s.value) }};
+{% endfor %}

@@ -1,0 +1,6 @@
+-- Создание процедуры {{ _qi(schema) }}.{{ _qi(name) }}({{ argument_types }})
+{{ definition }};{% if comment %}
+
+
+COMMENT ON PROCEDURE {{ _qi(schema) }}.{{ _qi(name) }}({{ argument_types }}) IS '{{ comment }}';
+{% endif %}

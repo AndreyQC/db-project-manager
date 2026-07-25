@@ -1,0 +1,15 @@
+-- Создание представления {{ _qi(schema) }}.{{ _qi(name) }}
+CREATE OR REPLACE VIEW {{ _qi(schema) }}.{{ _qi(name) }}
+AS{{ definition }}
+
+{% if comment %}
+-- Комментарий к представлению {{ _qi(schema) }}.{{ _qi(name) }}
+COMMENT ON VIEW {{ _qi(schema) }}.{{ _qi(name) }} IS '{{ comment }}';
+{% endif %}
+{% for col in columns if col.comment %}
+    {% if loop.first %}
+
+-- Комментарии к колонкам
+    {% endif %}
+COMMENT ON COLUMN {{ _qi(schema) }}.{{ _qi(name) }}.{{ _qi(col.name) }} IS '{{ col.comment }}';
+{% endfor %}
