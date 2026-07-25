@@ -69,6 +69,18 @@ OK (3 действия в dropdown, summary/CLI обновляются при п
 Заодно устранён deprecation: `settings.model_fields` → `type(settings).model_fields`
 (pydantic 2.11).
 
+### 3.2. Доработка по пожеланию пользователя (коммит `150c8a3`)
+
+- `graph_prepare`: добавлена опциональная настройка **«Каталог для файла
+  экспорта»** (`output_dir` в `GraphPrepareSettings`). Пусто = прежнее
+  поведение (`<кодовая база>/.dbm_graph/`); задано — `graph.<fmt>` пишется
+  туда (каталог создаётся при необходимости), а CLI-строка получает
+  `--output <dir>/graph.<fmt>`.
+- Панель: автодефолты теперь подставляются **только в `required_fields`** —
+  опциональный `output_dir` молча не заполняется.
+- Тесты: +CLI-строка с `--output`, контракт CliRunner с `--output`, smoke
+  `GraphBuildWorker` с кастомным каталогом (307 passed).
+
 ---
 
 ## 4. Известные ограничения
