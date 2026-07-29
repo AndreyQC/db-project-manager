@@ -17,7 +17,7 @@ def test_action_ids_unique():
 
 def test_expected_actions_present():
     ids = {a.action_id for a in ACTIONS}
-    assert ids == {"reverse_engineer", "deploy_validate", "graph_prepare"}
+    assert ids == {"reverse_engineer", "deploy_validate", "graph_prepare", "compare"}
 
 
 def test_specs_are_complete():

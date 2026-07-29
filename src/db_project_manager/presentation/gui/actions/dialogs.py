@@ -27,6 +27,7 @@ from db_project_manager.infrastructure.config.connection_store import Connection
 from db_project_manager.presentation.gui.actions.models import (
     EXPORT_FORMATS,
     FORMAT_NONE,
+    CompareSettings,
     DeployValidateSettings,
     GraphPrepareSettings,
     ReverseEngineerSettings,
@@ -191,4 +192,53 @@ class GraphPrepareDialog(BaseActionDialog):
             format=self._format.currentData(),
             validate_graph=self._validate.isChecked(),
             output_dir=self._output_dir.text().strip(),
+        )
+
+
+class CompareDialog(BaseActionDialog):
+    """Settings for 'Сравнить состояния (БД или каталог reverse-engineer)'.
+
+    Two sides (source/target); each side offers a connection combo AND a directory
+    row — exactly one must be filled per side (XOR enforced at SideSpec build time).
+    """
+
+    def __init__(
+        self,
+        store: ConnectionStore,
+        settings: CompareSettings,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__("Сравнение состояний — настройки", parent)
+
+        self._source_connection = self._connections_combo(store, settings.source_connection)
+        self._form.addRow("Source: подключение (БД):", self._source_connection)
+        self._source_dir = self._dir_row(
+            settings.source_dir,
+            "Source: каталог reverse-engineer:",
+            placeholder="укажите ИЛИ подключение, ИЛИ каталог",
+        )
+
+        self._target_connection = self._connections_combo(store, settings.target_connection)
+        self._form.addRow("Target: подключение (БД):", self._target_connection)
+        self._target_dir = self._dir_row(
+            settings.target_dir,
+            "Target: каталог reverse-engineer:",
+            placeholder="укажите ИЛИ подключение, ИЛИ каталог",
+        )
+
+        self._output_dir = self._dir_row(settings.output_dir, "Каталог для отчётов:")
+        self._keep_model_dir = QCheckBox("Сохранить временный каталог reverse-engineer (для отладки)")
+        self._keep_model_dir.setChecked(settings.keep_model_dir)
+        self._form.addRow(self._keep_model_dir)
+
+        self._add_buttons()  # LESSONS §43 — last row of the form
+
+    def settings(self) -> CompareSettings:
+        return CompareSettings(
+            source_connection=self._source_connection.currentText().strip(),
+            source_dir=self._source_dir.text().strip(),
+            target_connection=self._target_connection.currentText().strip(),
+            target_dir=self._target_dir.text().strip(),
+            output_dir=self._output_dir.text().strip(),
+            keep_model_dir=self._keep_model_dir.isChecked(),
         )

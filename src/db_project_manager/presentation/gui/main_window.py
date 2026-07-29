@@ -151,6 +151,10 @@ class MainWindow(QMainWindow):
         except ConnectionStoreError as e:
             QMessageBox.critical(self, spec.title, f"Не удалось загрузить подключение: {e}")
             return
+        except ValueError as e:
+            # Raised by compare's _side_spec when a side has both/neither fields set.
+            QMessageBox.critical(self, spec.title, str(e))
+            return
 
         self._set_running(True)
         self.progress_bar.setVisible(True)
@@ -183,10 +187,37 @@ class MainWindow(QMainWindow):
         self.action_panel.mark_executed()
         if action_id == "deploy_validate":
             self._report_deploy_result(result)
+        elif action_id == "compare":
+            # result is the report dir (Path). Open it in the viewer and show a summary.
+            self._viewer.set_root(str(result))
+            self._append_status(self._compare_summary(result))
         else:
             self._append_status(f"Готово: {result}")
             if action_id == "reverse_engineer":
                 self._viewer.set_root(settings.output_dir)
+
+    def _compare_summary(self, report_dir) -> str:
+        """Format an added/removed/changed/unchanged line from diff_report.json.
+
+        Best-effort: if the JSON is missing/unreadable, fall back to a plain
+        'Готово' line so a transient read failure never hides the successful run.
+        """
+        import json
+
+        from pathlib import Path
+
+        path = Path(report_dir) / "diff_report.json"
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            summary = data.get("summary", {})
+            return (
+                f"Сравнение завершено: добавлено {summary.get('added', '?')}, "
+                f"удалено {summary.get('removed', '?')}, "
+                f"изменено {summary.get('changed', '?')}, "
+                f"без изменений {summary.get('unchanged', '?')}. Отчёт: {report_dir}"
+            )
+        except Exception:  # noqa: BLE001 — best-effort summary, never fatal
+            return f"Готово: {report_dir}"
 
     def _report_deploy_result(self, result) -> None:
         # DeployResult has .success / .db_name / .errors / objects_done/total

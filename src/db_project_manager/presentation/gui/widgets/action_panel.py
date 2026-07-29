@@ -45,11 +45,18 @@ FIELD_LABELS = {
     "continue_on_error": "продолжать при ошибках",
     "format": "формат экспорта",
     "validate_graph": "проверить граф",
+    # compare (Phase 9 GUI action)
+    "source_connection": "source: подключение",
+    "source_dir": "source: каталог",
+    "target_connection": "target: подключение",
+    "target_dir": "target: каталог",
+    "keep_model_dir": "сохранить reverse-engineer",
 }
 
 # Per-action label overrides (same field name, different meaning).
 ACTION_FIELD_LABELS = {
     "graph_prepare": {"output_dir": "каталог для файла экспорта"},
+    "compare": {"output_dir": "каталог для отчётов"},
 }
 
 

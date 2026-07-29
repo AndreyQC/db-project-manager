@@ -11,6 +11,7 @@ from db_project_manager.infrastructure.config.connection_store import Connection
 
 from db_project_manager.presentation.gui.actions.models import (
     FORMAT_NONE,
+    CompareSettings,
     DeployValidateSettings,
     GraphPrepareSettings,
     ReverseEngineerSettings,
@@ -59,3 +60,28 @@ def build_cli_graph_prepare(settings: GraphPrepareSettings, store: ConnectionSto
     if settings.validate_graph:
         commands.append(f"db-pm graph validate --dir {directory}")
     return " && ".join(commands)
+
+
+def _side_cli(
+    label: str, connection: str, dir_: str, store: ConnectionStore
+) -> list[str]:
+    """Emit exactly one of ``--<label>-connection-file`` / ``--<label>-dir``.
+
+    Mirrors the CLI's ``_resolve_side`` XOR rule: exactly one must be set. When
+    neither is set, the side is omitted — the CLI will then exit 2 with a clear
+    message ("укажите один из --source-dir / --source-connection-file").
+    """
+    if connection:
+        return [f"--{label}-connection-file {_quote(str(store.path_for(connection)))}"]
+    if dir_:
+        return [f"--{label}-dir {_quote(dir_)}"]
+    return []
+
+
+def build_cli_compare(settings: CompareSettings, store: ConnectionStore) -> str:
+    parts = ["db-pm compare run", f"--output-dir {_quote(settings.output_dir)}"]
+    parts += _side_cli("source", settings.source_connection, settings.source_dir, store)
+    parts += _side_cli("target", settings.target_connection, settings.target_dir, store)
+    if settings.keep_model_dir:
+        parts.append("--keep-model-dir")
+    return " ".join(parts)

@@ -25,11 +25,13 @@ from db_project_manager.infrastructure.config.connection_store import (  # noqa:
 )
 from db_project_manager.infrastructure.config.gui_settings import GuiSettingsStore  # noqa: E402
 from db_project_manager.presentation.gui.actions.dialogs import (  # noqa: E402
+    CompareDialog,
     DeployValidateDialog,
     GraphPrepareDialog,
     ReverseEngineerDialog,
 )
 from db_project_manager.presentation.gui.actions.models import (  # noqa: E402
+    CompareSettings,
     DeployValidateSettings,
     GraphPrepareSettings,
     ReverseEngineerSettings,
@@ -113,3 +115,33 @@ def test_graph_export_custom_output_dir(qapp, tmp_path):
     assert results and results[0] == export_dir / "graph.graphml"
     assert (export_dir / "graph.graphml").exists()
     assert not (codebase / ".dbm_graph" / "graph.graphml").exists()
+
+
+def test_buttons_are_last_row_compare(qapp, tmp_path):
+    """CompareDialog must keep buttons as the last row (lesson §43)."""
+    dlg = CompareDialog(ConnectionStore(tmp_path), CompareSettings())
+    assert isinstance(_last_form_widget(dlg), QDialogButtonBox)
+
+
+def test_compare_worker_reports_error_on_missing_side(qapp, tmp_path):
+    """CompareWorker surfaces a CompareError when a side is misconfigured.
+
+    Builds two DIR sides pointing at non-existent dirs (no manifest) → CompareService
+    raises CompareError → worker emits error + finished(None).
+    """
+    from db_project_manager.application.compare_service import SideSpec
+    from db_project_manager.domain.diff import SnapshotSourceKind
+    from db_project_manager.presentation.gui.widgets.workers import CompareWorker
+
+    src = SideSpec(SnapshotSourceKind.DIR, str(tmp_path / "nope_src"))
+    tgt = SideSpec(SnapshotSourceKind.DIR, str(tmp_path / "nope_tgt"))
+    worker = CompareWorker(src, tgt, tmp_path / "out")
+    errors: list[str] = []
+    finishes: list = []
+    worker.signals.error.connect(lambda msg: errors.append(msg))
+    worker.signals.finished.connect(lambda result: finishes.append(result))
+    worker.run()
+
+    assert errors, "worker must emit an error on missing manifest"
+    assert "не содержит" in errors[0] or "manifest" in errors[0].lower()
+    assert finishes == [None]

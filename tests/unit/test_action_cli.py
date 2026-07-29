@@ -16,11 +16,13 @@ from typer.testing import CliRunner
 from db_project_manager.infrastructure.config.connection_store import ConnectionStore
 from db_project_manager.presentation.cli import main as cli_main
 from db_project_manager.presentation.gui.actions.cli import (
+    build_cli_compare,
     build_cli_deploy_validate,
     build_cli_graph_prepare,
     build_cli_reverse_engineer,
 )
 from db_project_manager.presentation.gui.actions.models import (
+    CompareSettings,
     DeployValidateSettings,
     GraphPrepareSettings,
     ReverseEngineerSettings,
@@ -116,6 +118,77 @@ def test_paths_with_spaces_are_quoted(tmp_path):
     assert '--output "C:/my dir/qr"' in cmd
 
 
+# --- compare (Phase 9 GUI action) ---
+
+
+def test_compare_cli_string_dir_vs_dir(tmp_path):
+    store = _store(tmp_path)
+    s = CompareSettings(source_dir="C:/src", target_dir="C:/tgt", output_dir="C:/out")
+    cmd = build_cli_compare(s, store)
+    assert cmd == "db-pm compare run --output-dir C:/out --source-dir C:/src --target-dir C:/tgt"
+
+
+def test_compare_cli_string_db_vs_db(tmp_path):
+    store = _store(tmp_path)
+    s = CompareSettings(
+        source_connection="dev", target_connection="prod", output_dir="C:/out"
+    )
+    cmd = build_cli_compare(s, store)
+    assert cmd == (
+        f"db-pm compare run --output-dir C:/out "
+        f"--source-connection-file {store.path_for('dev')} "
+        f"--target-connection-file {store.path_for('prod')}"
+    )
+
+
+def test_compare_cli_string_mixed_dir_db(tmp_path):
+    store = _store(tmp_path)
+    s = CompareSettings(
+        source_dir="C:/src", target_connection="prod", output_dir="C:/out"
+    )
+    cmd = build_cli_compare(s, store)
+    assert cmd == (
+        f"db-pm compare run --output-dir C:/out --source-dir C:/src "
+        f"--target-connection-file {store.path_for('prod')}"
+    )
+
+
+def test_compare_cli_keep_model_dir_flag(tmp_path):
+    store = _store(tmp_path)
+    s = CompareSettings(
+        source_dir="C:/src", target_dir="C:/tgt", output_dir="C:/out", keep_model_dir=True
+    )
+    cmd = build_cli_compare(s, store)
+    assert "--keep-model-dir" in cmd
+
+
+def test_compare_cli_keep_model_dir_omitted_when_off(tmp_path):
+    store = _store(tmp_path)
+    s = CompareSettings(source_dir="C:/src", target_dir="C:/tgt", output_dir="C:/out")
+    cmd = build_cli_compare(s, store)
+    assert "--keep-model-dir" not in cmd
+
+
+def test_compare_cli_paths_with_spaces_quoted(tmp_path):
+    store = _store(tmp_path)
+    s = CompareSettings(
+        source_dir="C:/my src", target_dir="C:/my tgt", output_dir="C:/my out"
+    )
+    cmd = build_cli_compare(s, store)
+    assert '--source-dir "C:/my src"' in cmd
+    assert '--target-dir "C:/my tgt"' in cmd
+    assert '--output-dir "C:/my out"' in cmd
+
+
+def test_compare_cli_omits_unset_side(tmp_path):
+    """Neither source field set → --source-* omitted; CLI will exit 2 with a clear message."""
+    store = _store(tmp_path)
+    s = CompareSettings(target_dir="C:/tgt", output_dir="C:/out")
+    cmd = build_cli_compare(s, store)
+    assert "--source-" not in cmd
+    assert "--target-dir C:/tgt" in cmd
+
+
 # --- typer contract tests (mocked services) ---
 
 
@@ -187,3 +260,30 @@ def test_contract_graph_prepare(tmp_path, monkeypatch):
     for subcommand in cmd.split(" && "):
         result = runner.invoke(cli_main.app, _argv(subcommand))
         assert result.exit_code == 0, f"{subcommand}: {result.output}"
+
+
+def test_contract_compare(tmp_path, monkeypatch):
+    """The GUI-built compare command parses through the real typer compare run."""
+    _patch_common(monkeypatch)
+    # compare_run calls load_cfg(...) — patch it to avoid needing config.yaml.
+    monkeypatch.setattr(cli_main, "load_cfg", lambda *a, **k: SimpleNamespace())
+    # CompareService is imported lazily inside compare_run, so patch on the source module.
+    import db_project_manager.application.compare_service as cs_module
+
+    monkeypatch.setattr(cs_module, "CompareService", lambda: SimpleNamespace(run=lambda *a, **k: tmp_path / "report"))
+    # _resolve_side checks is_dir() — create the dirs so the CLI accepts them.
+    (tmp_path / "src").mkdir()
+    (tmp_path / "tgt").mkdir()
+
+    store = _store(tmp_path)
+    cmd = build_cli_compare(
+        CompareSettings(
+            source_dir=str(tmp_path / "src"),
+            target_dir=str(tmp_path / "tgt"),
+            output_dir=str(tmp_path / "out"),
+            keep_model_dir=True,
+        ),
+        store,
+    )
+    result = runner.invoke(cli_main.app, _argv(cmd))
+    assert result.exit_code == 0, result.output

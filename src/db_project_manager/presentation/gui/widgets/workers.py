@@ -167,3 +167,53 @@ class DeployValidateWorker(QRunnable):
         except Exception as e:  # noqa: BLE001
             self.signals.error.emit(f"Непредвиденная ошибка: {e}")
             self.signals.finished.emit(None)
+
+
+class CompareWorker(QRunnable):
+    """Run a DB/codebase comparison off the UI thread.
+
+    Delegates to CompareService.run; emits the output-dir Path on success, None on
+    error. CompareError (db_type mismatch, missing manifest) is reported via
+    signals.error with its message.
+    """
+
+    def __init__(
+        self,
+        source,  # SideSpec
+        target,  # SideSpec
+        output_dir: str | Path,
+        *,
+        keep_model_dir: bool = False,
+    ) -> None:
+        super().__init__()
+        self.source = source
+        self.target = target
+        self.output_dir = Path(output_dir)
+        self.keep_model_dir = keep_model_dir
+        self.signals = WorkerSignals()
+
+    def run(self) -> None:  # noqa: C901 (Qt entrypoint)
+        from db_project_manager.application.compare_service import CompareError, CompareService
+
+        service = CompareService()
+
+        def progress(message: str, current: int, total: int) -> None:
+            self.signals.progress.emit(message, current, total)
+            self.signals.status.emit(message)
+
+        try:
+            result = service.run(
+                self.source,
+                self.target,
+                self.output_dir,
+                keep_model_dir=self.keep_model_dir,
+                progress=progress,
+            )
+            self.signals.status.emit(f"Сравнение завершено: {result}")
+            self.signals.finished.emit(result)
+        except CompareError as e:
+            self.signals.error.emit(str(e))
+            self.signals.finished.emit(None)
+        except Exception as e:  # noqa: BLE001
+            self.signals.error.emit(f"Непредвиденная ошибка: {e}")
+            self.signals.finished.emit(None)
