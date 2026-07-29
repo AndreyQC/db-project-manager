@@ -79,6 +79,12 @@ def test_service_runs_full_flow(tmp_path) -> None:
     assert progress_log[0][2] == 4
     assert progress_log[-1] == ("Готово", 4, 4)
     assert out == tmp_path / "mydb"
+    # Phase 9: a whole-DB manifest is written to the codebase root.
+    from db_project_manager.infrastructure.config.codebase_manifest import read_manifest
+
+    manifest = read_manifest(out)
+    assert manifest.db_type == "postgres"
+    assert manifest.database == "mydb"
 
 
 def test_service_wraps_database_error(tmp_path) -> None:

@@ -11,12 +11,15 @@ bar and optional CLI verbose output).
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from loguru import logger
 
 from db_project_manager.domain.connection import ConnectionConfig
+from db_project_manager.domain.diff import CodebaseManifest
+from db_project_manager.infrastructure.config.codebase_manifest import tool_version, write_manifest
 from db_project_manager.infrastructure.database.base import DatabaseAdapter, DatabaseError
 from db_project_manager.infrastructure.database.registry import get_adapter
 from db_project_manager.infrastructure.sql.sql_generator import SQLGenerator
@@ -86,6 +89,16 @@ class ReverseEngineerService:
                     # fail the whole reverse-engineer. The report file is still
                     # useful and the user can re-run db-pm qualify-refs manually.
                     logger.warning(f"Qualify-refs пропущен из-за ошибки: {e}")
+
+            # Phase 9: write a whole-DB manifest next to the generated tree so the
+            # compare feature can read the source db_type without a live connection.
+            manifest = CodebaseManifest(
+                db_type=conn_cfg.type,
+                database=conn_cfg.database,
+                generated_at=datetime.now(timezone.utc).isoformat(),
+                tool_version=tool_version(),
+            )
+            write_manifest(manifest, result)
 
             self._emit(progress, "Готово", total, total)
             logger.info(f"Reverse-engineer завершён: {result}")
