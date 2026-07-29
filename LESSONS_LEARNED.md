@@ -534,3 +534,49 @@
   случаи; ambiguous → deterministic fallback + протокол (как в qualify-refs §36).
 - [ ] Регрессионные тесты на перегрузках: ребро идёт к правильной перегрузке.
 - [ ] Прогон на `qr_pamyat`: число рёбер не должно уменьшиться (716+).
+
+---
+
+## Phase 9 — Сравнение состояния БД с файловой системой
+
+### 44. sqlglot API: `normalize` — параметр `.sql()`, не метод выражения
+- **Симптом:** `tree.normalize().sql(...)` падает с `AttributeError: 'Create' object
+  has no attribute 'normalize'`.
+- **Причина:** в sqlglot 27 `normalize` — это параметр метода `sql()`, не метод
+  самого AST-узла. API изменилось между версиями; документация/examples часто
+  подразумевают старый вызов.
+- **Решение:** `sqlglot.parse_one(sql, read=dialect).sql(dialect=dialect,
+  normalize=True, comments=False, identify=False)`.
+- **Урок:** при интеграции новой библиотеки с активно меняющимся API (sqlglot,
+  pydantic) — проверяй актуальный вызов smoke-тестом **до** написания модуля,
+  не полагайся на примеры из тренировочных данных. smoke `uv run python -c
+  "..."` стоит копейки и ловит API-drift сразу.
+
+### 45. Расширение ABC ломает все test-fakes — обновляй в одном коммите
+- **Симптом:** добавление `get_table_row_counts` как 8-го `@abstractmethod` в
+  `DatabaseAdapter` сломало инстанцирование **двух** test-fake'ов, не одного:
+  `FakeAdapter` (`test_reverse_engineer.py`) и `DeployFakeAdapter`
+  (`test_deploy_service.py`).
+- **Причина:** оба fake'а наследуют `DatabaseAdapter` и реализуют все abstract-
+  методы; добавление нового делает их снова абстрактными → collection-time
+  `TypeError: Can't instantiate abstract class`.
+- **Решение:** все три правки (ABC + real adapter + оба fake'а) в **одном**
+  коммите (§18, обновлено: fake'ов может быть несколько, не только тот, что в
+  основном тесте).
+- **Урок:** при расширении контракта (ABC/protocol) сначала найди **всех**
+  наследников `grep -rn "class .*DatabaseAdapter"` или `grep -rn "(DatabaseAdapter)"`,
+  не только тот тест, с которым работаешь. Collection-time ошибка ловится быстро,
+  но в моменте сбивает с ритма.
+
+### 46. typer: обязательный Option должен идти до опциональных в сигнатуре
+- **Симптом:** `SyntaxError: parameter without a default follows parameter with
+  a default` при описании typer-команды `compare_run`, где `output_dir: Path`
+  (обязательный) стоял после `source_dir: Path | None = None`.
+- **Причина:** Python требует, чтобы параметры без дефолта шли до параметров с
+  дефолтом. Это синтаксис языка, не typer — но в typer легко забыть, т.к. CLI
+  опции не позиционные и порядок кажется неважным.
+- **Решение:** переставить `output_dir` в начало сигнатуры; на CLI-вывод это
+  не влияет (опция остаётся `--output-dir`, не позиционной).
+- **Урок:** в typer-командах с смесью обязательных и опциональных опций
+  располагай обязательные первыми в сигнатуре — это требование Python, а не
+  стиль. ruff/IDE подскажут, но только при попытке импорта модуля.
