@@ -208,7 +208,10 @@ MSSQL и MySQL адаптеры» и «Фаза 2 — Snowflake» рассинх
 
 ---
 
-## P3. GUI action для compare
+## P3. GUI action для compare — ВЫПОЛНЕНО (2026-07-29)
+
+**Статус:** выполнено. Реализовано как 4-е действие в реестре Phase 7
+(коммит `c26ecd7`). См. `-=tasks=-/2026-07-29/20260729_002_compare_gui_action_final.md`.
 
 **Контекст:** Phase 9 реализована как CLI-only (`db-pm compare run`). GUI action
 (через реестр Phase 7) не добавлен — по решению пользователя логика обкатается в
