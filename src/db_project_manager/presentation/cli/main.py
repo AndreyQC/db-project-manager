@@ -38,8 +38,10 @@ from db_project_manager.infrastructure.logging_setup import configure as configu
 app = typer.Typer(no_args_is_help=True, add_completion=False, help="DB Project Manager CLI.")
 graph_app = typer.Typer(no_args_is_help=True, help="Граф зависимостей кодовой базы.")
 deploy_app = typer.Typer(no_args_is_help=True, help="Деплой кодовой базы в базу данных.")
+compare_app = typer.Typer(no_args_is_help=True, help="Сравнение состояния БД и кодовой базы.")
 app.add_typer(graph_app, name="graph")
 app.add_typer(deploy_app, name="deploy")
+app.add_typer(compare_app, name="compare")
 
 
 @app.callback()
@@ -231,6 +233,90 @@ def graph_validate(
         raise typer.Exit(code=1)
 
     typer.secho("✓ Граф валиден: циклов и висячих ссылок нет.", fg=typer.colors.GREEN)
+
+
+# --- compare subapp (Phase 9) ---
+
+
+def _resolve_side(
+    label: str,
+    dir_opt: Path | None,
+    conn_opt: Path | None,
+) -> object:
+    """Resolve a comparison side into a SideSpec (DIR or DB).
+
+    Exactly one of ``dir_opt`` / ``conn_opt`` must be set; otherwise exit code 2.
+    Returns a :class:`SideSpec` (DB side carries a loaded ConnectionConfig).
+    """
+    from db_project_manager.application.compare_service import SideSpec
+    from db_project_manager.domain.diff import SnapshotSourceKind
+
+    if dir_opt is not None and conn_opt is not None:
+        typer.secho(
+            f"Укажите ровно один из --{label}-dir / --{label}-connection-file (не оба).",
+            fg=typer.colors.RED, err=True,
+        )
+        raise typer.Exit(code=2)
+    if dir_opt is None and conn_opt is None:
+        typer.secho(
+            f"Укажите один из --{label}-dir или --{label}-connection-file.",
+            fg=typer.colors.RED, err=True,
+        )
+        raise typer.Exit(code=2)
+
+    if dir_opt is not None:
+        if not dir_opt.is_dir():
+            typer.secho(f"Каталог не существует: {dir_opt}", fg=typer.colors.RED, err=True)
+            raise typer.Exit(code=2)
+        return SideSpec(SnapshotSourceKind.DIR, str(dir_opt))
+
+    # conn_opt is set — load the connection file.
+    conn_cfg = _load_connection(conn_opt)
+    return SideSpec(SnapshotSourceKind.DB, str(conn_opt), conn_cfg=conn_cfg)
+
+
+@compare_app.command("run")
+def compare_run(
+    output_dir: Annotated[Path, typer.Option("--output-dir", help="Каталог для отчётов сравнения.")],
+    source_dir: Annotated[Optional[Path], typer.Option("--source-dir", help="Каталог reverse-engineer (source).")] = None,
+    source_connection_file: Annotated[
+        Optional[Path], typer.Option("--source-connection-file", help="Подключение к БД (source).")
+    ] = None,
+    target_dir: Annotated[Optional[Path], typer.Option("--target-dir", help="Каталог reverse-engineer (target).")] = None,
+    target_connection_file: Annotated[
+        Optional[Path], typer.Option("--target-connection-file", help="Подключение к БД (target).")
+    ] = None,
+    keep_model_dir: Annotated[
+        bool, typer.Option("--keep-model-dir", help="Сохранить временный каталог reverse-engineer.")
+    ] = False,
+    config: Annotated[Optional[Path], typer.Option("--config", help="Путь к config.yaml.")] = None,
+) -> None:
+    """Сравнить два состояния (БД или каталог reverse-engineer) и записать отчёт."""
+    from db_project_manager.application.compare_service import CompareError, CompareService
+
+    load_cfg(config if config is not None else None)
+    configure_logging()
+
+    src = _resolve_side("source", source_dir, source_connection_file)
+    tgt = _resolve_side("target", target_dir, target_connection_file)
+
+    service = CompareService()
+
+    def progress(message: str, current: int, total: int) -> None:
+        if total:
+            typer.echo(f"[{current}/{total}] {message}")
+        else:
+            typer.echo(message)
+
+    try:
+        result = service.run(
+            src, tgt, output_dir, keep_model_dir=keep_model_dir, progress=progress
+        )
+    except CompareError as e:
+        typer.secho(f"✗ {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from e
+
+    typer.secho(f"✓ Отчёт сравнения: {result}", fg=typer.colors.GREEN)
 
 
 # --- deploy subapp ---
