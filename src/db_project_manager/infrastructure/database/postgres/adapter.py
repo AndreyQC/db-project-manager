@@ -193,6 +193,25 @@ class PGDatabaseAdapter(DatabaseAdapter):
             logger.error(f"Не получить timestamp сервера: {e}")
             raise DatabaseError(f"Не получить timestamp сервера: {e}") from e
 
+    def get_table_row_counts(self) -> list[dict[str, Any]]:
+        """Return estimated row counts (reltuples) for user tables.
+
+        Phase 9: used by the compare feature as an informational "has data?"
+        marker in the snapshot. Returns [] if there are no user tables.
+        """
+        self._require_connection()
+        try:
+            rows = self._exec(q.GET_TABLE_ROW_COUNTS)
+            infos = [
+                {"schema_name": schema, "table_name": name, "estimated_rows": est}
+                for schema, name, est in rows
+            ]
+            logger.info(f"Row counts получены для {len(infos)} таблиц")
+            return infos
+        except Exception as e:
+            logger.error(f"Не удалось получить row counts: {e}")
+            raise DatabaseError(f"Не удалось получить row counts: {e}") from e
+
     def create_database(
         self,
         name: str,

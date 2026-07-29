@@ -90,6 +90,10 @@ class DeployFakeAdapter(DatabaseAdapter):
             raise DatabaseError(f"simulated failure for {ident}")
         self.executed.append(ident)
 
+    # Phase 9 compare surface (unused by DeployValidateService; stubbed for ABC).
+    def get_table_row_counts(self) -> list[dict[str, Any]]:
+        return []
+
     @staticmethod
     def _extract_qualified_name(script: str) -> str:
         """Best-effort: find the first 'schema.name' identifier in the body."""

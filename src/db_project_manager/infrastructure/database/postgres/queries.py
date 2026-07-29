@@ -344,3 +344,18 @@ GET_DATABASE_SETTINGS = """
       AND s.setrole = 0
     ORDER BY 1
 """
+
+# --- table row counts (Phase 9: compare feature) ---
+# reltuples is the planner estimate; cheap to read (no COUNT(*) scan), good
+# enough as an informational "has data?" marker in the diff report.
+
+GET_TABLE_ROW_COUNTS = """
+    SELECT n.nspname AS schema_name,
+           c.relname AS table_name,
+           c.reltuples AS estimated_rows
+    FROM pg_catalog.pg_class c
+    JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+    WHERE c.relkind = 'r'
+      AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+    ORDER BY c.reltuples DESC NULLS LAST
+"""

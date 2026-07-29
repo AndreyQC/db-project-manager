@@ -80,3 +80,14 @@ class DatabaseAdapter(ABC):
 
         Transaction management is the caller's responsibility (DeployValidateService).
         """
+
+    # --- Phase 9: compare feature surface ---
+
+    @abstractmethod
+    def get_table_row_counts(self) -> list[dict[str, Any]]:
+        """Return estimated row counts (reltuples) for user tables.
+
+        Each dict has keys: ``schema_name``, ``table_name``,
+        ``estimated_rows`` (float or None). Used by the compare feature as an
+        informational "has data?" marker.
+        """

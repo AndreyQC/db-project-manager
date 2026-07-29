@@ -58,6 +58,10 @@ class FakeAdapter(DatabaseAdapter):
     def get_database_structure(self) -> dict[str, Any]:
         return self._structure
 
+    # Phase 9 compare surface (unused by ReverseEngineerService; stubbed for ABC).
+    def get_table_row_counts(self) -> list[dict[str, Any]]:
+        return []
+
 
 def _cfg() -> ConnectionConfig:
     return ConnectionConfig(
