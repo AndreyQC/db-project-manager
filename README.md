@@ -2,7 +2,7 @@
 
 Инструмент для работы со структурой баз данных (PostgreSQL/Greenplum; Snowflake/MSSQL/MySQL — в планах): чтение метаданных каталога, генерация дерева SQL-файлов (по одному на объект), построение графа зависимостей, валидация деплоя на пустую временную БД, и (в будущих фазах) миграции.
 
-> Статус: Phase 2 — reverse-engineering + граф зависимостей + validation deploy (через CLI и GUI). Миграции на БД с данными — Phase 3.
+> Статус: Phase 2 — reverse-engineering + граф зависимостей + validation deploy (через CLI и GUI). Миграции на БД с данными — Phase 3. Phase 9 — сравнение состояния БД с файловой системой (CLI).
 
 ## Возможности
 
@@ -63,6 +63,14 @@ db-pm deploy validate \
     --dir ./output/mydb \
     --connection-file connections/server.yaml \
     [--prefix myapp] [--keep-db] [--continue-on-error]
+
+# Сравнение двух состояний (БД или каталог reverse-engineer) — Phase 9
+db-pm compare run \
+    --output-dir ./diff_report \
+    (--source-dir ./output/mydb | --source-connection-file connections/dev.yaml) \
+    (--target-dir ./output/prod | --target-connection-file connections/prod.yaml) \
+    [--keep-model-dir]
+# Отчёт: source.json, target.json, diff_report.json (added/removed/changed/unchanged)
 ```
 
 ### GUI
