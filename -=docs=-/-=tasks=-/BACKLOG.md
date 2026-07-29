@@ -187,3 +187,67 @@ MSSQL и MySQL адаптеры» и «Фаза 2 — Snowflake» рассинх
 явного выигрыша в UX (диалоги действий всё равно содержат выбор подключения).
 
 **Триггер:** запрос пользователя на действия «по месту» в списке.
+
+---
+
+## P2. Edge diff (сравнение рёбер графа зависимостей)
+
+**Контекст:** Phase 9 (compare) сравнивает *наличие объектов + структуру* (SQL),
+но не рёбра графа. Появился/исчез FK, вызов функции, JOIN — не видны в отчёте.
+Естественное продолжение compare: после фильтрации общих вершин сравнить рёбра
+по `Edge.dedup_key()` (`(source_object_key, destination_object_key, relation, action)`).
+
+**Действие:** расширить `DiffReport` секцией `edge_entries` (added/removed edges);
+обновить `comparator.py` и `snapshot.py` (снимать не только вершины, но и рёбра).
+
+**Связано:** `-=tasks=-/phase_09/002_result_phase_09.md` §4; `domain/graph.py`
+(`Edge.dedup_key`).
+
+**Триггер:** запрос на детекцию изменившихся зависимостей (FK, вызовы функций)
+между двумя состояниями БД.
+
+---
+
+## P3. GUI action для compare
+
+**Контекст:** Phase 9 реализована как CLI-only (`db-pm compare run`). GUI action
+(через реестр Phase 7) не добавлен — по решению пользователя логика обкатается в
+CLI, GUI отдельной задачей.
+
+**Действие:** добавить `compare` в `ACTIONS` (`presentation/gui/actions/registry.py`)
++ `CompareSettings` модель + диалог (два source/target combo dir|connection,
+output_dir, keep_model_dir) + `build_cli_compare` + worker + контракт-тест
+(CliRunner). По образцу `DeployValidateDialog` (два поля подключения) +
+`GraphPrepareDialog` (поля каталога).
+
+**Триггер:** после обкатки compare в CLI, запрос на GUI-доступ.
+
+---
+
+## P3. Markdown-отчёт сравнения
+
+**Контекст:** Phase 9 пишет отчёт только в JSON (`source.json`, `target.json`,
+`diff_report.json`) — machine-readable, для дальнейшей обработки. Человекочитаемый
+свод отсутствует.
+
+**Действие:** генерировать `diff_report.md` рядом с JSON — секции added/removed/
+changed, сгруппированные по схеме/типу, summary наверху. Естественно ложится на
+`DiffReport.entries` (уже сгруппированы по статусу).
+
+**Триггер:** запрос на ревью-удобный формат отчёта (например, коммитить в репо
+как артефакт code review).
+
+---
+
+## P3. Настраиваемый фильтр типов объектов в compare
+
+**Контекст:** Phase 9 сравнивает типы, захардкоженные в `DIFFED_TYPES`
+(`infrastructure/diff/snapshot.py`): tables/views/materialized_views/functions/
+procedures/sequences. Extensions и database_settings исключены (шумят между
+средами).
+
+**Действие:** добавить флаг `--include-types` (или `--exclude-types`) в
+`db-pm compare run`, пробрасывать в `build_snapshot_from_dir`.
+
+**Триггер:** если пользователю понадобится сравнивать extensions/settings или,
+наоборот, сузить сравнение до отдельных типов.
