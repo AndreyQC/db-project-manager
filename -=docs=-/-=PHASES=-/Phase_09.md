@@ -33,11 +33,26 @@
 | Database | `infrastructure/database/base.py` → 8-й abstractmethod `get_table_row_counts` |
 | Database | `infrastructure/database/postgres/adapter.py` → реализация `get_table_row_counts` |
 | CLI | `presentation/cli/main.py` → подгруппа `compare` + команда `run` |
+| GUI (follow-up) | `presentation/gui/actions/` → 4-е действие `compare` в реестре Phase 7 |
 | Deps | `pyproject.toml` → `sqlglot~=27.0.0` |
-| Tests | 8 новых тест-файлов, +62 теста |
+| Tests | 8 новых тест-файлов (CLI), +GUI-тесты в существующих |
 
-Ключевые коммиты: `8a29e63` (S01), `983b5e3` (S02), `600b747` (S03), `5df02be`
+Ключевые коммиты CLI: `8a29e63` (S01), `983b5e3` (S02), `600b747` (S03), `5df02be`
 (S04), `9d55825` (S05), `e5b5669` (S06), `b5b0680` (S07), `b779928` (S08).
+GUI follow-up: `c26ecd7` (compare action), `1d261db` (hotfix: плейсхолдер combo).
+
+---
+
+## 2.1. GUI follow-up (BACKLOG P3, закрыт)
+
+Phase 9 стартовала как CLI-only. GUI action добавлен отдельной задачей после
+обкатки логики в CLI (решение пользователя): compare стал 4-м действием в
+декларативном реестре Phase 7 — `CompareSettings`, `build_cli_compare`,
+`CompareDialog` (4 поля, неявное XOR), `CompareWorker`, ветка в
+`_on_action_finished` (открыть отчёт + сводка). Ручной тест пользователем
+пройден; hotfix `1d261db` добавил плейсхолдер `(каталог вместо подключения)`
+в combo подключений, чтобы выбор каталога не нарушал XOR. См.
+`-=tasks=-/2026-07-29/20260729_003_compare_gui_action_result.md`.
 
 ---
 
@@ -65,7 +80,7 @@
 
 ```bash
 unset SSL_CERT_FILE REQUESTS_CA_BUNDLE CURL_CA_BUNDLE && uv run pytest tests/unit/ -q
-# 369 passed (307 baseline + 62 новых) — OK
+# 380 passed (307 baseline + 62 CLI + 11 GUI follow-up) — OK
 uv run ruff check src/ tests/
 # All checks passed!
 ```
@@ -81,8 +96,8 @@ Smoke CLI: `db-pm compare --help` — подгруппа с командой `ru
   `changed` — sqlglot парсит текст как есть. Mitigation: `qualify-refs` на обе
   стороны перед сравнением.
 - **Edge diff** (сравнение рёбер графа) — не реализован, в BACKLOG P2.
-- **GUI action** для compare — не реализован (CLI-only), в BACKLOG P3.
 - **Markdown-отчёт** — не реализован (JSON only), в BACKLOG P3.
+- **Валидация XOR прямо в диалоге** (disable полей) — в BACKLOG P3 (сейчас плейсхолдер combo + проверка в `_side_spec`/CLI).
 - **Фильтр типов объектов** захардкожен в `DIFFED_TYPES`, в BACKLOG P3 — настраиваемый.
 
 ---
