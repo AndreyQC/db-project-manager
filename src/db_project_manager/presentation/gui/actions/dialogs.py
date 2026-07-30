@@ -40,6 +40,10 @@ FORMAT_LABELS = {
     FORMAT_NONE: "только build (без экспорта)",
 }
 
+#: Placeholder for the "no connection selected" combo entry (compare action),
+#: where a side can be a directory instead. Read back as "" in settings().
+CONNECTION_EMPTY_LABEL = "(каталог вместо подключения)"
+
 
 class BaseActionDialog(QDialog):
     """Common skeleton: form + OK/Cancel, settings roundtrip.
@@ -83,14 +87,29 @@ class BaseActionDialog(QDialog):
         if directory:
             edit.setText(directory)
 
-    def _connections_combo(self, store: ConnectionStore, current: str) -> QComboBox:
+    def _connections_combo(
+        self, store: ConnectionStore, current: str, *, allow_empty: bool = False
+    ) -> QComboBox:
+        """Connection dropdown populated from ``store.list_names()``.
+
+        When ``allow_empty`` is True (compare action), a leading placeholder entry
+        (:data:`CONNECTION_EMPTY_LABEL`) lets the user pick "no connection — I'll use
+        a directory instead", read back as "" in settings(). This avoids the XOR
+        violation that otherwise occurs because the combo defaults to index 0 (the
+        first connection) whenever the user fills the directory field.
+        """
         combo = QComboBox()
         combo.setEditable(False)
-        combo.addItems(store.list_names())
+        if allow_empty:
+            combo.addItem(CONNECTION_EMPTY_LABEL, userData="")
+        for name in store.list_names():
+            combo.addItem(name, userData=name)
         if current:
-            idx = combo.findText(current)
+            idx = combo.findData(current)
             if idx >= 0:
                 combo.setCurrentIndex(idx)
+        elif allow_empty:
+            combo.setCurrentIndex(0)  # the placeholder
         return combo
 
     # --- interface ---
@@ -210,7 +229,12 @@ class CompareDialog(BaseActionDialog):
     ) -> None:
         super().__init__("Сравнение состояний — настройки", parent)
 
-        self._source_connection = self._connections_combo(store, settings.source_connection)
+        # allow_empty=True: a side may be a directory instead of a connection.
+        # The leading placeholder (CONNECTION_EMPTY_LABEL) lets the user pick
+        # "no connection" so filling the directory field does not violate XOR.
+        self._source_connection = self._connections_combo(
+            store, settings.source_connection, allow_empty=True
+        )
         self._form.addRow("Source: подключение (БД):", self._source_connection)
         self._source_dir = self._dir_row(
             settings.source_dir,
@@ -218,7 +242,9 @@ class CompareDialog(BaseActionDialog):
             placeholder="укажите ИЛИ подключение, ИЛИ каталог",
         )
 
-        self._target_connection = self._connections_combo(store, settings.target_connection)
+        self._target_connection = self._connections_combo(
+            store, settings.target_connection, allow_empty=True
+        )
         self._form.addRow("Target: подключение (БД):", self._target_connection)
         self._target_dir = self._dir_row(
             settings.target_dir,
@@ -235,9 +261,11 @@ class CompareDialog(BaseActionDialog):
 
     def settings(self) -> CompareSettings:
         return CompareSettings(
-            source_connection=self._source_connection.currentText().strip(),
+            # currentData() returns "" for the placeholder entry, the connection
+            # name otherwise — so an unset connection is read back as "".
+            source_connection=str(self._source_connection.currentData() or ""),
             source_dir=self._source_dir.text().strip(),
-            target_connection=self._target_connection.currentText().strip(),
+            target_connection=str(self._target_connection.currentData() or ""),
             target_dir=self._target_dir.text().strip(),
             output_dir=self._output_dir.text().strip(),
             keep_model_dir=self._keep_model_dir.isChecked(),

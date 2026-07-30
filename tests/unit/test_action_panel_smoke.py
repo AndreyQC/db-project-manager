@@ -123,6 +123,48 @@ def test_buttons_are_last_row_compare(qapp, tmp_path):
     assert isinstance(_last_form_widget(dlg), QDialogButtonBox)
 
 
+def test_compare_connection_combo_has_empty_placeholder(qapp, tmp_path):
+    """Regression: with connections present, a side's combo must offer a "(каталог)"
+    placeholder so filling the directory field does not violate the connection/dir XOR.
+
+    Before the fix, _connections_combo defaulted to index 0 (first connection) →
+    "_side_spec: указаны и подключение, и каталог" error when the user picked a dir.
+    """
+    store = ConnectionStore(tmp_path)
+    # Seed two connections so the combo is non-empty (the bug only manifests then).
+    store.save(
+        # Minimal ConnectionConfig; password must be encrypted via the store API.
+        __import__(
+            "db_project_manager.domain.connection", fromlist=["ConnectionConfig"]
+        ).ConnectionConfig(
+            host="h", port=5432, database="a", username="u", password="p", name="conn_a"
+        ),
+        crypto_env="ENVOS_CRYPTO_01",
+    )
+    store.save(
+        __import__(
+            "db_project_manager.domain.connection", fromlist=["ConnectionConfig"]
+        ).ConnectionConfig(
+            host="h", port=5432, database="b", username="u", password="p", name="conn_b"
+        ),
+        crypto_env="ENVOS_CRYPTO_01",
+    )
+
+    dlg = CompareDialog(store, CompareSettings())
+    # First entry is the placeholder; its userData is "" (read back as no connection).
+    assert dlg._source_connection.itemText(0) == "(каталог вместо подключения)"
+    assert dlg._source_connection.itemData(0) == ""
+    # And it is selected by default (not the first real connection).
+    assert dlg._source_connection.currentIndex() == 0
+    assert dlg._source_connection.currentData() == ""
+
+    # Filling the directory field and reading settings → no connection set.
+    dlg._source_dir.setText("/some/dir")
+    s = dlg.settings()
+    assert s.source_connection == ""
+    assert s.source_dir == "/some/dir"
+
+
 def test_compare_worker_reports_error_on_missing_side(qapp, tmp_path):
     """CompareWorker surfaces a CompareError when a side is misconfigured.
 
