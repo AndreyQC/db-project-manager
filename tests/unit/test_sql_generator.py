@@ -231,6 +231,128 @@ def test_table_autodoc_unaffected_by_signature_support(structure, tmp_path) -> N
 
 
 # -------------------------------------------------------------------------- #
+# Phase 8: argument_types in autodoc (feeds overload resolution)
+# -------------------------------------------------------------------------- #
+
+
+def test_overloaded_function_carries_argument_types_in_autodoc(structure, tmp_path) -> None:
+    """An overloaded function's autodoc header must carry its raw argument_types
+    so the graph parser can resolve calls by argument type. Asserted via roundtrip
+    (extract_header), not substring, to stay robust to YAML quoting (LESSONS §28).
+    """
+    from db_project_manager.domain.signature import signature_hash
+    from db_project_manager.infrastructure.sql.autodoc import extract_header
+
+    gen = SQLGenerator()
+    out = gen.generate_scripts(structure, tmp_path / "out", object_catalog="mydb")
+    functions_dir = out / "app" / "functions"
+
+    # int4 overload -> argument_types: int4
+    hash_int = signature_hash("int4")
+    text_int = (functions_dir / f"function sp_x__{hash_int}.sql").read_text(encoding="utf-8")
+    parsed_int = extract_header(text_int)
+    assert parsed_int is not None
+    assert parsed_int["object"]["argument_types"] == "int4"
+
+    # text overload -> argument_types: text
+    hash_text = signature_hash("text")
+    text_text = (functions_dir / f"function sp_x__{hash_text}.sql").read_text(encoding="utf-8")
+    parsed_text = extract_header(text_text)
+    assert parsed_text is not None
+    assert parsed_text["object"]["argument_types"] == "text"
+
+
+def test_singleton_function_carries_argument_types_in_autodoc(structure, tmp_path) -> None:
+    """A singleton function with arguments also carries argument_types — the field
+    is emitted whenever argument_types is non-empty, regardless of overload state,
+    so a later-added overload needs no regeneration of siblings."""
+    from db_project_manager.infrastructure.sql.autodoc import extract_header
+
+    gen = SQLGenerator()
+    out = gen.generate_scripts(structure, tmp_path / "out", object_catalog="mydb")
+    text = (out / "app" / "functions" / "function sp_y.sql").read_text(encoding="utf-8")
+    parsed = extract_header(text)
+    assert parsed is not None
+    assert parsed["object"]["argument_types"] == "uuid"
+
+
+def test_overloaded_procedure_carries_argument_types_in_autodoc(structure, tmp_path) -> None:
+    """Procedures carry argument_types the same way as functions."""
+    from db_project_manager.domain.signature import signature_hash
+    from db_project_manager.infrastructure.sql.autodoc import extract_header
+
+    gen = SQLGenerator()
+    out = gen.generate_scripts(structure, tmp_path / "out", object_catalog="mydb")
+    procedures_dir = out / "app" / "procedures"
+
+    hash_int_text = signature_hash("int4, text")
+    hash_int = signature_hash("int4")
+    parsed = extract_header(
+        (procedures_dir / f"procedure sp_proc_x__{hash_int_text}.sql").read_text(encoding="utf-8")
+    )
+    assert parsed is not None
+    assert parsed["object"]["argument_types"] == "int4, text"
+
+    parsed2 = extract_header(
+        (procedures_dir / f"procedure sp_proc_x__{hash_int}.sql").read_text(encoding="utf-8")
+    )
+    assert parsed2 is not None
+    assert parsed2["object"]["argument_types"] == "int4"
+
+
+def test_table_does_not_carry_argument_types(structure, tmp_path) -> None:
+    """Regression: only routines (function/procedure) get argument_types; a table
+    autodoc must not carry the field."""
+    from db_project_manager.infrastructure.sql.autodoc import extract_header
+
+    gen = SQLGenerator()
+    out = gen.generate_scripts(structure, tmp_path / "out", object_catalog="mydb")
+    text = (out / "bookings" / "tables" / "table aircrafts.sql").read_text(encoding="utf-8")
+    parsed = extract_header(text)
+    assert parsed is not None
+    assert "argument_types" not in parsed["object"]
+
+
+def test_no_arg_function_omits_argument_types(tmp_path) -> None:
+    """A function without arguments (empty argument_types) must not emit the field
+    in autodoc — consistent with how object_signature is omitted when empty. There
+    is no /signature/ suffix either, so there is nothing for overload resolution
+    to disambiguate."""
+    from db_project_manager.infrastructure.sql.autodoc import extract_header
+
+    structure = {
+        "schemas": [
+            {
+                "name": "app",
+                "comment": None,
+                "sequences": [],
+                "tables": [],
+                "views": [],
+                "materialized_views": [],
+                "functions": [
+                    {
+                        "schema": "app",
+                        "name": "sp_noargs",
+                        "argument_types": "",
+                        "definition": "CREATE OR REPLACE FUNCTION app.sp_noargs() RETURNS void LANGUAGE sql AS $$ SELECT 1 $$",
+                        "comment": None,
+                    }
+                ],
+                "procedures": [],
+                "enums": [],
+            }
+        ],
+    }
+    gen = SQLGenerator()
+    out = gen.generate_scripts(structure, tmp_path / "out", object_catalog="mydb")
+    text = (out / "app" / "functions" / "function sp_noargs.sql").read_text(encoding="utf-8")
+    parsed = extract_header(text)
+    assert parsed is not None
+    assert "argument_types" not in parsed["object"]
+    assert "object_signature" not in parsed["object"]
+
+
+# -------------------------------------------------------------------------- #
 # type_mod helpers (tested in isolation via a minimal generator instance)
 # -------------------------------------------------------------------------- #
 

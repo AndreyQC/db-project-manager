@@ -280,6 +280,18 @@ class SQLGenerator:
             overloaded = len(group) > 1
             for ctx, signature, item in group:
                 file_name = self._with_suffix(base_name, signature) if overloaded else base_name
+                # Phase 8: carry the raw argument type list into the autodoc header
+                # for functions/procedures so the graph parser can resolve overloaded
+                # calls by argument types. ``argument_types`` is the comma-joined
+                # ``pg_type.typname`` list (e.g. "int4", "text,varchar"); it carries
+                # DATA for overload resolution, not identity (identity is object_key).
+                # Only routines can be overloaded, and only when they have arguments
+                # — an empty list (no-arg function) yields no /signature/ and no field.
+                autodoc_extra: dict[str, Any] | None = None
+                if object_type in {"function", "procedure"}:
+                    arg_types = item.get("argument_types") or ""
+                    if arg_types:
+                        autodoc_extra = {"argument_types": arg_types}
                 self._render_one(
                     f"{object_type}.sql.j2",
                     ctx,
@@ -290,6 +302,7 @@ class SQLGenerator:
                     object_type=object_type,
                     object_name=item.get("name", ""),
                     object_signature=signature,
+                    autodoc_extra=autodoc_extra,
                 )
 
     @staticmethod
