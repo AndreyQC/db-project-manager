@@ -12,6 +12,7 @@ from db_project_manager.infrastructure.parsing.overload_resolution import (
     infer_call_signature,
     infer_literal_type,
     resolve_overload,
+    find_calls,
     split_call_args,
 )
 
@@ -195,3 +196,79 @@ class TestResolveOverload:
 
     def test_empty_overloads_unresolved(self) -> None:
         assert resolve_overload(("int4",), []) is None
+
+
+# --- find_calls (P8.S5) ---
+
+
+class TestFindCalls:
+    def test_bare_call(self) -> None:
+        body = "SELECT sp_x(123);"
+        assert find_calls(body, "app", "sp_x") == ["123"]
+
+    def test_qualified_call(self) -> None:
+        body = "SELECT app.sp_x(123);"
+        assert find_calls(body, "app", "sp_x") == ["123"]
+
+    def test_qualified_with_spaces(self) -> None:
+        # Whitespace around the dot is unusual but legal.
+        body = "SELECT app . sp_x ( 123 );"
+        assert find_calls(body, "app", "sp_x") == [" 123 "]
+
+    def test_multiple_calls_in_one_body(self) -> None:
+        body = "SELECT app.sp_x(123), app.sp_x('x');"
+        assert find_calls(body, "app", "sp_x") == ["123", "'x'"]
+
+    def test_no_calls_returns_empty(self) -> None:
+        body = "SELECT 1;"
+        assert find_calls(body, "app", "sp_x") == []
+
+    def test_bare_name_not_matched_as_suffix(self) -> None:
+        # my_sp_x( must NOT match sp_x( — the lookbehind prevents it.
+        body = "SELECT my_sp_x(123);"
+        assert find_calls(body, "app", "sp_x") == []
+
+    def test_qualified_name_not_matched_as_suffix(self) -> None:
+        # other.sp_x with a different schema must NOT match when we look for app.
+        body = "SELECT other.sp_x(123);"
+        # Bare form is also tried, so this would match 'sp_x(' unless the
+        # lookbehind excludes the dot. The dot precedes sp_x -> excluded.
+        assert find_calls(body, "app", "sp_x") == []
+
+    def test_call_with_nested_parens_one_level(self) -> None:
+        body = "SELECT app.sp_x(sp_y(1));"
+        # Body is the whole "sp_y(1)" including the inner parens.
+        assert find_calls(body, "app", "sp_x") == ["sp_y(1)"]
+
+    def test_call_with_string_argument_containing_paren(self) -> None:
+        # A paren inside a string literal must not confuse paren balancing.
+        body = "SELECT app.sp_x('a)b');"
+        assert find_calls(body, "app", "sp_x") == ["'a)b'"]
+
+    def test_call_inside_dollar_quoted_body_is_scanned(self) -> None:
+        # The function body delimited by $$ is executable code — calls in it
+        # MUST be found.
+        body = "CREATE FUNCTION f() RETURNS void AS $$ BEGIN PERFORM app.sp_x(7); END; $$;"
+        assert find_calls(body, "app", "sp_x") == ["7"]
+
+    def test_name_inside_string_literal_not_matched(self) -> None:
+        # 'app.sp_x(' inside an ordinary string literal is data, not a call.
+        body = "SELECT 'app.sp_x(123)'::text;"
+        assert find_calls(body, "app", "sp_x") == []
+
+    def test_name_inside_line_comment_not_matched(self) -> None:
+        body = "-- app.sp_x(123)\nSELECT 1;"
+        assert find_calls(body, "app", "sp_x") == []
+
+    def test_name_inside_block_comment_not_matched(self) -> None:
+        body = "/* app.sp_x(123) */ SELECT 1;"
+        assert find_calls(body, "app", "sp_x") == []
+
+    def test_zero_arg_call_yields_empty_body(self) -> None:
+        body = "SELECT app.sp_x();"
+        assert find_calls(body, "app", "sp_x") == [""]
+
+    def test_no_schema_matches_bare_only(self) -> None:
+        # schema=None -> only the bare name pattern is used.
+        body = "SELECT sp_x(123);"
+        assert find_calls(body, None, "sp_x") == ["123"]

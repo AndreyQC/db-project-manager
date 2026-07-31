@@ -15,8 +15,14 @@ Design constraints (see ``-=docs=-/phase_08/Phase_8_vision_final.md``):
   guess. This matches the project's safety principle and LESSONS §36
   ("ambiguous = skip, not bug").
 * **No I/O, pure functions.** The module is unit-testable in isolation, like
-  ``domain/signature.py``. Call-site discovery in raw SQL lives here too (P8.S5)
-  but the inference/comparison core has no file dependencies.
+  ``domain/signature.py``. Call-site discovery in raw SQL (:func:`find_calls`,
+  P8.S5) is also pure: it takes the raw text and returns call sites.
+* **Regex over raw SQL, not AST.** Function-call parens are destroyed by the
+  normalizer, so discovery runs against the *raw* file text. We mask out
+  ordinary string literals and comments to avoid false matches, but keep
+  dollar-quoted function bodies (that is where calls actually live). This is
+  the same regex-vs-AST tradeoff as the qualify-refs post-processor (LESSONS
+  §36); AST (sqlglot) is a follow-up if false positives/negatives appear.
 * **Canonical via ``domain/signature.py``.** Overload type tuples arrive
   canonicalized by the caller (LESSONS §27 — reuse, do not reinvent).
 
@@ -34,7 +40,14 @@ __all__ = [
     "split_call_args",
     "infer_call_signature",
     "resolve_overload",
+    "find_calls",
 ]
+
+
+#: A PostgreSQL dollar-quote tag: ``$$`` or ``$tag$`` (tag is an identifier).
+#: Used to delimit function bodies — the content between the tags is executable
+#: code (where calls live), so it is NOT masked out by :func:`_mask_noncode`.
+_DOLLAR_TAG_RE = re.compile(r"\$[A-Za-z_0-9]*\$")
 
 
 #: Single-quoted SQL string literal, allowing ``''`` as an embedded quote
@@ -194,6 +207,161 @@ def infer_call_signature(args: list[str]) -> tuple[str, ...] | None:
             return None
         inferred.append(t)
     return tuple(inferred)
+
+
+def _mask_noncode(text: str) -> str:
+    """Replace string literals and comments with spaces, preserving code.
+
+    PostgreSQL function bodies are delimited by dollar-quotes (``$$ ... $$`` or
+    ``$tag$ ... $tag$``) and contain *executable* SQL where calls live — that
+    content is kept verbatim. Ordinary single-quoted string literals, line
+    comments (``-- ...``) and block comments (``/* ... */``) are data/noise and
+    are blanked so a name-like token inside them cannot be mistaken for a call.
+
+    Masking preserves character positions (each removed char becomes a space)
+    so regex offsets stay aligned with the original — though :func:`find_calls`
+    only needs the masked body, not offsets.
+    """
+    out: list[str] = []
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        # Dollar-quote: $tag$ ... $tag$. Find the matching tag and copy the
+        # whole span verbatim (it is executable code).
+        if ch == "$":
+            m = _DOLLAR_TAG_RE.match(text, i)
+            if m:
+                tag = m.group(0)
+                close = text.find(tag, m.end())
+                if close == -1:
+                    # Unterminated — copy the remainder verbatim (best effort).
+                    out.append(text[i:])
+                    break
+                end = close + len(tag)
+                out.append(text[i:end])
+                i = end
+                continue
+        # Single-quoted string literal: blank it (respecting '' escape).
+        if ch == "'":
+            j = i + 1
+            while j < n:
+                if text[j] == "'":
+                    if j + 1 < n and text[j + 1] == "'":
+                        j += 2
+                        continue
+                    j += 1
+                    break
+                j += 1
+            out.append(" " * (j - i))
+            i = j
+            continue
+        # Line comment -- ... : blank until end of line.
+        if ch == "-" and i + 1 < n and text[i + 1] == "-":
+            j = text.find("\n", i)
+            if j == -1:
+                j = n
+            out.append(" " * (j - i))
+            i = j
+            continue
+        # Block comment /* ... */ : blank it (handles nesting like PG).
+        if ch == "/" and i + 1 < n and text[i + 1] == "*":
+            depth = 1
+            j = i + 2
+            while j < n and depth:
+                if text[j] == "/" and j + 1 < n and text[j + 1] == "*":
+                    depth += 1
+                    j += 2
+                    continue
+                if text[j] == "*" and j + 1 < n and text[j + 1] == "/":
+                    depth -= 1
+                    j += 2
+                    continue
+                j += 1
+            out.append(" " * (j - i))
+            i = j
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def find_calls(raw_sql: str, schema: str | None, name: str) -> list[str]:
+    """Find all call argument-lists for ``schema.name`` / ``name`` in raw SQL.
+
+    Scans the *raw* SQL (parentheses are gone in the normalized stream, so the
+    normalizer cannot be used here). Returns the parenthesized argument body of
+    each call — the substring between the call's outer parens — which the caller
+    feeds to :func:`split_call_args` + :func:`infer_call_signature`.
+
+    Matches both the schema-qualified form (``app.sp_x(...)``) and the bare form
+    (``sp_x(...)``), preferring qualified when ``schema`` is given. A name
+    preceded by a word/dot char is excluded (lookbehind) so ``my_sp_x(`` is not
+    matched as a call to ``sp_x``.
+
+    Discovery runs on the code-masked text (ordinary string literals and
+    comments blanked) so a call-looking token inside a string is not mistaken
+    for a real call. The *argument body* is then sliced from the ORIGINAL raw
+    text at the same offsets, so a string-literal argument like ``'a)b'`` or
+    ``'x'`` reaches :func:`infer_literal_type` intact (masking preserves
+    character positions — one blanked char becomes exactly one space).
+
+    Args:
+        raw_sql: The raw text of one SQL file (autodoc header + body).
+        schema: The routine's schema, or ``None`` to match the bare name only.
+        name: The routine's bare name (no schema).
+
+    Returns:
+        A list of argument-body strings (text between the outer call parens),
+        possibly empty if no calls were found. Nested-paren depth beyond a
+        single level is still captured as long as the parens are balanced; an
+        unbalanced call is skipped silently (regex limitation, LESSONS §36).
+    """
+    body = _mask_noncode(raw_sql)
+    name_re = re.escape(name)
+    calls: list[str] = []
+
+    # Build the alternation of qualified-then-bare patterns. Both require a
+    # negative lookbehind so the match is not a suffix of a longer identifier.
+    # Wrap in a non-capturing group so the trailing ``\s*\(`` applies to BOTH
+    # alternatives — without the group, ``A|B\(`` parses as ``A | B\(`` and the
+    # qualified form matches without consuming the opening paren.
+    patterns: list[str] = []
+    if schema:
+        schema_re = re.escape(schema)
+        patterns.append(rf"(?<![\w.]){schema_re}\s*\.\s*{name_re}")
+    patterns.append(rf"(?<![\w.]){name_re}")
+    name_pattern = "(?:" + "|".join(patterns) + ")"
+
+    # Match ``name ( <balanced> )``. We allow one level of nested parentheses in
+    # the body via the classic non-recursive pattern; deeper nesting is still
+    # captured because after a balanced inner pair we resume scanning — but a
+    # truly unbalanced tail is skipped (caller treats it as not-found).
+    call_re = re.compile(rf"{name_pattern}\s*\(")
+
+    for m in call_re.finditer(body):
+        # Scan the balanced paren region starting right after 'name ('.
+        depth = 1
+        j = m.end()
+        n = len(body)
+        start = j
+        while j < n and depth > 0:
+            c = body[j]
+            if c == "(":
+                depth += 1
+            elif c == ")":
+                depth -= 1
+                if depth == 0:
+                    break
+            j += 1
+        if depth != 0:
+            # Unbalanced (e.g. call straddling a truncated body) — skip it.
+            continue
+        # Slice the argument body from the ORIGINAL text so string-literal
+        # arguments are not blanked (masking only prevents false call detection,
+        # not argument extraction).
+        calls.append(raw_sql[start:j])
+    return calls
 
 
 def resolve_overload(
