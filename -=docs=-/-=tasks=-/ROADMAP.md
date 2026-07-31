@@ -18,8 +18,8 @@
 > `PHASES_CONVENTION.md`), промежуточная версия — `phase_10/Phase_10_vision_draft.md`.
 >
 > Контекст:
-> - `-=CHECKPOINTS=-/20260730_001_checkpoint.md` — текущее состояние (Phase 9 done)
-> - `-=tasks=-/BACKLOG.md` — P1 overload resolution, P2 edge diff, P3 compare-мелочи
+> - `-=CHECKPOINTS=-/20260731_001_checkpoint.md` — текущее состояние (Phase 8 done)
+> - `-=tasks=-/BACKLOG.md` — P1 overload resolution (✅ закрыт), P2 edge diff + inference-фоллоуапы, P3 compare-мелочи
 > - `LESSONS_LEARNED.md` §35 (fully-qualified DDL-контракт), §36 (qualify-refs)
 
 ---
@@ -38,31 +38,35 @@
 | Qualify-refs пост-процессор (regex) | `application/qualify_refs_service.py` | 6 |
 | GUI панель действий (4 действия) | `presentation/gui/actions/` | 7 |
 | Compare: source/target/diff JSON | `application/compare_service.py`, `domain/diff.py` | 9 |
+| Overload resolution в edge detection (литералы MVP) | `infrastructure/parsing/overload_resolution.py`, `pg_sql_parser.py` | 8 |
 
-**Готовность инфраструктуры для CD:** ~60-70%. Достраивать — служебную схему,
+**Готовность инфраструктуры для CD:** ~70-75%. Достраивать — служебную схему,
 версионирование, pre/post runner, структурный column-diff, генерацию ALTER-плана.
+(Overload resolution Phase 8 — частичный; колонки и рекурсия вызовов как аргументы
+отложены в BACKLOG P2.)
 
 ---
 
 ## 2. Карта фаз — порядок и зависимости
 
-> Номера предварительные (сквозная нумерация проекта; последняя завершённая — Phase 9).
+> Номера предварительные (сквозная нумерация проекта). Завершённые фазы: **Phase 9** и
+> **Phase 8** (по дате Phase 9 закрыта раньше Phase 8, но обе сделаны).
 > **Порядок важнее номеров** — он зафиксирован колонкой «Шаг».
 
 | Шаг | Фаза | Направление | Зависит от | Статус |
 |-----|------|-------------|------------|--------|
-| 1 | **Phase 8** — overload resolution | Граф | — | BACKLOG P1, не начата |
-| 2 | **Phase 10** — CD Foundation | CD | Phase 8 | не начата |
+| 1 | **Phase 8** — overload resolution | Граф | — | ✅ done (коммиты `d4b52e2`…`5587418`) |
+| 2 | **Phase 10** — CD Foundation | CD | Phase 8 (✓) | не начата |
 | 3 | **Phase 11** — Safety Gate | CD | Phase 10 | не начата |
 | 4 | **Phase 12** — ALTER + Delta | CD | Phase 11 | не начата |
 | 5 | **Phase 13** — Post-deploy + отчёты | CD | Phase 12 | не начата |
-| 6 | **Phase 14** — Delta Viewer | DV | Phase 9 (готов) | не начата, можно параллельно с 2-5 |
+| 6 | **Phase 14** — Delta Viewer | DV | Phase 9 (✓) | не начата, можно параллельно с 2-5 |
 | 7 | **AI track** (overlay) | AI | Phase 12 | не начата, опциональная надстройка |
 
-**Логика порядка:** Phase 8 чинит граф (топосорт деплоя). Затем CD-ядро (10→13) по
-пайплайну: фундамент → пред-анализ → генерация дельты → пост-обработка. Delta Viewer
-опирается только на готовый Phase 9 — может идти параллельно. AI-трек надстраивается
-над Phase 12 (нужен структурный column-diff).
+**Логика порядка:** Phase 8 чинит граф (топосорт деплоя) — **закрыта**, развязка для Phase 10
+получена. Затем CD-ядро (10→13) по пайплайну: фундамент → пред-анализ → генерация дельты →
+пост-обработка. Delta Viewer опирается только на готовую Phase 9 — может идти параллельно.
+AI-трек надстраивается над Phase 12 (нужен структурный column-diff).
 
 ---
 
@@ -268,8 +272,9 @@
 
 | Doc | Why |
 |-----|-----|
-| `-=CHECKPOINTS=-/20260730_001_checkpoint.md` | текущее состояние проекта |
-| `-=tasks=-/BACKLOG.md` | отдельные P1/P2/P3-задачи (Phase 8 overload resolution) |
+| `-=CHECKPOINTS=-/20260731_001_checkpoint.md` | текущее состояние проекта (Phase 8 done) |
+| `-=PHASES=-/Phase_08.md` | overload resolution — свод фазы |
+| `-=tasks=-/BACKLOG.md` | отдельные P2/P3-задачи (P1 overload resolution закрыт) |
 | `-=PHASES=-/Phase_09.md` | compare — фундамент pre-analysis (CD-6) |
 | `LESSONS_LEARNED.md` §35 | fully-qualified DDL-контракт — обязателен для деплой-SQL |
 | `LESSONS_LEARNED.md` §36 | qualify-refs — ограничение для diff function/view bodies |
