@@ -7,6 +7,7 @@ object:
   object_name: sp_caller
   object_key: pg_database/demo/schema/app/type/function/name/sp_caller/signature/75666699
   object_signature: '75666699'
+  argument_types: uuid
 project:
   build: true
 [[autodoc-yaml]>]

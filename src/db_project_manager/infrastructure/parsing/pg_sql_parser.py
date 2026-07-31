@@ -167,6 +167,11 @@ class PgSqlParser(ObjectGraphParser):
             # does not rebuild the key — it only restores the signature field
             # for downstream consumers (Vertex serialization, future edge work).
             signature = str(obj_meta.get("object_signature", "") or "")
+            # Phase 8: raw argument type list (e.g. "int4", "text,varchar") for
+            # overload resolution. Carries DATA, not identity — empty for non-
+            # routine / no-arg objects and for autodoc headers written before
+            # Phase 8 (resolution then falls back to first-wins, as before).
+            argument_types = str(obj_meta.get("argument_types", "") or "")
             # Phase 5: extra carries db_properties for database_setting
             # (encoding/locale from CREATE DATABASE — needed by deploy P5.S07).
             extra: dict[str, Any] = {}
@@ -179,6 +184,7 @@ class PgSqlParser(ObjectGraphParser):
                 object_type=object_type,
                 object_name=name,
                 object_signature=signature,
+                argument_types=argument_types,
                 object_source_file=_relative_posix(path, root),
                 build=build,
                 **({"extra": extra} if extra else {}),

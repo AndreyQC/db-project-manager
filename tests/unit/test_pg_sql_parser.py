@@ -155,6 +155,29 @@ def test_overloads_use_posix_relative_source_path(graph) -> None:
         assert "/" in path
 
 
+# --- Phase 8: argument_types read from autodoc ---
+
+
+def test_parser_reads_argument_types_from_autodoc(graph) -> None:
+    """Phase 8: the parser must surface the raw argument type list from the
+    autodoc header onto the Vertex, so overload resolution can use it. Without
+    this field, resolution cannot match a call site to an overload."""
+    v_int = graph.get_vertex(SP_X_INT)
+    v_text = graph.get_vertex(SP_X_TEXT)
+    v_y = graph.get_vertex(SP_Y)
+    assert v_int.argument_types == "int4"
+    assert v_text.argument_types == "text"
+    assert v_y.argument_types == "uuid"
+
+
+def test_parser_argument_types_empty_for_non_routine(graph) -> None:
+    """Regression: only routines carry argument_types. Tables/views/sequences
+    keep the empty default — resolution must never touch them."""
+    for key in (AIRPORTS, AIRCRAFTS, FLIGHTS):
+        v = graph.get_vertex(key)
+        assert v.argument_types == ""
+
+
 # --- edges: foreign keys (REFERENCES_BY) ---
 
 
