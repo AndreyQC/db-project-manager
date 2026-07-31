@@ -99,7 +99,9 @@ def test_dir_vs_dir_identical_produces_all_unchanged(tmp_path):
     assert (out / TARGET_FILENAME).is_file()
     report_text = (out / DIFF_REPORT_FILENAME).read_text(encoding="utf-8")
     # Identical fixtures → everything unchanged, nothing added/removed/changed.
-    assert '"unchanged": 11' in report_text
+    # 12 diffed objects (fixture has 14 vertices minus extension & database_setting;
+    # sp_x_caller added in Phase 8 raised the count from 11 to 12).
+    assert '"unchanged": 12' in report_text
     assert '"added": 0' in report_text
 
 

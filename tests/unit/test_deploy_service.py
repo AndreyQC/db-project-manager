@@ -303,7 +303,8 @@ def test_database_setting_script_db_name_replaced_in_deploy(tmp_path: Path) -> N
     assert props.get("lc_ctype") == "C"
     assert props.get("template") == "template0"
     # routes matview has build:false so it is filtered out. After adding
-    # sp_caller (Phase 6 follow-up regression fixture) the deployable count is 12:
-    # 1 schema + 3 tables + 1 seq + 1 view + 4 functions + 2 procs + 1 extension
+    # sp_x_caller (Phase 8 overload-resolution regression fixture) the deployable
+    # count is 13:
+    # 1 schema + 3 tables + 1 seq + 1 view + 5 functions + 2 procs + 1 extension
     # + 1 database_setting (routes matview excluded).
-    assert result.objects_total == 12
+    assert result.objects_total == 13

@@ -272,3 +272,22 @@ class TestFindCalls:
         # schema=None -> only the bare name pattern is used.
         body = "SELECT sp_x(123);"
         assert find_calls(body, None, "sp_x") == ["123"]
+
+    def test_function_definition_not_matched_as_call(self) -> None:
+        # 'CREATE FUNCTION app.sp_x(a int4)' is a DEFINITION, not a call — the
+        # parens hold parameter declarations. It must be excluded so overload
+        # resolution does not infer a bogus signature from 'a int4'.
+        body = "CREATE OR REPLACE FUNCTION app.sp_x(a int4) RETURNS int4 AS $$ BEGIN NULL; END; $$;"
+        assert find_calls(body, "app", "sp_x") == []
+
+    def test_procedure_definition_not_matched_as_call(self) -> None:
+        body = "CREATE PROCEDURE app.sp_x(a int4) LANGUAGE plpgsql AS $$ BEGIN NULL; END; $$;"
+        assert find_calls(body, "app", "sp_x") == []
+
+    def test_definition_excluded_but_real_call_kept(self) -> None:
+        # A definition and a real call in the same body: only the call survives.
+        body = (
+            "CREATE FUNCTION app.sp_x(a int4) RETURNS int4 AS $$ "
+            "BEGIN PERFORM app.sp_x(7); END; $$;"
+        )
+        assert find_calls(body, "app", "sp_x") == ["7"]

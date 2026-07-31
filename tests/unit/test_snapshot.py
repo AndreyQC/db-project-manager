@@ -29,14 +29,14 @@ def test_snapshot_filters_to_diffed_types():
 
 
 def test_snapshot_contains_expected_object_count():
-    """Fixture has 13 vertices; minus extension & database_setting = 11 diffed."""
+    """Fixture has 14 vertices; minus extension & database_setting = 12 diffed."""
     snap = build_snapshot_from_dir(
         CODEBASE_SAMPLE,
         source_kind=SnapshotSourceKind.DIR,
         source_ref=str(CODEBASE_SAMPLE),
         db_type="postgres",
     )
-    assert len(snap.objects) == 11
+    assert len(snap.objects) == 12
 
 
 def test_each_object_has_sql_hash():

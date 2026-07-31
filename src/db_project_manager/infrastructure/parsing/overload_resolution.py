@@ -340,6 +340,13 @@ def find_calls(raw_sql: str, schema: str | None, name: str) -> list[str]:
     call_re = re.compile(rf"{name_pattern}\s*\(")
 
     for m in call_re.finditer(body):
+        # Skip function/procedure DEFINITIONS: 'CREATE FUNCTION name(...)' /
+        # 'CREATE PROCEDURE name(...)' has the name preceded by the defining
+        # keyword. The parens here enclose parameter declarations, not call
+        # arguments — inferring a signature from them would be meaningless.
+        prefix = body[max(0, m.start() - 16) : m.start()].lower()
+        if re.search(r"\b(?:function|procedure|proc)\s+$", prefix):
+            continue
         # Scan the balanced paren region starting right after 'name ('.
         depth = 1
         j = m.end()
