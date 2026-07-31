@@ -64,6 +64,27 @@ def test_vertex_object_signature_serializes() -> None:
     assert v.model_dump(mode="json")["object_signature"] == "a1b2c3d4"
 
 
+def test_vertex_argument_types_default_empty() -> None:
+    v = Vertex(object_key="k", object_type="table")
+    assert v.argument_types == ""
+
+
+def test_vertex_argument_types_serializes() -> None:
+    """Phase 8: argument_types must round-trip through model_dump (graph_store
+    relies on this) so overload resolution can read it back."""
+    v = Vertex(object_key="k", object_type="function", argument_types="int4, text")
+    assert v.argument_types == "int4, text"
+    assert v.model_dump(mode="json")["argument_types"] == "int4, text"
+
+
+def test_vertex_argument_types_ignored_when_not_routine() -> None:
+    """argument_types is only meaningful for functions/procedures, but the field
+    itself is a plain str default on all vertex types (no type-conditional
+    validation) — callers simply leave it empty for tables/views."""
+    v = Vertex(object_key="k", object_type="table", argument_types="")
+    assert v.argument_types == ""
+
+
 def test_add_vertex_distinguishes_overloads_by_signature() -> None:
     """Two functions with the same name but different object_key (one with
     signature suffix, one without) must coexist in the graph instead of

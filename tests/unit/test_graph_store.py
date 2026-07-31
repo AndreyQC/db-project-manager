@@ -70,6 +70,46 @@ def test_read_roundtrip_preserves_graph(tmp_path: Path) -> None:
     assert edge.action == "select"
 
 
+def test_read_roundtrip_preserves_argument_types(tmp_path: Path) -> None:
+    """Phase 8: argument_types must survive the write/read roundtrip so overload
+    resolution can use it on a graph loaded from .dbm_graph/. The store uses
+    model_dump/model_validate, which pick up the field automatically."""
+    _write_sql(tmp_path, "a.sql")
+    g = DependencyGraph()
+    key = "pg_database/db/schema/app/type/function/name/sp_x/signature/a1b2c3d4"
+    g.add_vertex(
+        Vertex(
+            object_key=key,
+            object_catalog="db",
+            object_schema="app",
+            object_type="function",
+            object_name="sp_x",
+            object_signature="a1b2c3d4",
+            argument_types="int4, text",
+        )
+    )
+    write_graph(g, tmp_path)
+
+    restored = read_graph(tmp_path)
+    v = restored.get_vertex(key)
+    assert v is not None
+    assert v.argument_types == "int4, text"
+    assert v.object_signature == "a1b2c3d4"
+
+
+def test_read_roundtrip_missing_argument_types_defaults_empty(tmp_path: Path) -> None:
+    """Backward compatibility: a vertex without argument_types (older graph or a
+    non-routine object) reads back as the empty default, so resolution falls
+    back gracefully instead of erroring."""
+    _write_sql(tmp_path, "a.sql")
+    g = DependencyGraph()
+    g.add_vertex(_v("A"))  # table — no argument_types
+    write_graph(g, tmp_path)
+
+    restored = read_graph(tmp_path)
+    assert restored.get_vertex("A").argument_types == ""
+
+
 def test_read_missing_graph_raises(tmp_path: Path) -> None:
     with pytest.raises(GraphStoreError, match="не найден"):
         read_graph(tmp_path)
