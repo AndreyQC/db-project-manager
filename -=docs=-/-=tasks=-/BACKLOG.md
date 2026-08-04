@@ -179,13 +179,16 @@ MSSQL и MySQL адаптеры» и «Фаза 2 — Snowflake» рассинх
 
 ## P2. Edge diff (сравнение рёбер графа зависимостей)
 
-**Контекст:** Phase 9 (compare) сравнивает *наличие объектов + структуру* (SQL),
-но не рёбра графа. Появился/исчез FK, вызов функции, JOIN — не видны в отчёте.
+**Статус: ЗАКРЫТ** — реализовано в Phase 14 (вкладка «Рёбра» в DV + секция в markdown,
+коммит `141e9fc`). См. `-=PHASES=-/Phase_14.md`, `-=tasks=-/phase_14/Phase_14_result.md`.
+
+**Контекст (исторический):** Phase 9 (compare) сравнивает *наличие объектов + структуру*
+(SQL), но не рёбра графа. Появился/исчез FK, вызов функции, JOIN — не видны в отчёте.
 Естественное продолжение compare: после фильтрации общих вершин сравнить рёбра
 по `Edge.dedup_key()` (`(source_object_key, destination_object_key, relation, action)`).
 
-**Действие:** расширить `DiffReport` секцией `edge_entries` (added/removed edges);
-обновить `comparator.py` и `snapshot.py` (снимать не только вершины, но и рёбра).
+**Действие (выполнено):** расширить `DiffReport` секцией `edge_entries` (added/removed
+edges); обновить `comparator.py` и `snapshot.py` (снимать не только вершины, но и рёбра).
 
 **Связано:** `-=tasks=-/phase_09/002_result_phase_09.md` §4; `domain/graph.py`
 (`Edge.dedup_key`).
@@ -216,16 +219,35 @@ output_dir, keep_model_dir) + `build_cli_compare` + worker + контракт-т
 
 ## P3. Markdown-отчёт сравнения
 
-**Контекст:** Phase 9 пишет отчёт только в JSON (`source.json`, `target.json`,
-`diff_report.json`) — machine-readable, для дальнейшей обработки. Человекочитаемый
-свод отсутствует.
+**Статус: ЗАКРЫТ** — реализовано в Phase 14 (CLI `db-pm compare report`, коммит
+`211a402`; генератор `3649b0c`). См. `-=PHASES=-/Phase_14.md`.
 
-**Действие:** генерировать `diff_report.md` рядом с JSON — секции added/removed/
-changed, сгруппированные по схеме/типу, summary наверху. Естественно ложится на
-`DiffReport.entries` (уже сгруппированы по статусу).
+**Контекст (исторический):** Phase 9 пишет отчёт только в JSON (`source.json`,
+`target.json`, `diff_report.json`) — machine-readable, для дальнейшей обработки.
+Человекочитаемый свод отсутствовал.
+
+**Действие (выполнено):** генерировать `diff_report.md` рядом с JSON — секции
+added/removed/changed, сгруппированные по схеме/типу, summary наверху; для changed —
+collapsible unified-diff; плюс секция Edges (после Phase 14 S5).
 
 **Триггер:** запрос на ревью-удобный формат отчёта (например, коммитить в репо
 как артефакт code review).
+
+---
+
+## P3. Delta Viewer follow-up'ы (после Phase 14)
+
+**Контекст:** Phase 14 реализовала MVP Delta Viewer. Несколько мелочей осознанно
+отложены (зафиксированы в `-=PHASES=-/Phase_14.md` §5).
+
+- **Side-by-side diff** (QTableWidget 2 синхронизированные колонки) вместо unified-diff.
+  *Триггер:* отзыв пользователя, что unified-diff неудобочитаем для больших DDL.
+- **Опция `--markdown` в `compare run`** — сахар поверх `compare report`, чтобы
+  получать markdown за один прогон (без отдельной команды).
+- **`QAbstractItemModel` вместо `QTreeWidget`** — если производительность на больших
+  схемах (тысячи объектов) окажется недостаточной.
+- **Ручной тест пользователем** на реальном `diff_report.json` сравнения живой БД —
+  offscreen-smoke покрывает контракты, но review-UX нуждается в человеческой оценке.
 
 ---
 
