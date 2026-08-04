@@ -188,5 +188,8 @@ def write_diff_markdown(
         report = DiffReport.model_validate_json(src_path.read_text(encoding="utf-8"))
         out_path = Path(output) if output else src_path.parent / DEFAULT_OUTPUT_NAME
 
+    # Create parent dirs explicitly — Path.write_text does not create intermediates,
+    # and on Windows this fails with FileNotFoundError (LESSONS §31).
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(render_diff_markdown(report), encoding="utf-8")
     return out_path

@@ -319,6 +319,42 @@ def compare_run(
     typer.secho(f"✓ Отчёт сравнения: {result}", fg=typer.colors.GREEN)
 
 
+@compare_app.command("report")
+def compare_report(
+    from_path: Annotated[Path, typer.Option("--from", help="Путь к diff_report.json.")],
+    output: Annotated[
+        Optional[Path],
+        typer.Option("--output", "-o", help="Куда писать diff_report.md. По умолчанию рядом с --from."),
+    ] = None,
+) -> None:
+    """Сгенерировать markdown-отчёт из готового diff_report.json (офлайн, Phase 14).
+
+    Читает уже существующий ``diff_report.json`` (результат ``db-pm compare run``) и
+    пишет читаемый ``diff_report.md`` рядом. Не подключается к БД и не выполняет
+    повторное сравнение — работает офлайн.
+    """
+    from pydantic import ValidationError
+
+    from db_project_manager.infrastructure.diff.markdown_report import write_diff_markdown
+
+    configure_logging()
+
+    if not from_path.is_file():
+        typer.secho(f"Файл не найден: {from_path}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
+
+    try:
+        result = write_diff_markdown(from_path, output)
+    except ValidationError as e:
+        typer.secho(f"Не удалось разобрать diff_report.json: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from e
+    except Exception as e:  # noqa: BLE001 — surface any I/O / parse failure as exit 2
+        typer.secho(f"Ошибка генерации отчёта: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from e
+
+    typer.secho(f"✓ Markdown-отчёт: {result}", fg=typer.colors.GREEN)
+
+
 # --- deploy subapp ---
 
 
