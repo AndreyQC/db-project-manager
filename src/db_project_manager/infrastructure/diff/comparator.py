@@ -23,6 +23,7 @@ from db_project_manager.domain.diff import (
     DiffEntry,
     DiffReport,
     DiffStatus,
+    EdgeDiffEntry,
     StateSnapshot,
 )
 
@@ -86,10 +87,31 @@ def compare(source: StateSnapshot, target: StateSnapshot) -> DiffReport:
         DiffStatus.UNCHANGED.value: unchanged,
     }
 
+    # Edge diff (Phase 14): edges appear (added) or disappear (removed) between the
+    # two states. Compared by dedup_key (the same identity the graph uses, LESSONS §16);
+    # edges to/from non-DIFFED_TYPES were already dropped by the snapshot builder.
+    src_edge_keys = {e.dedup_key(): e for e in source.edges}
+    tgt_edge_keys = {e.dedup_key(): e for e in target.edges}
+    edge_added_keys = src_edge_keys.keys() - tgt_edge_keys.keys()
+    edge_removed_keys = tgt_edge_keys.keys() - src_edge_keys.keys()
+
+    edge_entries: list[EdgeDiffEntry] = []
+    for key in sorted(edge_added_keys):
+        edge_entries.append(EdgeDiffEntry(status=DiffStatus.ADDED, source_edge=src_edge_keys[key]))
+    for key in sorted(edge_removed_keys):
+        edge_entries.append(EdgeDiffEntry(status=DiffStatus.REMOVED, target_edge=tgt_edge_keys[key]))
+
+    edge_summary = {
+        DiffStatus.ADDED.value: len(edge_added_keys),
+        DiffStatus.REMOVED.value: len(edge_removed_keys),
+    }
+
     return DiffReport(
         source=source,
         target=target,
         generated_at=datetime.now(timezone.utc).isoformat(),
         summary=summary,
         entries=entries,
+        edge_summary=edge_summary,
+        edge_entries=edge_entries,
     )

@@ -75,7 +75,52 @@ def render_diff_markdown(report: DiffReport) -> str:
     for status in (DiffStatus.ADDED, DiffStatus.REMOVED, DiffStatus.CHANGED):
         _render_status_section(status, report, lines)
 
+    # --- edge diff (Phase 14) ---
+    _render_edges_section(report, lines)
+
     return "\n".join(lines).rstrip() + "\n"
+
+
+def _render_edges_section(report: DiffReport, lines: list[str]) -> None:
+    """Append the Edges section if any edges were added/removed (Phase 14)."""
+    if not report.edge_entries:
+        return
+
+    lines.append("## Edges")
+    lines.append("")
+    es = report.edge_summary or {}
+    lines.append(
+        f"_Added edges: {es.get('added', 0)} · Removed edges: {es.get('removed', 0)}_"
+    )
+    lines.append("")
+
+    # Split into added/removed for readability.
+    added = [e for e in report.edge_entries if e.status is DiffStatus.ADDED]
+    removed = [e for e in report.edge_entries if e.status is DiffStatus.REMOVED]
+
+    for label, group in (("Added edges", added), ("Removed edges", removed)):
+        if not group:
+            continue
+        lines.append(f"### {label} ({len(group)})")
+        lines.append("")
+        lines.append("| source | destination | relation | action |")
+        lines.append("| --- | --- | --- | --- |")
+        for entry in sorted(group, key=_edge_sort_key):
+            edge = entry.source_edge if entry.source_edge is not None else entry.target_edge
+            if edge is None:
+                continue
+            lines.append(
+                f"| `{edge.source_object_key}` | `{edge.destination_object_key}` "
+                f"| {edge.relation} | {edge.action or '—'} |"
+            )
+        lines.append("")
+
+
+def _edge_sort_key(entry) -> tuple[str, str, str]:
+    edge = entry.source_edge if entry.source_edge is not None else entry.target_edge
+    if edge is None:
+        return ("", "", "")
+    return (edge.source_object_key, edge.destination_object_key, edge.relation)
 
 
 def _render_status_section(status: DiffStatus, report: DiffReport, lines: list[str]) -> None:

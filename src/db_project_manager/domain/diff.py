@@ -80,6 +80,10 @@ class StateSnapshot(BaseModel):
 
     ``objects`` is a dict keyed by ``object_key`` so set operations on keys give
     added/removed directly, and ``sql_hash`` comparison gives changed/unchanged.
+
+    ``edges`` (Phase 14, edge-diff) captures the dependency-graph edges of this side,
+    so they can be compared too. Additive field with a default; old snapshots without
+    ``edges`` parse fine (empty list).
     """
 
     model_config = ConfigDict(extra="ignore")
@@ -89,6 +93,7 @@ class StateSnapshot(BaseModel):
     db_type: str              # postgres | greenplum (from manifest or connection)
     generated_at: str         # UTC ISO timestamp of the snapshot
     objects: dict[str, ObjectSnapshot]
+    edges: list[EdgeSnapshot] = []  # Phase 14: graph edges of this side
 
 
 class DiffEntry(BaseModel):
@@ -106,8 +111,46 @@ class DiffEntry(BaseModel):
     target_snapshot: ObjectSnapshot | None = None
 
 
+class EdgeSnapshot(BaseModel):
+    """A dependency-graph edge on one comparison side (Phase 14, edge-diff).
+
+    Mirrors :meth:`db_project_manager.domain.graph.Edge.dedup_key` so two edges are
+    the same iff these four fields match (the same identity the graph uses for
+    de-duplication — LESSONS §16).
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    source_object_key: str
+    destination_object_key: str
+    relation: str             # Relation.value (e.g. "depends_on", "provides_data_to")
+    action: str               # "select" / "references" / "nextval" / "call" / ...
+
+    def dedup_key(self) -> tuple[str, str, str, str]:
+        return (self.source_object_key, self.destination_object_key, self.relation, self.action)
+
+
+class EdgeDiffEntry(BaseModel):
+    """One edge added to or removed from the graph between two states.
+
+    Edges don't "change" — they appear (added) or disappear (removed). ``source_edge``
+    is set for ``added`` (the edge exists in source, not target); ``target_edge`` for
+    ``removed``.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    status: DiffStatus        # ADDED or REMOVED
+    source_edge: EdgeSnapshot | None = None
+    target_edge: EdgeSnapshot | None = None
+
+
 class DiffReport(BaseModel):
-    """The full comparison result: two snapshots + per-object entries + counts."""
+    """The full comparison result: two snapshots + per-object entries + counts.
+
+    ``edge_summary`` / ``edge_entries`` (Phase 14, edge-diff) are additive fields
+    with defaults; old reports without them parse fine.
+    """
 
     model_config = ConfigDict(extra="ignore")
 
@@ -116,3 +159,5 @@ class DiffReport(BaseModel):
     generated_at: str         # UTC ISO timestamp of the comparison run
     summary: dict[str, int]   # {"added": N, "removed": N, "changed": N, "unchanged": N}
     entries: list[DiffEntry]
+    edge_summary: dict[str, int] = {}   # {"added": N, "removed": N}
+    edge_entries: list[EdgeDiffEntry] = []

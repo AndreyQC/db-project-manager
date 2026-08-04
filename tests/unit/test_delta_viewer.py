@@ -22,6 +22,8 @@ from db_project_manager.domain.diff import (  # noqa: E402
     DiffEntry,
     DiffReport,
     DiffStatus,
+    EdgeDiffEntry,
+    EdgeSnapshot,
     ObjectSnapshot,
     SnapshotSourceKind,
     StateSnapshot,
@@ -271,3 +273,54 @@ def test_load_from_path_populates_report(qapp, tmp_path: Path):
     assert not window._active_workers, "worker must be released after finished"
     # Tree is populated.
     assert window._tree.topLevelItemCount() > 0
+
+
+# --- edges tab (Phase 14 S5) ---
+
+
+def test_edges_tab_populated_with_added_and_removed(qapp):
+    window = DeltaViewerWindow()
+    report = _build_report()
+    report.edge_summary = {"added": 1, "removed": 1}
+    report.edge_entries = [
+        EdgeDiffEntry(
+            status=DiffStatus.ADDED,
+            source_edge=EdgeSnapshot(
+                source_object_key="a",
+                destination_object_key="b",
+                relation="depends_on",
+                action="references",
+            ),
+        ),
+        EdgeDiffEntry(
+            status=DiffStatus.REMOVED,
+            target_edge=EdgeSnapshot(
+                source_object_key="c",
+                destination_object_key="d",
+                relation="provides_data_to",
+                action="select",
+            ),
+        ),
+    ]
+    window.show_report(report)
+
+    table = window._edges_table
+    assert table.rowCount() == 2
+    statuses = sorted(table.item(r, 0).text() for r in range(table.rowCount()))
+    assert statuses == ["added", "removed"]
+
+
+def test_edges_tab_empty_when_no_edges(qapp):
+    window = DeltaViewerWindow()
+    window.show_report(_build_report())  # no edge_entries
+    assert window._edges_table.rowCount() == 0
+
+
+def test_edges_tab_populated_from_backward_compat_report(qapp):
+    """A report without edge_entries (old Phase 9 JSON) shows an empty edges tab."""
+    window = DeltaViewerWindow()
+    report = _build_report()
+    report.edge_entries = []
+    report.edge_summary = {}
+    window.show_report(report)
+    assert window._edges_table.rowCount() == 0

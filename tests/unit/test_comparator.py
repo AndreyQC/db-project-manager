@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from db_project_manager.domain.diff import (
     DiffStatus,
+    EdgeSnapshot,
     ObjectSnapshot,
     SnapshotSourceKind,
     StateSnapshot,
@@ -31,6 +32,7 @@ def _state(objects: dict[str, ObjectSnapshot], **overrides) -> StateSnapshot:
         "db_type": "postgres",
         "generated_at": "2026-07-29T00:00:00+00:00",
         "objects": objects,
+        "edges": [],
     }
     base.update(overrides)
     return StateSnapshot(**base)
@@ -126,3 +128,72 @@ def test_report_carries_snapshots_and_timestamp():
     assert report.source is src
     assert report.target is tgt
     assert report.generated_at  # ISO timestamp present
+
+
+# --- edge diff (Phase 14) ---
+
+
+def _edge(src_key: str, dst_key: str, relation: str = "depends_on",
+          action: str = "references") -> EdgeSnapshot:
+    return EdgeSnapshot(
+        source_object_key=src_key,
+        destination_object_key=dst_key,
+        relation=relation,
+        action=action,
+    )
+
+
+def test_edge_diff_added_removed():
+    """Edges present in source-only are added; target-only are removed."""
+    src = _state({}, edges=[_edge("a", "b"), _edge("a", "c")])
+    tgt = _state({}, edges=[_edge("a", "b"), _edge("d", "a")])
+    report = compare(src, tgt)
+    assert report.edge_summary == {"added": 1, "removed": 1}
+    statuses = sorted(e.status.value for e in report.edge_entries)
+    assert statuses == ["added", "removed"]
+    added = next(e for e in report.edge_entries if e.status is DiffStatus.ADDED)
+    assert added.source_edge is not None
+    assert added.source_edge.destination_object_key == "c"
+    removed = next(e for e in report.edge_entries if e.status is DiffStatus.REMOVED)
+    assert removed.target_edge is not None
+    assert removed.target_edge.source_object_key == "d"
+
+
+def test_edge_diff_empty_when_identical_edges():
+    src = _state({}, edges=[_edge("a", "b"), _edge("a", "c")])
+    tgt = _state({}, edges=[_edge("a", "c"), _edge("a", "b")])  # same set, diff order
+    report = compare(src, tgt)
+    assert report.edge_summary == {"added": 0, "removed": 0}
+    assert report.edge_entries == []
+
+
+def test_edge_diff_uses_action_in_identity():
+    """Same endpoints but different action → different edges (both added and removed)."""
+    src = _state({}, edges=[_edge("a", "b", action="select")])
+    tgt = _state({}, edges=[_edge("a", "b", action="references")])
+    report = compare(src, tgt)
+    assert report.edge_summary == {"added": 1, "removed": 1}
+
+
+def test_edge_diff_no_edges_when_both_empty():
+    report = compare(_state({}), _state({}))
+    assert report.edge_summary == {"added": 0, "removed": 0}
+
+
+def test_backward_compat_state_without_edges_field():
+    """A StateSnapshot dict missing the 'edges' key parses to an empty edge list.
+
+    Old ``source.json``/``target.json`` from Phase 9 have no ``edges`` field; the
+    comparator must not crash and must produce an empty edge diff.
+    """
+    raw_state = {
+        "source_kind": "dir",
+        "source_ref": "src",
+        "db_type": "postgres",
+        "generated_at": "2026-07-29T00:00:00+00:00",
+        "objects": {},
+    }  # no 'edges' key
+    src = StateSnapshot.model_validate(raw_state)
+    tgt = StateSnapshot.model_validate(raw_state)
+    report = compare(src, tgt)
+    assert report.edge_entries == []

@@ -34,6 +34,8 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QSplitter,
     QTabWidget,
+    QTableWidget,
+    QTableWidgetItem,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -179,6 +181,16 @@ class DeltaViewerWindow(QMainWindow):
         # Attach the diff-mode highlighter to the diff view's document.
         self._diff_highlighter = SqlHighlighter(self._diff_view.document(), diff_mode=True)
 
+        # --- Edges tab (Phase 14, edge diff) ---
+        self._edges_table = QTableWidget(0, 5)
+        self._edges_table.setHorizontalHeaderLabels(["status", "source", "destination", "relation", "action"])
+        self._edges_table.horizontalHeader().setStretchLastSection(False)
+        from PySide6.QtWidgets import QHeaderView
+        self._edges_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self._edges_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._edges_table.setColumnWidth(0, 80)
+        tabs.addTab(self._edges_table, "Рёбра")
+
         self._splitter.addWidget(tabs)
         self._splitter.setStretchFactor(0, 1)
         self._splitter.setStretchFactor(1, 2)
@@ -236,6 +248,7 @@ class DeltaViewerWindow(QMainWindow):
             self._report_path = Path(path)
         self._populate_tree(report)
         self._populate_summary(report)
+        self._populate_edges(report)
         self._save_selection_btn.setEnabled(True)
 
     # --- tree population ---
@@ -309,6 +322,37 @@ class DeltaViewerWindow(QMainWindow):
         )
         self._summary_label.setText(header)
         self._summary_label.setStyleSheet("padding: 4px;")
+
+    def _populate_edges(self, report: DiffReport) -> None:
+        """Fill the Edges table (Phase 14, edge diff). Empty report -> hidden tab hint."""
+        table = self._edges_table
+        table.setRowCount(0)
+        entries = sorted(
+            report.edge_entries,
+            key=lambda e: (
+                e.status.value,
+                (e.source_edge or e.target_edge).source_object_key if (e.source_edge or e.target_edge) else "",
+            ),
+        )
+        table.setRowCount(len(entries))
+        for row, entry in enumerate(entries):
+            edge = entry.source_edge if entry.source_edge is not None else entry.target_edge
+            status_item = QTableWidgetItem(entry.status.value)
+            color = QColor(_STATUS_COLORS.get(entry.status, "#000000"))
+            status_item.setForeground(color)
+            table.setItem(row, 0, status_item)
+            if edge is not None:
+                table.setItem(row, 1, QTableWidgetItem(edge.source_object_key))
+                table.setItem(row, 2, QTableWidgetItem(edge.destination_object_key))
+                table.setItem(row, 3, QTableWidgetItem(edge.relation))
+                table.setItem(row, 4, QTableWidgetItem(edge.action or "—"))
+            else:
+                for col in range(1, 5):
+                    table.setItem(row, col, QTableWidgetItem("—"))
+        # Tab label shows the count for quick scanning.
+        idx = self._splitter.widget(1).indexOf(self._edges_table)
+        if idx >= 0:
+            self._splitter.widget(1).setTabText(idx, f"Рёбра ({len(entries)})")
 
     # --- selection / detail ---
 

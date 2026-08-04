@@ -261,3 +261,70 @@ def test_write_diff_markdown_custom_output(tmp_path: Path):
     out = write_diff_markdown(report, output=out_path)
     assert out == out_path
     assert out.exists()
+
+
+# --- edges section (Phase 14 S5) ---
+
+
+def test_markdown_omits_edges_section_when_empty():
+    report = _report([])
+    md = render_diff_markdown(report)
+    assert "## Edges" not in md
+
+
+def test_markdown_has_edges_section_with_added_removed():
+    from db_project_manager.domain.diff import EdgeDiffEntry, EdgeSnapshot
+
+    report = _report(
+        [],
+        edge_summary={"added": 1, "removed": 1},
+        edge_entries=[
+            EdgeDiffEntry(
+                status=DiffStatus.ADDED,
+                source_edge=EdgeSnapshot(
+                    source_object_key="a",
+                    destination_object_key="b",
+                    relation="depends_on",
+                    action="references",
+                ),
+            ),
+            EdgeDiffEntry(
+                status=DiffStatus.REMOVED,
+                target_edge=EdgeSnapshot(
+                    source_object_key="c",
+                    destination_object_key="d",
+                    relation="provides_data_to",
+                    action="select",
+                ),
+            ),
+        ],
+    )
+    md = render_diff_markdown(report)
+    assert "## Edges" in md
+    assert "Added edges (1)" in md
+    assert "Removed edges (1)" in md
+    assert "`a`" in md and "`b`" in md
+    assert "`c`" in md and "`d`" in md
+
+
+def test_report_backward_compat_old_json_without_edge_fields(tmp_path: Path):
+    """A diff_report.json from Phase 9 (no edge_* fields) parses to empty edge diff."""
+    raw = {
+        "source": {
+            "source_kind": "dir", "source_ref": "s", "db_type": "postgres",
+            "generated_at": "2026-08-04T00:00:00+00:00", "objects": {},
+        },
+        "target": {
+            "source_kind": "dir", "source_ref": "t", "db_type": "postgres",
+            "generated_at": "2026-08-04T00:00:00+00:00", "objects": {},
+        },
+        "generated_at": "2026-08-04T00:00:00+00:00",
+        "summary": {"added": 0, "removed": 0, "changed": 0, "unchanged": 0},
+        "entries": [],
+    }
+    p = tmp_path / "diff_report.json"
+    p.write_text(__import__("json").dumps(raw), encoding="utf-8")
+    out = write_diff_markdown(p)
+    md = out.read_text(encoding="utf-8")
+    # No crash, no Edges section (no edge data).
+    assert "## Edges" not in md

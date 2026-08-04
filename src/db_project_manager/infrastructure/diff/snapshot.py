@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from db_project_manager.application.graph_service import BuildGraphService
-from db_project_manager.domain.diff import ObjectSnapshot, SnapshotSourceKind, StateSnapshot
+from db_project_manager.domain.diff import EdgeSnapshot, ObjectSnapshot, SnapshotSourceKind, StateSnapshot
 from db_project_manager.domain.graph import DependencyGraph
 from db_project_manager.infrastructure.diff.normalize_sql import normalize_sql, sql_hash
 from db_project_manager.infrastructure.sql.autodoc import MARKER_CLOSE
@@ -30,6 +30,11 @@ DIFFED_TYPES = frozenset({
     "table", "view", "materialized_view",
     "function", "procedure", "sequence",
 })
+
+#: Edge relations that participate in the edge diff (Phase 14). All relations are
+#: included; the comparator de-duplicates via Edge.dedup_key(). Restrict here only
+#: if a relation turns out to be too noisy between environments.
+DIFFED_EDGE_RELATIONS: frozenset[str] | None = None
 
 
 def build_snapshot_from_dir(
@@ -81,6 +86,7 @@ def build_snapshot_from_dir(
         db_type=db_type,
         generated_at=datetime.now(timezone.utc).isoformat(),
         objects=objects,
+        edges=_collect_edges(graph),
     )
 
 
@@ -118,3 +124,29 @@ def _lookup_row_count(
     if value is None:
         return None
     return int(value)
+
+
+def _collect_edges(graph: DependencyGraph) -> list[EdgeSnapshot]:
+    """Collect graph edges as :class:`EdgeSnapshot`, de-duplicated by dedup_key.
+
+    Phase 14 edge-diff: the comparator compares edge identity (the same
+    :meth:`Edge.dedup_key` the graph uses for de-duplication, LESSONS §16). Edges
+    whose endpoints are not in :data:`DIFFED_TYPES` are dropped — an edge to/from an
+    extension or a database setting would always look "removed" since those types
+    are excluded from the object diff.
+
+    The result is sorted by dedup_key so the output (and the diff) is deterministic.
+    """
+    object_keys = {v.object_key for v in graph.vertices.values() if v.object_type in DIFFED_TYPES}
+    seen: dict[tuple[str, str, str, str], EdgeSnapshot] = {}
+    for edge in graph.edges:
+        if edge.source_object_key not in object_keys or edge.destination_object_key not in object_keys:
+            continue
+        snap = EdgeSnapshot(
+            source_object_key=edge.source_object_key,
+            destination_object_key=edge.destination_object_key,
+            relation=edge.relation.value,
+            action=edge.action,
+        )
+        seen.setdefault(snap.dedup_key(), snap)
+    return [seen[k] for k in sorted(seen)]
