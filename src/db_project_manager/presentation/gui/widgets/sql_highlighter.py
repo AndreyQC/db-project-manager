@@ -73,9 +73,32 @@ _RULES.append((QRegularExpression("\\b\\d+(\\.\\d+)?\\b"), _fmt("#B5CEA8")))
 # Punctuation.
 _RULES.append((QRegularExpression("[;,()]"), _fmt("#D4D4D4")))
 
+#: Diff-marker rules applied on top of SQL when ``diff_mode=True`` (Phase 14).
+#: ``^+`` / ``^-`` (added/removed line), ``^@@`` (hunk header).
+_DIFF_RULES: list[tuple[QRegularExpression, QTextCharFormat]] = [
+    # Added lines — green with a light background to read like a diff tool.
+    (QRegularExpression("^\\+.*"), _fmt("#2EA043", bold=True)),
+    # Removed lines — red.
+    (QRegularExpression("^-.*"), _fmt("#F85149", bold=True)),
+    # Hunk header — gray/italic.
+    (QRegularExpression("^@@.*@@"), _fmt("#8B949E", italic=True)),
+    # diff file headers (+++ / ---) — blue/italic.
+    (QRegularExpression("^[+]{3}.*"), _fmt("#58A6FF", italic=True)),
+]
+
 
 class SqlHighlighter(QSyntaxHighlighter):
-    """Apply SQL coloring rules to a QTextDocument."""
+    """Apply SQL coloring rules to a QTextDocument.
+
+    With ``diff_mode=True`` (Phase 14 Delta Viewer), unified-diff markers
+    (``+`` / ``-`` / ``@@`` lines) are highlighted on top of the SQL rules so the
+    DDL inside the diff keeps its syntax coloring while added/removed lines stand
+    out.
+    """
+
+    def __init__(self, parent, *, diff_mode: bool = False) -> None:
+        super().__init__(parent)
+        self._diff_mode = diff_mode
 
     def highlightBlock(self, text: str) -> None:  # noqa: N802 (Qt override)
         for regex, fmt in _RULES:
@@ -83,3 +106,9 @@ class SqlHighlighter(QSyntaxHighlighter):
             while it.hasNext():
                 match = it.next()
                 self.setFormat(match.capturedStart(), match.capturedLength(), fmt)
+        if self._diff_mode:
+            for regex, fmt in _DIFF_RULES:
+                it = regex.globalMatch(text)
+                while it.hasNext():
+                    match = it.next()
+                    self.setFormat(match.capturedStart(), match.capturedLength(), fmt)

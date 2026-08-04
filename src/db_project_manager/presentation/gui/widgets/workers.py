@@ -217,3 +217,36 @@ class CompareWorker(QRunnable):
         except Exception as e:  # noqa: BLE001
             self.signals.error.emit(f"Непредвиденная ошибка: {e}")
             self.signals.finished.emit(None)
+
+
+class LoadDiffReportWorker(QRunnable):
+    """Load + parse a ``diff_report.json`` off the UI thread (Phase 14).
+
+    Used by :class:`DeltaViewerWindow` to keep large-file parsing off the UI thread.
+    Emits the parsed :class:`~db_project_manager.domain.diff.DiffReport` on success,
+    or ``None`` + an error message on failure (missing/invalid file).
+    """
+
+    def __init__(self, path: str | Path) -> None:
+        super().__init__()
+        self.path = Path(path)
+        self.signals = WorkerSignals()
+
+    def run(self) -> None:  # noqa: C901 (Qt entrypoint)
+        from db_project_manager.domain.diff import DiffReport
+        from pydantic import ValidationError
+
+        try:
+            text = self.path.read_text(encoding="utf-8")
+            report = DiffReport.model_validate_json(text)
+            self.signals.status.emit(f"Отчёт загружен: {self.path.name}")
+            self.signals.finished.emit(report)
+        except (ValidationError, ValueError) as e:
+            self.signals.error.emit(f"Не удалось разобрать отчёт: {e}")
+            self.signals.finished.emit(None)
+        except OSError as e:
+            self.signals.error.emit(f"Не удалось прочитать файл: {e}")
+            self.signals.finished.emit(None)
+        except Exception as e:  # noqa: BLE001
+            self.signals.error.emit(f"Непредвиденная ошибка: {e}")
+            self.signals.finished.emit(None)
