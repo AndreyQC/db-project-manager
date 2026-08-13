@@ -1,0 +1,6 @@
+CREATE TABLE IF NOT EXISTS "{{ schema }}"."schema_version" (
+    id              SERIAL PRIMARY KEY,
+    version         TEXT NOT NULL,
+    applied_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    source          TEXT NOT NULL
+);
