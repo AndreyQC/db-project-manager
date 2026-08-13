@@ -22,7 +22,12 @@ def _copy_fixture_with_manifest(tmp_path: Path, name: str, db_type: str = "postg
     dest = tmp_path / name
     shutil.copytree(CODEBASE_SAMPLE, dest)
     write_manifest(
-        CodebaseManifest(db_type=db_type, database="demo", generated_at="2026-07-29T00:00:00+00:00"),
+        CodebaseManifest(
+            db_type=db_type,
+            database="demo",
+            generated_at="2026-07-29T00:00:00+00:00",
+            source_version="2026.07.29.01",  # Phase 10: required at v2
+        ),
         dest,
     )
     return dest

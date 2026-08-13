@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 from loguru import logger
 
 from db_project_manager.domain.connection import ConnectionConfig
+from db_project_manager.domain.deploy import calver_seed
 from db_project_manager.domain.diff import CodebaseManifest
 from db_project_manager.infrastructure.config.codebase_manifest import tool_version, write_manifest
 from db_project_manager.infrastructure.database.base import DatabaseAdapter, DatabaseError
@@ -92,11 +93,15 @@ class ReverseEngineerService:
 
             # Phase 9: write a whole-DB manifest next to the generated tree so the
             # compare feature can read the source db_type without a live connection.
+            # Phase 10 (S2 minimal seed): source_version is required at v2.
+            # Full RE-seed/sync with __deploy — S6; for now seed calver of today
+            # so write_manifest's strict contract is satisfied end-to-end.
             manifest = CodebaseManifest(
                 db_type=conn_cfg.type,
                 database=conn_cfg.database,
                 generated_at=datetime.now(timezone.utc).isoformat(),
                 tool_version=tool_version(),
+                source_version=calver_seed(),
             )
             write_manifest(manifest, result)
 

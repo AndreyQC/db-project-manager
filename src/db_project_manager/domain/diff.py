@@ -51,6 +51,11 @@ class CodebaseManifest(BaseModel):
     ``dbpm.manifest.json`` in the codebase root lets downstream tooling (the
     compare feature) know the source DB type without re-reading the connection.
     No secrets — only type, name and timestamps.
+
+    Phase 10 added ``source_version`` (calver ``YYYY.MM.DD.NN``) — the version
+    of the codebase, MR-controlled, recorded into ``__deploy.schema_version`` on
+    deploy. Empty default keeps v1 backwards-compatible on read; writers and v2
+    readers enforce presence + calver validity (see ``codebase_manifest`` module).
     """
 
     db_type: str              # "postgres" | "greenplum" (from ConnectionConfig.type)
@@ -58,6 +63,7 @@ class CodebaseManifest(BaseModel):
     generated_at: str         # UTC ISO timestamp of the reverse-engineer run
     tool_version: str = ""    # db-pm version (informational, compatibility aid)
     format_version: int = 1   # manifest schema version
+    source_version: str = ""  # calver YYYY.MM.DD.NN; required at format_version>=2
 
 
 class ObjectSnapshot(BaseModel):

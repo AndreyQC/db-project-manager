@@ -7,17 +7,23 @@ from the per-object autodoc YAML header: autodoc = one object, manifest = the
 entire DB. The compare feature (Phase 9) reads the manifest to check db_type
 compatibility between two sides without a live connection.
 
-Layout::
+Layout (format_version 2, Phase 10)::
 
     {
       "db_type": "postgres",
       "database": "bookings_demo",
       "generated_at": "2026-07-28T12:34:56+00:00",
       "tool_version": "0.1.0",
-      "format_version": 1
+      "format_version": 2,
+      "source_version": "2026.08.11.01"
     }
 
-No secrets — only type, name, timestamps. Safe to commit alongside the codebase.
+``source_version`` (calver ``YYYY.MM.DD.NN``) is the version of the codebase,
+MR-controlled — bump'ed by hand in PR review, seeded/synced automatically by
+reverse-engineer (Phase 10 S6). Required at ``format_version >= 2``.
+
+No secrets — only type, name, timestamps, version. Safe to commit alongside the
+codebase.
 """
 
 from __future__ import annotations
@@ -29,10 +35,11 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from db_project_manager.domain.connection import SUPPORTED_DB_TYPES
+from db_project_manager.domain.deploy import validate_calver
 from db_project_manager.domain.diff import CodebaseManifest
 
 MANIFEST_FILENAME = "dbpm.manifest.json"
-MANIFEST_FORMAT_VERSION = 1
+MANIFEST_FORMAT_VERSION = 2
 
 
 class ManifestError(Exception):
@@ -44,7 +51,12 @@ def write_manifest(manifest: CodebaseManifest, codebase_root: str | Path) -> Pat
 
     Returns the path written. Uses a temp file + ``os.replace`` so a partial write
     never leaves a corrupt manifest behind (same pattern as ``GuiSettingsStore``).
+
+    Raises :class:`ManifestError` if ``source_version`` is missing or not a valid
+    calver — every manifest written by db-pm is ``format_version=2`` which
+    requires it.
     """
+    _enforce_source_version(manifest)
     root = Path(codebase_root)
     root.mkdir(parents=True, exist_ok=True)
     target = root / MANIFEST_FILENAME
@@ -61,8 +73,13 @@ def read_manifest(codebase_root: str | Path) -> CodebaseManifest:
     """Read and validate the manifest from ``codebase_root``.
 
     Raises :class:`ManifestError` with a human-readable message when the file is
-    missing, not valid JSON, fails pydantic validation, or carries an unknown
-    ``db_type``.
+    missing, not valid JSON, fails pydantic validation, carries an unknown
+    ``db_type``, or — at ``format_version >= 2`` — has a missing/invalid
+    ``source_version``.
+
+    A legacy ``format_version=1`` manifest without ``source_version`` parses
+    successfully: reverse-engineer (Phase 10 S6) reads it and rewrites as v2
+    with a seeded ``source_version``.
     """
     root = Path(codebase_root)
     path = root / MANIFEST_FILENAME
@@ -87,7 +104,26 @@ def read_manifest(codebase_root: str | Path) -> CodebaseManifest:
             f"Неизвестный тип БД в манифесте '{path}': '{manifest.db_type}'. "
             f"Ожидается один из: {', '.join(SUPPORTED_DB_TYPES)}."
         )
+
+    # Phase 10: source_version required at format_version >= 2.
+    # v1 (no source_version) still parses — RE rewrites as v2 with a seed.
+    if manifest.format_version >= 2:
+        _enforce_source_version(manifest)
     return manifest
+
+
+def _enforce_source_version(manifest: CodebaseManifest) -> None:
+    """Raise ManifestError if source_version is missing or not valid calver."""
+    if not manifest.source_version:
+        raise ManifestError(
+            "Манифест не содержит 'source_version'. Добавьте calver-версию вида "
+            "'YYYY.MM.DD.NN' (например '2026.08.11.01') в dbpm.manifest.json — "
+            "это версия кодовой базы, MR-контролируемая (Phase 10)."
+        )
+    try:
+        validate_calver(manifest.source_version)
+    except ValueError as e:
+        raise ManifestError(f"Манифест: невалидный source_version: {e}") from e
 
 
 def tool_version() -> str:

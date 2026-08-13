@@ -35,7 +35,12 @@ def _copy_fixture_with_manifest(tmp_path: Path, db_type: str = "postgres") -> Pa
     dest = tmp_path / "codebase"
     shutil.copytree(CODEBASE_SAMPLE, dest)
     write_manifest(
-        CodebaseManifest(db_type=db_type, database="demo", generated_at="2026-07-29T00:00:00+00:00"),
+        CodebaseManifest(
+            db_type=db_type,
+            database="demo",
+            generated_at="2026-07-29T00:00:00+00:00",
+            source_version="2026.07.29.01",  # Phase 10: required at v2
+        ),
         dest,
     )
     return dest
@@ -53,7 +58,10 @@ class _StubReverseEngineer:
         shutil.copytree(CODEBASE_SAMPLE, out)
         write_manifest(
             CodebaseManifest(
-                db_type=self.db_type, database=self.db_name, generated_at="2026-07-29T00:00:00+00:00"
+                db_type=self.db_type,
+                database=self.db_name,
+                generated_at="2026-07-29T00:00:00+00:00",
+                source_version="2026.07.29.01",  # Phase 10: required at v2
             ),
             out,
         )
