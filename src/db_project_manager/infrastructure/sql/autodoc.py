@@ -130,6 +130,29 @@ def extract_header(script: str) -> dict[str, Any] | None:
     return parsed if isinstance(parsed, dict) else None
 
 
+def strip_autodoc(script: str) -> str:
+    """Remove the leading autodoc comment block, return the executable SQL body.
+
+    Finds the closing marker ``[[autodoc-yaml]>]`` plus the trailing ``*/`` that
+    closes the surrounding SQL comment, and returns whatever follows. If no
+    autodoc block is present, the script is returned unchanged.
+
+    Used both at deploy time (before ``execute_script`` — metadata must not leak
+    into the target DB) and at checksum time (Phase 10: ``canonical_normalize``
+    strips the autodoc so the checksum reflects executable SQL, not metadata —
+    a metadata-only change does not invalidate the checksum).
+    """
+    if MARKER_CLOSE not in script:
+        return script
+    end = script.index(MARKER_CLOSE) + len(MARKER_CLOSE)
+    tail = script[end:]
+    # Drop the comment-closing '*/' if present.
+    comment_end = tail.find("*/")
+    if comment_end != -1:
+        tail = tail[comment_end + 2 :]
+    return tail.lstrip()
+
+
 def ensure_header(
     script: str,
     *,

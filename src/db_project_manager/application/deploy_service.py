@@ -33,6 +33,7 @@ from db_project_manager.domain.connection import ConnectionConfig
 from db_project_manager.domain.graph import Vertex
 from db_project_manager.infrastructure.database.base import DatabaseAdapter, DatabaseError
 from db_project_manager.infrastructure.database.registry import get_adapter
+from db_project_manager.infrastructure.sql.autodoc import strip_autodoc
 
 #: Object types considered early DDL: structural, downstream of any failure
 #: here makes further deploy meaningless -> fail-fast + cleanup.
@@ -248,7 +249,7 @@ class DeployValidateService:
             raise DatabaseError(f"Файл объекта не найден: {source}")
         script = source.read_text(encoding="utf-8-sig")
         # Strip the autodoc header so only SQL reaches the server.
-        script = self._strip_autodoc(script)
+        script = strip_autodoc(script)
         # Phase 5: for database_setting, replace the original db name in
         # ALTER DATABASE ... SET statements with the actual target DB name.
         # The original name is stored in object_catalog (written by SQLGenerator).
@@ -257,20 +258,6 @@ class DeployValidateService:
                 f'"{vertex.object_catalog}"', f'"{target_db_name}"'
             )
         adapter.execute_script(script)
-
-    @staticmethod
-    def _strip_autodoc(script: str) -> str:
-        """Remove the leading autodoc comment block before execution."""
-        close_marker = "[[autodoc-yaml]>]"
-        if close_marker not in script:
-            return script
-        end = script.index(close_marker) + len(close_marker)
-        tail = script[end:]
-        # Drop the comment-closing '*/' if present.
-        comment_end = tail.find("*/")
-        if comment_end != -1:
-            tail = tail[comment_end + 2 :]
-        return tail.lstrip()
 
     @staticmethod
     def _format_errors(errors: list[ObjectError]) -> str:
