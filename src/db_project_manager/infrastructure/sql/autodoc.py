@@ -49,6 +49,7 @@ def build_metadata(
     object_name: str,
     object_signature: str = "",
     extra: dict[str, Any] | None = None,
+    immutable: bool = False,
 ) -> dict[str, Any]:
     """Build the autodoc metadata dict for an object.
 
@@ -62,6 +63,10 @@ def build_metadata(
             installed version on the source DB) and ``properties`` (db-level
             CREATE DATABASE properties carried by the ``database_setting``
             object). Keys must not collide with the standard object fields.
+        immutable: Phase 10 marker — object is managed by db-pm (e.g. lives in
+            the ``__deploy`` service schema). Omitted from the ``project``
+            section when False (default), so ordinary objects keep clean
+            headers; only set to True when needed (CDF-10).
     """
     object_key = _build_object_key(
         object_catalog=object_catalog,
@@ -84,7 +89,10 @@ def build_metadata(
         if collision:
             raise ValueError(f"extra keys collide with standard fields: {collision}")
         obj.update(extra)
-    return {"object": obj, "project": {"build": True}}
+    project: dict[str, Any] = {"build": True}
+    if immutable:
+        project["immutable"] = True
+    return {"object": obj, "project": project}
 
 
 def _build_object_key(
@@ -162,6 +170,7 @@ def ensure_header(
     object_name: str,
     object_signature: str = "",
     extra: dict[str, Any] | None = None,
+    immutable: bool = False,
 ) -> str:
     """Prepend an autodoc header if absent; keep an existing one as-is.
 
@@ -171,6 +180,7 @@ def ensure_header(
         object_signature: Canonical signature hash for overloaded functions/
             procedures. See :func:`build_metadata`.
         extra: Optional additional object fields. See :func:`build_metadata`.
+        immutable: Phase 10 marker. See :func:`build_metadata`.
     """
     if MARKER_OPEN in script and MARKER_CLOSE in script:
         return script
@@ -181,6 +191,7 @@ def ensure_header(
         object_name=object_name,
         object_signature=object_signature,
         extra=extra,
+        immutable=immutable,
     )
     return render_header(metadata) + script
 

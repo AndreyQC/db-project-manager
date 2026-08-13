@@ -63,6 +63,11 @@ class Vertex(BaseModel):
     argument_types: str = Field("", description="Raw argument types for overloaded functions/procedures")
     object_source_file: str = Field("", description="Path to the source SQL file")
     build: bool = Field(True, description="Whether this object is deployed (project.build in autodoc)")
+    #: Phase 10 (CDF-10): marker that this object is managed by db-pm and must
+    #: not be hand-edited. Set by reverse-engineer for objects in the service
+    #: schema (``__deploy``). Lives in the autodoc ``project`` section next to
+    #: ``build``; omitted (False) for ordinary objects.
+    immutable: bool = Field(False, description="Managed by db-pm; do not hand-edit (project.immutable in autodoc)")
     extra: dict[str, Any] = Field(default_factory=dict, description="Raw autodoc fields not covered above")
 
 

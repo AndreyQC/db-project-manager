@@ -182,6 +182,9 @@ class PgSqlParser(ObjectGraphParser):
             object_key = str(obj_meta.get("object_key", ""))
             catalog = str(obj_meta.get("object_catalog", _FALLBACK_CATALOG))
             build = bool(autodoc.get("project", {}).get("build", True))
+            # Phase 10 (CDF-10): immutable marker — object managed by db-pm
+            # (e.g. lives in __deploy service schema). Defaults to False.
+            immutable = bool(autodoc.get("project", {}).get("immutable", False))
             # Phase 4: signature is embedded in the autodoc for overloaded
             # functions/procedures. object_key already carries it as a
             # /signature/<hash> suffix (written by SQLGenerator), so the parser
@@ -208,6 +211,7 @@ class PgSqlParser(ObjectGraphParser):
                 argument_types=argument_types,
                 object_source_file=_relative_posix(path, root),
                 build=build,
+                immutable=immutable,
                 **({"extra": extra} if extra else {}),
             )
             return vertex, words, raw
