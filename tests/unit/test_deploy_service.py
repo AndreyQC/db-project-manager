@@ -18,6 +18,7 @@ from db_project_manager.application.deploy_service import (
     sanitize_prefix,
 )
 from db_project_manager.domain.connection import ConnectionConfig
+from db_project_manager.domain.deploy import ScriptRecord
 from db_project_manager.infrastructure.database.base import DatabaseAdapter, DatabaseError
 
 FIXTURE_ROOT = Path(__file__).resolve().parent.parent / "fixtures" / "codebase_sample"
@@ -37,6 +38,11 @@ class DeployFakeAdapter(DatabaseAdapter):
         server_ts: str = "20260101T120000",
         fail_on: set[str] | None = None,
     ) -> None:
+        # Phase 10 bookkeeping (initialized first so it's always present).
+        self._schema_versions: list[tuple[str, str, str]] = []
+        self._script_history: dict[tuple[str, str, str], ScriptRecord] = {}
+        self._script_audit: list[dict[str, Any]] = []
+        # Legacy fields.
         self.can_create_db = can_create_db
         self.server_ts = server_ts
         # fail_on holds 'schema.name' tokens that appear in the SQL body
@@ -93,6 +99,40 @@ class DeployFakeAdapter(DatabaseAdapter):
     # Phase 9 compare surface (unused by DeployValidateService; stubbed for ABC).
     def get_table_row_counts(self) -> list[dict[str, Any]]:
         return []
+
+    # Phase 10 CD Foundation surface (in-memory; used by S7 runner tests).
+    def get_schema_version(self, schema_name: str) -> str | None:
+        # Latest by append order (mirrors MAX(applied_at)).
+        for schema, version, _source in reversed(self._schema_versions):
+            if schema == schema_name:
+                return version
+        return None
+
+    def record_schema_version(self, schema_name: str, version: str, source: str) -> None:
+        self._schema_versions.append((schema_name, version, source))
+
+    def get_script_history(
+        self, schema_name: str, script_name: str, script_type: str
+    ) -> ScriptRecord | None:
+        return self._script_history.get((schema_name, script_name, script_type))
+
+    def record_script_execution(
+        self,
+        schema_name: str,
+        record: ScriptRecord,
+        deploy_version: str,
+        deploy_source: str,
+    ) -> None:
+        key = (schema_name, record.script_name, record.script_type)
+        self._script_history[key] = record
+        self._script_audit.append(
+            {
+                "schema_name": schema_name,
+                "record": record,
+                "deploy_version": deploy_version,
+                "deploy_source": deploy_source,
+            }
+        )
 
     @staticmethod
     def _extract_qualified_name(script: str) -> str:

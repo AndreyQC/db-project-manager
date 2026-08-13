@@ -15,6 +15,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
 from db_project_manager.domain.connection import ConnectionConfig, ConnectionType
+from db_project_manager.domain.deploy import ScriptRecord
 from db_project_manager.infrastructure.database.base import DatabaseAdapter, DatabaseError
 from db_project_manager.infrastructure.database.postgres import queries as q
 from db_project_manager.infrastructure.database.postgres.keywords import get_reserved
@@ -330,6 +331,123 @@ class PGDatabaseAdapter(DatabaseAdapter):
             "extensions": extensions,
             "database": database,
         }
+
+    # --- Phase 10: CD Foundation (__deploy schema) surface ---
+
+    @staticmethod
+    def _quote_identifier(name: str) -> str:
+        """Quote a SQL identifier (schema/table/column) for safe interpolation.
+
+        Whitelist ``[A-Za-z_][A-Za-z0-9_]*`` (LESSONS §19 — same rule as
+        ``_validate_db_name``). The ``__deploy`` default and any user-chosen
+        ``deploy.service_schema`` value pass; arbitrary input is rejected to
+        keep the ``{schema}`` interpolation in queries.py injection-safe.
+        """
+        import re
+
+        if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name):
+            raise DatabaseError(f"Недопустимое имя идентификатора: {name!r}")
+        return f'"{name}"'
+
+    def get_schema_version(self, schema_name: str) -> str | None:
+        """Latest calver version recorded in ``<schema>.schema_version`` or None."""
+        self._require_connection()
+        schema = self._quote_identifier(schema_name)
+        try:
+            rows = self._exec(q.GET_SCHEMA_VERSION.format(schema=schema))
+        except Exception as e:
+            # Table missing (deploy never ran) is a normal first-time case;
+            # surface as DatabaseError only for unexpected failures.
+            raise DatabaseError(f"Не удалось прочитать schema_version: {e}") from e
+        if not rows:
+            return None
+        return str(rows[0][0])
+
+    def record_schema_version(self, schema_name: str, version: str, source: str) -> None:
+        """Append a row to ``<schema>.schema_version`` (version, source)."""
+        self._require_connection()
+        schema = self._quote_identifier(schema_name)
+        try:
+            self._connection.execute(
+                text(q.INSERT_SCHEMA_VERSION.format(schema=schema)),
+                {"version": version, "source": source},
+            )
+        except Exception as e:
+            raise DatabaseError(f"Не удалось записать schema_version: {e}") from e
+
+    def get_script_history(
+        self, schema_name: str, script_name: str, script_type: str
+    ) -> ScriptRecord | None:
+        """Return the state row for ``(script_name, script_type)`` or None."""
+        self._require_connection()
+        schema = self._quote_identifier(schema_name)
+        try:
+            rows = self._exec(
+                q.GET_SCRIPT_HISTORY.format(schema=schema),
+                {"script_name": script_name, "script_type": script_type},
+            )
+        except Exception as e:
+            raise DatabaseError(f"Не удалось прочитать script_history: {e}") from e
+        if not rows:
+            return None
+        r = rows[0]
+        return ScriptRecord(
+            script_name=str(r[0]),
+            script_type=str(r[1]),  # type: ignore[arg-type]
+            checksum=str(r[2]),
+            success=bool(r[3]),
+            error_message=None if r[4] is None else str(r[4]),
+            duration_ms=int(r[5]),
+            executed_at=r[6],
+        )
+
+    def record_script_execution(
+        self,
+        schema_name: str,
+        record: ScriptRecord,
+        deploy_version: str,
+        deploy_source: str,
+    ) -> None:
+        """Atomically UPSERT state + INSERT audit log (single transaction).
+
+        The shared ``self._connection`` runs in AUTOCOMMIT — to get a real
+        transaction we open a fresh connection off the engine and downgrade
+        its isolation level for the duration of these two writes. If the audit
+        INSERT fails after the state UPSERT, both roll back (state and history
+        never diverge).
+        """
+        self._require_connection()
+        assert self._engine is not None
+        schema = self._quote_identifier(schema_name)
+        params_state = {
+            "script_name": record.script_name,
+            "script_type": record.script_type,
+            "checksum": record.checksum,
+            "success": record.success,
+            "executed_at": record.executed_at,
+            "error_message": record.error_message,
+            "duration_ms": record.duration_ms,
+        }
+        params_audit = {
+            **params_state,
+            "deploy_version": deploy_version,
+            "deploy_source": deploy_source,
+        }
+        try:
+            with self._engine.connect().execution_options(
+                isolation_level="READ_COMMITTED"
+            ) as tx_conn:
+                with tx_conn.begin():
+                    tx_conn.execute(
+                        text(q.UPSERT_SCRIPT_HISTORY.format(schema=schema)),
+                        params_state,
+                    )
+                    tx_conn.execute(
+                        text(q.INSERT_SCRIPT_AUDIT_LOG.format(schema=schema)),
+                        params_audit,
+                    )
+        except Exception as e:
+            raise DatabaseError(f"Не удалось записать script execution: {e}") from e
 
     # --- helpers: low-level readers (kept close to the POC result shape) ---
 

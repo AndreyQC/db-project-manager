@@ -62,6 +62,19 @@ class FakeAdapter(DatabaseAdapter):
     def get_table_row_counts(self) -> list[dict[str, Any]]:
         return []
 
+    # Phase 10 CD Foundation surface (unused by reverse-engineer; stubbed for ABC).
+    def get_schema_version(self, schema_name: str) -> str | None:  # noqa: ARG002
+        return None
+
+    def record_schema_version(self, schema_name: str, version: str, source: str) -> None:  # noqa: ARG002
+        pass
+
+    def get_script_history(self, schema_name: str, script_name: str, script_type: str):  # noqa: ARG002
+        return None
+
+    def record_script_execution(self, schema_name, record, deploy_version, deploy_source):  # noqa: ARG002
+        pass
+
 
 def _cfg() -> ConnectionConfig:
     return ConnectionConfig(
