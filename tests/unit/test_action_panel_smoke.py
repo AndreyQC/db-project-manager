@@ -26,12 +26,14 @@ from db_project_manager.infrastructure.config.connection_store import (  # noqa:
 from db_project_manager.infrastructure.config.gui_settings import GuiSettingsStore  # noqa: E402
 from db_project_manager.presentation.gui.actions.dialogs import (  # noqa: E402
     CompareDialog,
+    DeployAnalyzeDialog,
     DeployValidateDialog,
     GraphPrepareDialog,
     ReverseEngineerDialog,
 )
 from db_project_manager.presentation.gui.actions.models import (  # noqa: E402
     CompareSettings,
+    DeployAnalyzeSettings,
     DeployValidateSettings,
     GraphPrepareSettings,
     ReverseEngineerSettings,
@@ -80,7 +82,9 @@ def test_panel_unblocked_after_run(qapp, tmp_path, monkeypatch):
 
     window = MainWindow(cfg=CFG())
     panel = window.action_panel
-    panel.action_combo.setCurrentIndex(2)  # graph_prepare
+    # Robust to registry order changes (Phase 11 inserted deploy_analyze at
+    # index 2): look the action up by id instead of hardcoding the index.
+    panel.action_combo.setCurrentIndex(panel.action_combo.findData("graph_prepare"))
 
     panel._on_run()
     assert not panel.action_combo.isEnabled()  # running -> blocked
@@ -121,6 +125,91 @@ def test_buttons_are_last_row_compare(qapp, tmp_path):
     """CompareDialog must keep buttons as the last row (lesson §43)."""
     dlg = CompareDialog(ConnectionStore(tmp_path), CompareSettings())
     assert isinstance(_last_form_widget(dlg), QDialogButtonBox)
+
+
+# --- deploy analyze (Phase 11, SG-7) ---
+
+
+def test_buttons_are_last_row_deploy_analyze(qapp, tmp_path):
+    """DeployAnalyzeDialog must keep buttons as the last row (lesson §43)."""
+    dlg = DeployAnalyzeDialog(ConnectionStore(tmp_path), DeployAnalyzeSettings())
+    assert isinstance(_last_form_widget(dlg), QDialogButtonBox)
+
+
+def test_deploy_analyze_dialog_settings_roundtrip(qapp, tmp_path):
+    """settings() must echo back what the dialog was prefilled with."""
+    from db_project_manager.domain.connection import ConnectionConfig
+
+    store = ConnectionStore(tmp_path)
+    store.save(
+        ConnectionConfig(
+            host="h", port=5432, database="prod", username="u", password="p", name="prod"
+        ),
+        crypto_env="ENVOS_CRYPTO_01",
+    )
+    settings = DeployAnalyzeSettings(
+        codebase_dir="C:/code", target_connection="prod", output_dir="C:/reports"
+    )
+    dlg = DeployAnalyzeDialog(store, settings)
+    restored = dlg.settings()
+    assert restored == settings
+
+
+def test_deploy_analyze_in_registry():
+    """The action must be registered with all four factories wired."""
+    from db_project_manager.presentation.gui.actions.registry import ACTIONS, get_action
+
+    spec = get_action("deploy_analyze")
+    assert spec in ACTIONS
+    assert spec.settings_model.__name__ == "DeployAnalyzeSettings"
+    assert spec.required_fields == ("codebase_dir", "target_connection", "output_dir")
+    assert spec.make_dialog and spec.make_worker and spec.build_cli
+
+
+def test_deploy_analyze_worker_emits_verdict(qapp, tmp_path, monkeypatch):
+    """Worker contract (lesson §42): finished carries the verdict; a hard error
+    goes through signals.error + finished(None)."""
+    from db_project_manager.domain.safety import SafetyGateVerdict
+    from db_project_manager.presentation.gui.widgets.workers import DeployAnalyzeWorker
+
+    import db_project_manager.application.safety_gate_service as sg_module
+
+    verdict = SafetyGateVerdict(clean=True, db_type="postgres", touched=[])
+    monkeypatch.setattr(
+        sg_module, "SafetyGateService",
+        lambda: type("S", (), {"analyze": staticmethod(lambda *a, **k: verdict)})(),
+    )
+    worker = DeployAnalyzeWorker(object(), tmp_path, tmp_path / "report")
+    finished: list = []
+    errors: list = []
+    worker.signals.finished.connect(finished.append)
+    worker.signals.error.connect(errors.append)
+    worker.run()
+    assert finished == [verdict]
+    assert errors == []
+
+
+def test_deploy_analyze_worker_error_contract(qapp, tmp_path, monkeypatch):
+    from db_project_manager.application.safety_gate_service import SafetyGateError
+    from db_project_manager.presentation.gui.widgets.workers import DeployAnalyzeWorker
+
+    import db_project_manager.application.safety_gate_service as sg_module
+
+    def _raise(*a, **k):
+        raise SafetyGateError("target newer than source")
+
+    monkeypatch.setattr(
+        sg_module, "SafetyGateService",
+        lambda: type("S", (), {"analyze": staticmethod(_raise)})(),
+    )
+    worker = DeployAnalyzeWorker(object(), tmp_path, tmp_path / "report")
+    finished: list = []
+    errors: list = []
+    worker.signals.finished.connect(finished.append)
+    worker.signals.error.connect(errors.append)
+    worker.run()
+    assert finished == [None]
+    assert errors and "target newer" in errors[0]
 
 
 def test_compare_connection_combo_has_empty_placeholder(qapp, tmp_path):

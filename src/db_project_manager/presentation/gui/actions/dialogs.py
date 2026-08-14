@@ -28,6 +28,7 @@ from db_project_manager.presentation.gui.actions.models import (
     EXPORT_FORMATS,
     FORMAT_NONE,
     CompareSettings,
+    DeployAnalyzeSettings,
     DeployValidateSettings,
     GraphPrepareSettings,
     ReverseEngineerSettings,
@@ -173,6 +174,34 @@ class DeployValidateDialog(BaseActionDialog):
             prefix=self._prefix.text().strip(),
             keep_db=self._keep_db.isChecked(),
             continue_on_error=self._continue_on_error.isChecked(),
+        )
+
+
+class DeployAnalyzeDialog(BaseActionDialog):
+    """Settings for 'Safety gate: проанализировать деплой' (Phase 11, SG-7)."""
+
+    def __init__(
+        self,
+        store: ConnectionStore,
+        settings: DeployAnalyzeSettings,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__("Safety gate (deploy analyze) — настройки", parent)
+        self._codebase_dir = self._dir_row(settings.codebase_dir, "Каталог кодовой базы:")
+        self._target_connection = self._connections_combo(store, settings.target_connection)
+        self._form.addRow("Целевая БД (существует, с данными):", self._target_connection)
+        self._output_dir = self._dir_row(
+            settings.output_dir,
+            "Каталог для отчётов:",
+            placeholder="safety_gate_report.md / .json / diff_report.json",
+        )
+        self._add_buttons()
+
+    def settings(self) -> DeployAnalyzeSettings:
+        return DeployAnalyzeSettings(
+            codebase_dir=self._codebase_dir.text().strip(),
+            target_connection=self._target_connection.currentText(),
+            output_dir=self._output_dir.text().strip(),
         )
 
 

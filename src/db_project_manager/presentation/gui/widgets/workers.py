@@ -169,6 +169,52 @@ class DeployValidateWorker(QRunnable):
             self.signals.finished.emit(None)
 
 
+class DeployAnalyzeWorker(QRunnable):
+    """Run the safety-gate dry-run off the UI thread (Phase 11, SG-7).
+
+    Read-only with respect to the target DB: SafetyGateService never calls a
+    mutating adapter method. Emits the SafetyGateVerdict through 'finished'
+    (object); SafetyGateError and unexpected errors go via signals.error with
+    finished(None) — the same contract as DeployValidateWorker.
+    """
+
+    def __init__(
+        self,
+        conn_cfg: ConnectionConfig,
+        codebase_dir: str | Path,
+        output_dir: str | Path,
+    ) -> None:
+        super().__init__()
+        self.conn_cfg = conn_cfg
+        self.codebase_dir = Path(codebase_dir)
+        self.output_dir = Path(output_dir)
+        self.signals = WorkerSignals()
+
+    def run(self) -> None:
+        from db_project_manager.application.safety_gate_service import (
+            SafetyGateError,
+            SafetyGateService,
+        )
+
+        service = SafetyGateService()
+
+        def progress(message: str, current: int, total: int) -> None:
+            self.signals.progress.emit(message, current, total)
+            self.signals.status.emit(message)
+
+        try:
+            verdict = service.analyze(
+                self.codebase_dir, self.conn_cfg, self.output_dir, progress=progress
+            )
+            self.signals.finished.emit(verdict)
+        except SafetyGateError as e:
+            self.signals.error.emit(f"Safety gate: {e}")
+            self.signals.finished.emit(None)
+        except Exception as e:  # noqa: BLE001
+            self.signals.error.emit(f"Непредвиденная ошибка: {e}")
+            self.signals.finished.emit(None)
+
+
 class CompareWorker(QRunnable):
     """Run a DB/codebase comparison off the UI thread.
 

@@ -237,6 +237,9 @@ class MainWindow(QMainWindow):
         self.action_panel.mark_executed()
         if action_id == "deploy_validate":
             self._report_deploy_result(result)
+        elif action_id == "deploy_analyze":
+            # result is a SafetyGateVerdict (read-only dry-run, SG-7).
+            self._report_analyze_result(result, settings)
         elif action_id == "compare":
             # result is the report dir (Path). Open it in the viewer and show a summary.
             self._viewer.set_root(str(result))
@@ -268,6 +271,40 @@ class MainWindow(QMainWindow):
             )
         except Exception:  # noqa: BLE001 — best-effort summary, never fatal
             return f"Готово: {report_dir}"
+
+    def _report_analyze_result(self, verdict, settings) -> None:
+        """Show the safety-gate verdict + point to the report (Phase 11, SG-7)."""
+        from pathlib import Path
+
+        report_md = Path(settings.output_dir) / "safety_gate_report.md"
+        touched = len(getattr(verdict, "touched", []) or [])
+        violations = getattr(verdict, "violations", []) or []
+        if getattr(verdict, "clean", False):
+            self._append_status(
+                f"✓ Safety gate: CLEAN (тронутых таблиц: {touched}). Отчёт: {report_md}"
+            )
+            QMessageBox.information(
+                self,
+                "Safety gate",
+                f"✓ Нарушений нет.\nТронутых таблиц: {touched}\nОтчёт: {report_md}",
+            )
+            return
+        self._append_status(
+            f"✗ Safety gate: VIOLATIONS ({len(violations)}) — пайплайн остановлен. "
+            f"Отчёт: {report_md}"
+        )
+        for v in violations:
+            self._append_status(
+                f"  ! {v.object_schema}.{v.name} [{v.touch.value}, "
+                f"~{v.estimated_rows} строк] — нет покрывающего pre-скрипта"
+            )
+        QMessageBox.warning(
+            self,
+            "Safety gate",
+            f"✗ Нарушений: {len(violations)}.\n"
+            "Таблицы с данными изменяются без покрывающего pre-скрипта.\n"
+            f"Отчёт: {report_md}",
+        )
 
     def _report_deploy_result(self, result) -> None:
         # DeployResult has .success / .db_name / .errors / objects_done/total

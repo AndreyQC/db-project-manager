@@ -61,3 +61,19 @@ class CompareSettings(BaseModel):
     # Report destination (source.json / target.json / diff_report.json).
     output_dir: str = ""
     keep_model_dir: bool = False
+
+
+class DeployAnalyzeSettings(BaseModel):
+    """Settings for the deploy analyze action (Phase 11 / GUI action).
+
+    Run-only safety gate against an EXISTING target DB (read-only — nothing
+    is applied). Field named ``target_connection`` to avoid colliding with
+    BaseModel attribute names (LESSONS §40) and to stress "existing target".
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    codebase_dir: str = ""
+    target_connection: str = ""
+    # Report destination (safety_gate_report.md / .json / diff_report.json).
+    output_dir: str = ""

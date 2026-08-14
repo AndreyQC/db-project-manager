@@ -12,6 +12,7 @@ from db_project_manager.infrastructure.config.connection_store import Connection
 from db_project_manager.presentation.gui.actions.models import (
     FORMAT_NONE,
     CompareSettings,
+    DeployAnalyzeSettings,
     DeployValidateSettings,
     GraphPrepareSettings,
     ReverseEngineerSettings,
@@ -45,6 +46,16 @@ def build_cli_deploy_validate(settings: DeployValidateSettings, store: Connectio
     if settings.continue_on_error:
         parts.append("--continue-on-error")
     return " ".join(parts)
+
+
+def build_cli_deploy_analyze(settings: DeployAnalyzeSettings, store: ConnectionStore) -> str:
+    conn_file = store.path_for(settings.target_connection)
+    return (
+        f"db-pm deploy analyze "
+        f"--dir {_quote(settings.codebase_dir)} "
+        f"--target-connection-file {_quote(str(conn_file))} "
+        f"--output-dir {_quote(settings.output_dir)}"
+    )
 
 
 def build_cli_graph_prepare(settings: GraphPrepareSettings, store: ConnectionStore) -> str:

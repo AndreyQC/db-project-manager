@@ -20,12 +20,14 @@ from db_project_manager.infrastructure.config.connection_store import Connection
 
 from db_project_manager.presentation.gui.actions.cli import (
     build_cli_compare,
+    build_cli_deploy_analyze,
     build_cli_deploy_validate,
     build_cli_graph_prepare,
     build_cli_reverse_engineer,
 )
 from db_project_manager.presentation.gui.actions.models import (
     CompareSettings,
+    DeployAnalyzeSettings,
     DeployValidateSettings,
     GraphPrepareSettings,
     ReverseEngineerSettings,
@@ -67,6 +69,12 @@ def _make_graph_prepare_dialog(store, settings, parent):
     return GraphPrepareDialog(store, settings, parent)
 
 
+def _make_deploy_analyze_dialog(store, settings, parent):
+    from db_project_manager.presentation.gui.actions.dialogs import DeployAnalyzeDialog
+
+    return DeployAnalyzeDialog(store, settings, parent)
+
+
 def _make_compare_dialog(store, settings, parent):
     from db_project_manager.presentation.gui.actions.dialogs import CompareDialog
 
@@ -100,6 +108,16 @@ def _make_graph_prepare_worker(store, settings: GraphPrepareSettings):
         fmt=settings.format,
         validate=settings.validate_graph,
         output_dir=settings.output_dir or None,
+    )
+
+
+def _make_deploy_analyze_worker(store, settings: DeployAnalyzeSettings):
+    from db_project_manager.presentation.gui.widgets.workers import DeployAnalyzeWorker
+
+    return DeployAnalyzeWorker(
+        store.load_by_name(settings.target_connection),
+        settings.codebase_dir,
+        settings.output_dir,
     )
 
 
@@ -157,6 +175,15 @@ ACTIONS: list[ActionSpec] = [
         make_worker=_make_deploy_validate_worker,
         build_cli=build_cli_deploy_validate,
         required_fields=("codebase_dir", "connection"),
+    ),
+    ActionSpec(
+        action_id="deploy_analyze",
+        title="Safety gate: проанализировать деплой на существующую БД (dry-run)",
+        settings_model=DeployAnalyzeSettings,
+        make_dialog=_make_deploy_analyze_dialog,
+        make_worker=_make_deploy_analyze_worker,
+        build_cli=build_cli_deploy_analyze,
+        required_fields=("codebase_dir", "target_connection", "output_dir"),
     ),
     ActionSpec(
         action_id="graph_prepare",

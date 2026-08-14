@@ -17,12 +17,14 @@ from db_project_manager.infrastructure.config.connection_store import Connection
 from db_project_manager.presentation.cli import main as cli_main
 from db_project_manager.presentation.gui.actions.cli import (
     build_cli_compare,
+    build_cli_deploy_analyze,
     build_cli_deploy_validate,
     build_cli_graph_prepare,
     build_cli_reverse_engineer,
 )
 from db_project_manager.presentation.gui.actions.models import (
     CompareSettings,
+    DeployAnalyzeSettings,
     DeployValidateSettings,
     GraphPrepareSettings,
     ReverseEngineerSettings,
@@ -189,6 +191,32 @@ def test_compare_cli_omits_unset_side(tmp_path):
     assert "--target-dir C:/tgt" in cmd
 
 
+# --- deploy analyze (Phase 11 GUI action) ---
+
+
+def test_deploy_analyze_cli_string(tmp_path):
+    store = _store(tmp_path)
+    s = DeployAnalyzeSettings(
+        codebase_dir="C:/out/qr", target_connection="prod", output_dir="C:/reports"
+    )
+    cmd = build_cli_deploy_analyze(s, store)
+    assert cmd == (
+        f"db-pm deploy analyze --dir C:/out/qr "
+        f"--target-connection-file {store.path_for('prod')} "
+        f"--output-dir C:/reports"
+    )
+
+
+def test_deploy_analyze_cli_paths_with_spaces_quoted(tmp_path):
+    store = _store(tmp_path)
+    s = DeployAnalyzeSettings(
+        codebase_dir="C:/my code", target_connection="prod", output_dir="C:/my reports"
+    )
+    cmd = build_cli_deploy_analyze(s, store)
+    assert '--dir "C:/my code"' in cmd
+    assert '--output-dir "C:/my reports"' in cmd
+
+
 # --- typer contract tests (mocked services) ---
 
 
@@ -287,3 +315,35 @@ def test_contract_compare(tmp_path, monkeypatch):
     )
     result = runner.invoke(cli_main.app, _argv(cmd))
     assert result.exit_code == 0, result.output
+
+
+def test_contract_deploy_analyze(tmp_path, monkeypatch):
+    """The GUI-built deploy analyze command parses through the real typer CLI."""
+    from db_project_manager.domain.safety import SafetyGateVerdict
+
+    _patch_common(monkeypatch)
+    monkeypatch.setattr(
+        cli_main, "load_cfg",
+        lambda *a, **k: SimpleNamespace(
+            deploy=SimpleNamespace(service_schema="__deploy"),
+            logging=SimpleNamespace(level="INFO"),
+            paths=SimpleNamespace(logs_dir=None),
+        ),
+    )
+    fake_service = SimpleNamespace(
+        analyze=lambda *a, **k: SafetyGateVerdict(clean=True, db_type="postgres", touched=[])
+    )
+    monkeypatch.setattr(cli_main, "SafetyGateService", lambda **kwargs: fake_service)
+
+    store = _store(tmp_path)
+    cmd = build_cli_deploy_analyze(
+        DeployAnalyzeSettings(
+            codebase_dir=str(tmp_path),
+            target_connection="prod",
+            output_dir=str(tmp_path / "report"),
+        ),
+        store,
+    )
+    result = runner.invoke(cli_main.app, _argv(cmd))
+    assert result.exit_code == 0, result.output
+    assert "CLEAN" in result.output
