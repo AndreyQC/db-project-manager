@@ -2,7 +2,7 @@
 
 Инструмент для работы со структурой баз данных (PostgreSQL/Greenplum; Snowflake/MSSQL/MySQL — в планах): чтение метаданных каталога, генерация дерева SQL-файлов (по одному на объект), построение графа зависимостей, валидация деплоя на пустую временную БД, и (в будущих фазах) миграции.
 
-> Статус: Phase 2 — reverse-engineering + граф зависимостей + validation deploy (через CLI и GUI). Миграции на БД с данными — Phase 3. Phase 9 — сравнение состояния БД с файловой системой (CLI).
+> Статус: Phase 11 — Safety Gate готов: reverse-engineering, граф зависимостей, validation deploy, compare и dry-run анализ деплоя на существующую БД с данными (CLI + GUI). Real-target apply и ALTER — Phase 12.
 
 ## Возможности
 
@@ -64,6 +64,17 @@ db-pm deploy validate \
     --connection-file connections/server.yaml \
     [--prefix myapp] [--keep-db] [--continue-on-error]
 
+# Safety gate: dry-run анализ деплоя на СУЩЕСТВУЮЩУЮ БД с данными — Phase 11.
+# Read-only: дельта код↔БД, оценка данных в тронутых таблицах (reltuples, без
+# COUNT; stale-статистика = «есть данные»), сопоставление с pre-скриптами
+# (project.covers в autodoc), отчёт-рекомендация.
+# Exit codes: 0 — нарушений нет; 1 — нарушения (пайплайн остановлен); 2 — ошибка.
+db-pm deploy analyze \
+    --dir ./output/mydb \
+    --target-connection-file connections/prod.yaml \
+    --output-dir ./sg_report
+# Отчёты: safety_gate_report.md, safety_gate_report.json + diff_report.json
+
 # Сравнение двух состояний (БД или каталог reverse-engineer) — Phase 9
 db-pm compare run \
     --output-dir ./diff_report \
@@ -79,7 +90,7 @@ db-pm compare run \
 db-pm-gui
 ```
 
-Добавьте подключение → выберите папку вывода → «Сгенерировать скрипты объектов БД». Файлы появятся в дереве слева; кликните любой `.sql`, чтобы увидеть содержимое с подсветкой. Кнопка «Deploy validate…» запускает валидационный деплой с диалогом опций (префикс, чекбокс «оставить БД», continue-on-error).
+Добавьте подключение → выберите папку вывода → «Сгенерировать скрипты объектов БД». Файлы появятся в дереве слева; кликните любой `.sql`, чтобы увидеть содержимое с подсветкой. Кнопка «Deploy validate…» запускает валидационный деплой с диалогом опций (префикс, чекбокс «оставить БД», continue-on-error). Действие «Safety gate…» (Phase 11) — dry-run анализ деплоя на существующую БД: вердикт CLEAN/VIOLATIONS + ссылка на отчёт.
 
 ## Разработка
 
