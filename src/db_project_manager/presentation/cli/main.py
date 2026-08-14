@@ -4,6 +4,7 @@ Layout:
     db-pm reverse-engineer --connection-file <conn.yaml> --output <dir>
     db-pm graph     build|export|show|validate  --dir <dir> [...]
     db-pm deploy    validate                    --dir <dir> --connection-file <conn.yaml> [...]
+    db-pm deploy    analyze                     --dir <dir> --target-connection-file <conn.yaml> [...]
 
 Connection management (create/edit) is UI-only; the CLI consumes a connection
 file produced in the GUI (see roadmap §8).
@@ -21,6 +22,10 @@ from db_project_manager.application.deploy_service import (
     DeployValidateService,
 )
 from db_project_manager.application.graph_service import BuildGraphService
+from db_project_manager.application.safety_gate_service import (
+    SafetyGateError,
+    SafetyGateService,
+)
 from db_project_manager.application.reverse_engineer import (
     ReverseEngineerError,
     build_default_service,
@@ -420,6 +425,74 @@ def deploy_validate(
             err=True,
         )
         raise typer.Exit(code=1)
+
+
+@deploy_app.command("analyze")
+def deploy_analyze(
+    directory: Annotated[Path, typer.Option("--dir", help="Codebase root to analyze.")],
+    target_connection_file: Annotated[
+        Path,
+        typer.Option(
+            "--target-connection-file",
+            help="Connection YAML of the EXISTING target DB (must hold data).",
+        ),
+    ],
+    output_dir: Annotated[
+        Path,
+        typer.Option("--output-dir", help="Where to write safety_gate_report.{md,json}."),
+    ],
+    config: Annotated[Optional[Path], typer.Option("--config", help="Path to config.yaml.")] = None,
+) -> None:
+    """Safety gate (dry-run): analyze codebase vs the EXISTING target DB. Read-only.
+
+    Compares the codebase against the live target database, estimates data
+    presence for touched tables and matches them with pre-script coverage
+    (project.covers). Nothing is applied to the target.
+
+    Exit codes: 0 — clean; 1 — safety-gate violations; 2 — hard error.
+    """
+    cfg = load_cfg(config if config is not None else None)
+    configure_logging(level=cfg.logging.level, console=True, logs_dir=cfg.paths.logs_dir)
+    conn_cfg = _load_connection(target_connection_file)
+
+    service = SafetyGateService(service_schema=cfg.deploy.service_schema)
+
+    def progress(message: str, current: int, total: int) -> None:
+        if total:
+            typer.echo(f"[{current}/{total}] {message}")
+        else:
+            typer.echo(message)
+
+    try:
+        verdict = service.analyze(directory, conn_cfg, output_dir, progress=progress)
+    except SafetyGateError as e:
+        typer.secho(f"✗ Safety gate: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from e
+
+    md_path = output_dir / "safety_gate_report.md"
+    if verdict.clean:
+        typer.secho(
+            f"✓ Safety gate: CLEAN (тронутых таблиц: {len(verdict.touched)}). "
+            f"Отчёт: {md_path}",
+            fg=typer.colors.GREEN,
+        )
+        return
+
+    typer.secho(
+        f"✗ Safety gate: VIOLATIONS ({len(verdict.violations)}) — пайплайн остановлен "
+        f"(CD-9). Тронутых таблиц: {len(verdict.touched)}. Отчёт: {md_path}",
+        fg=typer.colors.RED,
+        err=True,
+    )
+    for violation in verdict.violations:
+        typer.secho(
+            f"  ! {violation.object_schema}.{violation.name} "
+            f"[{violation.touch.value}, ~{violation.estimated_rows} строк] — "
+            f"нет покрывающего pre-скрипта",
+            fg=typer.colors.RED,
+            err=True,
+        )
+    raise typer.Exit(code=1)
 
 
 if __name__ == "__main__":
