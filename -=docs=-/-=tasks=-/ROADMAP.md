@@ -56,7 +56,7 @@
 | Шаг | Фаза | Направление | Зависит от | Статус |
 |-----|------|-------------|------------|--------|
 | 1 | **Phase 8** — overload resolution | Граф | — | ✅ done (коммиты `d4b52e2`…`5587418`) |
-| 2 | **Phase 10** — CD Foundation | CD | Phase 8 (✓) | не начата |
+| 2 | **Phase 10** — CD Foundation | CD | Phase 8 (✓) | ✅ done (коммиты `3d5694c`…`15002ad`) |
 | 3 | **Phase 11** — Safety Gate | CD | Phase 10 | не начата |
 | 4 | **Phase 12** — ALTER + Delta | CD | Phase 11 | не начата |
 | 5 | **Phase 13** — Post-deploy + отчёты | CD | Phase 12 | не начата |
@@ -254,11 +254,16 @@ AI-трек надстраивается над Phase 12 (нужен струк�
   *Рекомендация (ЗАКРЫТО в Phase 14):* сначала markdown (CLI `compare report`), затем
   GUI. Реализовано (коммиты `3649b0c`, `211a402`, `b9b3fd1`).
 - **Q3** — Pre/post-скрипты всегда идемпотентны, или допустим run-once?
-  *Рекомендация:* всегда идемпотентны; run-once — только через явный флаг.
+  *Рекомендация (ЗАКРЫТО в Phase 10):* всегда идемпотентны; run-once — только
+  через явный флаг. Реализовано в CDF-1 / `application/script_runner.py`.
 - **Q4** — Версия: git-тег обязателен или достаточно git-commit?
-  *Рекомендация:* git-commit по умолчанию, `--require-tag` для production.
+  *Рекомендация (ЗАКРЫТО в Phase 10):* ни то, ни другое — **manifest
+  `source_version`** (calver `YYYY.MM.DD.NN`), required, без git. Реализовано
+  в CDF-2 / `infrastructure/config/codebase_manifest.py` (format_version=2).
 - **Q5** — Где живёт `migrations/`?
-  *Рекомендация:* рядом с деревом схемы в `<output>/<db>/migrations/{pre,post}/`.
+  *Рекомендация (ЗАКРЫТО в Phase 10):* рядом с деревом схемы в
+  `<output>/<db>/__migrations/{pre,post}/` (с `__`-префиксом — консистентно с
+  `__deploy`). Реализовано в CDF-3 / `application/script_runner.py`.
 - **Q6** — Delta Viewer и CD: обязательна ли связь?
   *Рекомендация:* CD работает через CLI, не требует DV; связь опциональна.
 
