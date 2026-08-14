@@ -351,10 +351,11 @@ def test_database_setting_script_db_name_replaced_in_deploy(tmp_path: Path) -> N
     # routes matview has build:false so it is filtered out. After adding
     # sp_x_caller (Phase 8 overload-resolution regression fixture) the deployable
     # count is 13 user objects + 4 service-schema objects (Phase 10: __deploy
-    # schema + 3 tables) = 17:
-    # 1 schema + 3 tables + 1 seq + 1 view + 5 functions + 2 procs + 1 extension
+    # schema + 3 tables) = 17; Phase 11 fixture repair added explicit user schema
+    # files for bookings/app (+2) = 19:
+    # 3 schemas + 3 tables + 1 seq + 1 view + 5 functions + 2 procs + 1 extension
     # + 1 database_setting (routes matview excluded) + 4 __deploy.
-    assert result.objects_total == 17
+    assert result.objects_total == 19
 
 
 # ------------------------------------------- Phase 10 S8: __deploy integration
