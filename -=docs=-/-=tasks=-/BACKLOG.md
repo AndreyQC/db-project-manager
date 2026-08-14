@@ -319,3 +319,28 @@ catalog в reverse-engineer (доп. поле в autodoc таблиц). Слож
 `application/graph_service.py` (`deploy_order`).
 
 **Не блокирует ничего, но повышает доверие к фильтрации деплоя.**
+
+---
+
+## P1. Integration: RE→deploy падает на database_setting без настроек (пустой SQL)
+
+**Контекст (выявлено при закрытии Phase 11):** два интеграционных теста падали ещё
+ДО Phase 11 (проверено на коммите `5667eda`): `test_qualify_refs_e2e::
+test_bare_function_call_qualified_and_deploys` и `test_phase5_extensions_e2e::
+test_extensions_and_overloads_roundtrip`.
+
+**Симптом:** reverse-engineer БД без специфичных настроек уровня БД генерирует
+`settings/database settings.sql`, содержащий ТОЛЬКО комментарии (исполнимого SQL нет).
+Deploy затем падает: `psycopg2.ProgrammingError: can't execute an empty query`.
+
+**Корневая причина (гипотеза):** Phase 5 генерирует `database_setting`-объект всегда,
+даже когда `db_properties` пусты; deploy обязан либо пропускать comment-only скрипты,
+либо RE не должен эмитить пустой объект.
+
+**Действие:** (a) в `_deploy_object`/`execute_script` — skip, если после
+`strip_autodoc` и удаления `--`-комментариев текст пуст; или (b) RE не генерирует
+`database settings.sql` при отсутствии реальных настроек. Покрыть тестом.
+
+**Триггер:** любой integration-прогон RE→deploy на «чистой» PG (10 упавших
+интеграционных тестов при закрытии Phase 11 уже починены фикстурой `8ed60ab`;
+эти 2 — отдельная корневая причина).
