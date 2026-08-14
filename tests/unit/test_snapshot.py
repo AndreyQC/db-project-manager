@@ -29,14 +29,16 @@ def test_snapshot_filters_to_diffed_types():
 
 
 def test_snapshot_contains_expected_object_count():
-    """Fixture has 14 vertices; minus extension & database_setting = 12 diffed."""
+    """Fixture has 18 vertices; minus extension & database_setting & __deploy schema = 15."""
     snap = build_snapshot_from_dir(
         CODEBASE_SAMPLE,
         source_kind=SnapshotSourceKind.DIR,
         source_ref=str(CODEBASE_SAMPLE),
         db_type="postgres",
     )
-    assert len(snap.objects) == 12
+    # Phase 10 added the __deploy service schema (1 schema vertex skipped as
+    # non-diffed + 3 table vertices included) — count went 12 → 15.
+    assert len(snap.objects) == 15
 
 
 def test_each_object_has_sql_hash():

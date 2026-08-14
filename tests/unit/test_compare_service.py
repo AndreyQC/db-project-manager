@@ -107,9 +107,10 @@ def test_dir_vs_dir_identical_produces_all_unchanged(tmp_path):
     assert (out / TARGET_FILENAME).is_file()
     report_text = (out / DIFF_REPORT_FILENAME).read_text(encoding="utf-8")
     # Identical fixtures → everything unchanged, nothing added/removed/changed.
-    # 12 diffed objects (fixture has 14 vertices minus extension & database_setting;
-    # sp_x_caller added in Phase 8 raised the count from 11 to 12).
-    assert '"unchanged": 12' in report_text
+    # 15 diffed objects (fixture has 18 vertices minus extension & database_setting
+    # minus __deploy schema = 15; the three __deploy tables are diffed, the
+    # __deploy schema object isn't — Phase 10 added the service schema).
+    assert '"unchanged": 15' in report_text
     assert '"added": 0' in report_text
 
 
@@ -117,6 +118,8 @@ def test_dir_vs_dir_missing_manifest_raises(tmp_path):
     # Copy without writing a manifest.
     dest = tmp_path / "no_manifest"
     shutil.copytree(CODEBASE_SAMPLE, dest)
+    # Phase 10: fixture ships with a manifest now — remove it for this test.
+    (dest / "dbpm.manifest.json").unlink()
     out = tmp_path / "report"
 
     service = CompareService()

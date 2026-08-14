@@ -82,7 +82,7 @@ _CREATE_KEYWORD_TO_TYPE: tuple[tuple[tuple[str, ...], str], ...] = (
 _FALLBACK_CATALOG = "codebase"
 
 #: Directory names skipped when walking the codebase.
-_SKIP_DIRS = {".dbm_graph", ".git", ".venv", "__pycache__", "node_modules"}
+_SKIP_DIRS = {".dbm_graph", ".git", ".venv", "__pycache__", "node_modules", "__migrations"}
 
 
 def _relative_posix(path: Path, root: Path) -> str:

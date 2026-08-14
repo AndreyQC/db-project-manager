@@ -13,6 +13,7 @@ from typing import Any
 import pytest
 
 from db_project_manager.application.deploy_service import (
+    DeployError,
     DeployPermissionError,
     DeployValidateService,
     sanitize_prefix,
@@ -344,7 +345,107 @@ def test_database_setting_script_db_name_replaced_in_deploy(tmp_path: Path) -> N
     assert props.get("template") == "template0"
     # routes matview has build:false so it is filtered out. After adding
     # sp_x_caller (Phase 8 overload-resolution regression fixture) the deployable
-    # count is 13:
+    # count is 13 user objects + 4 service-schema objects (Phase 10: __deploy
+    # schema + 3 tables) = 17:
     # 1 schema + 3 tables + 1 seq + 1 view + 5 functions + 2 procs + 1 extension
-    # + 1 database_setting (routes matview excluded).
-    assert result.objects_total == 13
+    # + 1 database_setting (routes matview excluded) + 4 __deploy.
+    assert result.objects_total == 17
+
+
+# ------------------------------------------- Phase 10 S8: __deploy integration
+
+
+def test_deploy_without_deploy_schema_raises(tmp_path: Path) -> None:
+    """CDF-10: codebase missing __deploy → hard DeployError (RE seed required)."""
+    import shutil
+
+    # Copy fixture but drop the __deploy directory entirely.
+    dst = tmp_path / "codebase"
+    shutil.copytree(FIXTURE_ROOT, dst)
+    shutil.rmtree(dst / "__deploy")
+
+    adapter = DeployFakeAdapter()
+    svc = DeployValidateService(adapter_factory=lambda _cfg: adapter)
+    with pytest.raises(DeployError, match="служебную схему"):
+        svc.run(_conn(), dst)
+    # Temp DB cleaned up despite the early failure.
+    assert adapter.dropped_dbs
+
+
+def test_deploy_records_schema_version(tmp_path: Path) -> None:
+    """Successful deploy writes manifest.source_version into __deploy.schema_version."""
+    import shutil
+
+    dst = tmp_path / "codebase"
+    shutil.copytree(FIXTURE_ROOT, dst)
+
+    adapter = DeployFakeAdapter()
+    svc = DeployValidateService(adapter_factory=lambda _cfg: adapter)
+    svc.run(_conn(), dst)
+
+    # DeployFakeAdapter stores versions as (schema, version, source) tuples.
+    assert any(
+        s == "__deploy" and v == "2026.08.11.01" and source == "validate"
+        for s, v, source in adapter._schema_versions
+    )
+
+
+def test_deploy_executes_pre_and_post_scripts(tmp_path: Path) -> None:
+    """Pre/post scripts run on either side of the user objects deploy."""
+    import shutil
+
+    dst = tmp_path / "codebase"
+    shutil.copytree(FIXTURE_ROOT, dst)
+    # Fixture already has __migrations/{pre,post}/2026-08-11_001_*.sql — verify
+    # both were offered to the adapter (their content reaches execute_script).
+    adapter = DeployFakeAdapter()
+    svc = DeployValidateService(adapter_factory=lambda _cfg: adapter)
+    svc.run(_conn(), dst)
+
+    executed_blob = "\n".join(adapter.executed)
+    # Pre-script creates app.tmp_stage, post-script deletes from it.
+    assert "app.tmp_stage" in executed_blob
+
+
+def test_deploy_emits_canonical_warning_on_mismatch(tmp_path: Path) -> None:
+    """Modified __deploy table → canonical-warning emitted, deploy continues."""
+    import shutil
+
+    dst = tmp_path / "codebase"
+    shutil.copytree(FIXTURE_ROOT, dst)
+    # Mutate script_history.sql — add a column.
+    path = dst / "__deploy" / "tables" / "script_history.sql"
+    body = path.read_text(encoding="utf-8")
+    body = body.replace(
+        "duration_ms     INTEGER NOT NULL,",
+        "duration_ms     INTEGER NOT NULL,\n    note            TEXT,",
+    )
+    path.write_text(body, encoding="utf-8")
+
+    adapter = DeployFakeAdapter()
+    events: list[tuple[str, int, int]] = []
+    svc = DeployValidateService(adapter_factory=lambda _cfg: adapter)
+    result = svc.run(_conn(), dst, progress=lambda m, c, t: events.append((m, c, t)))
+
+    # Warning surfaced via progress callback; deploy still succeeds (warning, not block).
+    assert any("canonical-DDL warning" in m for m, _, _ in events)
+    assert result.success is True
+
+
+def test_deploy_pre_script_failure_aborts(tmp_path: Path) -> None:
+    """A failing pre-script (default stop_on_error) aborts the deploy."""
+    import shutil
+
+    dst = tmp_path / "codebase"
+    shutil.copytree(FIXTURE_ROOT, dst)
+    # Make the pre-script body reference fail.tbl so DeployFakeAdapter fails it.
+    (dst / "__migrations" / "pre" / "2026-08-11_001_init.sql").write_text(
+        "CREATE TABLE fail.tbl (id int);", encoding="utf-8"
+    )
+
+    adapter = DeployFakeAdapter(fail_on={"fail.tbl"})
+    svc = DeployValidateService(adapter_factory=lambda _cfg: adapter)
+    with pytest.raises(DeployError, match="(?i)pre-script"):
+        svc.run(_conn(), dst)
+    # Cleanup still happened.
+    assert adapter.dropped_dbs
