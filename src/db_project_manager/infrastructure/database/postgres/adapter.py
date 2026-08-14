@@ -16,6 +16,7 @@ from sqlalchemy.engine import Engine
 
 from db_project_manager.domain.connection import ConnectionConfig, ConnectionType
 from db_project_manager.domain.deploy import ScriptRecord
+from db_project_manager.domain.safety import StatsConfidence, TablePresenceStats
 from db_project_manager.infrastructure.database.base import DatabaseAdapter, DatabaseError
 from db_project_manager.infrastructure.database.postgres import queries as q
 from db_project_manager.infrastructure.database.postgres.keywords import get_reserved
@@ -24,6 +25,51 @@ from db_project_manager.infrastructure.database.ssh_tunnel import SSHTunnelManag
 #: Identifier whitelist for temp-DB names (defends against injection in
 #: CREATE DATABASE / DROP DATABASE — see LESSONS_LEARNED §create_database).
 _DB_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def map_presence_row(
+    schema: str,
+    name: str,
+    estimated_rows: float | int | None,
+    last_analyze: Any,
+    last_autoanalyze: Any,
+    n_mod_since_analyze: int | None,
+) -> TablePresenceStats:
+    """Map a raw ``GET_TABLE_PRESENCE_STATS`` row onto the normalized model (SG-5).
+
+    Pure function (unit-testable without a DB). Fail-safe by design: anything
+    that undermines trust in ``estimated_rows == 0`` reports ``STALE`` — the
+    domain then treats the table as having data (SG-4).
+
+    ``STALE`` when:
+
+    * ``estimated_rows`` is NULL or negative (PG's ``-1`` "never analyzed"
+      sentinel) — the planner has no usable estimate;
+    * the table was never analyzed (``last_analyze`` and ``last_autoanalyze``
+      are both NULL);
+    * heavy drift — modifications since the last analyze are comparable to the
+      whole estimate (``n_mod_since_analyze >= max(estimated_rows, 1)``).
+
+    Note for Greenplum: row estimates of distributed tables may behave
+    differently — validate this mapping on a Greenplum cluster separately
+    (vision_final §4.4).
+    """
+    rows: int | None
+    if estimated_rows is None:
+        rows = None
+    else:
+        rows = int(estimated_rows)
+
+    confidence = StatsConfidence.FRESH
+    if rows is None or rows < 0:
+        confidence = StatsConfidence.STALE
+    elif last_analyze is None and last_autoanalyze is None:
+        confidence = StatsConfidence.STALE
+    elif n_mod_since_analyze is not None and n_mod_since_analyze >= max(rows, 1):
+        confidence = StatsConfidence.STALE
+    return TablePresenceStats(
+        object_schema=schema, name=name, estimated_rows=rows, confidence=confidence
+    )
 
 
 def _validate_db_name(name: str) -> str:
@@ -212,6 +258,27 @@ class PGDatabaseAdapter(DatabaseAdapter):
         except Exception as e:
             logger.error(f"Не удалось получить row counts: {e}")
             raise DatabaseError(f"Не удалось получить row counts: {e}") from e
+
+    def get_table_presence_stats(self) -> list[TablePresenceStats]:
+        """Return normalized presence stats for user tables (Phase 11, SG-5).
+
+        Reads planner metadata only (reltuples + pg_stat_user_tables — no
+        COUNT(*) scans, LESSONS §3) and maps each row via :func:`map_presence_row`.
+        System schemas are excluded by the query; the service schema
+        (``__deploy``) is excluded by the caller (application layer, SG-M).
+        """
+        self._require_connection()
+        try:
+            rows = self._exec(q.GET_TABLE_PRESENCE_STATS)
+            stats = [
+                map_presence_row(schema, name, est, la, laa, nmod)
+                for schema, name, est, la, laa, nmod in rows
+            ]
+            logger.info(f"Presence stats получены для {len(stats)} таблиц")
+            return stats
+        except Exception as e:
+            logger.error(f"Не удалось получить presence stats: {e}")
+            raise DatabaseError(f"Не удалось получить presence stats: {e}") from e
 
     def create_database(
         self,

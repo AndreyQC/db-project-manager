@@ -12,6 +12,7 @@ from typing import Any
 
 from db_project_manager.domain.connection import ConnectionConfig
 from db_project_manager.domain.deploy import ScriptRecord
+from db_project_manager.domain.safety import TablePresenceStats
 
 
 class DatabaseError(Exception):
@@ -91,6 +92,25 @@ class DatabaseAdapter(ABC):
         Each dict has keys: ``schema_name``, ``table_name``,
         ``estimated_rows`` (float or None). Used by the compare feature as an
         informational "has data?" marker.
+        """
+
+    # --- Phase 11: Safety Gate (deploy analyze) surface ---
+
+    @abstractmethod
+    def get_table_presence_stats(self) -> list[TablePresenceStats]:
+        """Return normalized presence stats for user tables (SG-5).
+
+        Each adapter maps its own catalog metadata onto the database-agnostic
+        :class:`~db_project_manager.domain.safety.TablePresenceStats` model:
+        ``estimated_rows`` from planner metadata (never ``COUNT(*)``,
+        LESSONS §3) plus an abstract ``confidence`` freshness signal
+        (PG/Greenplum: ``pg_class.reltuples`` + ``pg_stat_user_tables``;
+        databases without a freshness signal report ``UNKNOWN`` — fail-safe by
+        design, the gate treats it as "has data").
+
+        System schemas (``pg_catalog``, ``information_schema`` and analogues)
+        are excluded here; the service schema (``__deploy``) is excluded by
+        the caller (application layer, SG-M).
         """
 
     # --- Phase 10: CD Foundation (__deploy schema) surface ---

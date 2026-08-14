@@ -361,6 +361,29 @@ GET_TABLE_ROW_COUNTS = """
 """
 
 
+# --- presence stats (Phase 11: Safety Gate, deploy analyze) ---
+# Planner estimate + freshness signal for the normalized presence stats
+# (SG-4/SG-5). Identifiers are pg_catalog-qualified (LESSONS §34/§35).
+# relkind='r' mirrors GET_TABLE_ROW_COUNTS; system schemas are excluded here,
+# the service schema (__deploy) is excluded by the caller (application layer).
+
+GET_TABLE_PRESENCE_STATS = """
+    SELECT n.nspname AS schema_name,
+           c.relname AS table_name,
+           c.reltuples AS estimated_rows,
+           s.last_analyze,
+           s.last_autoanalyze,
+           s.n_mod_since_analyze
+    FROM pg_catalog.pg_class c
+    JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+    LEFT JOIN pg_catalog.pg_stat_user_tables s
+           ON s.schemaname = n.nspname AND s.relname = c.relname
+    WHERE c.relkind = 'r'
+      AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+    ORDER BY n.nspname, c.relname
+"""
+
+
 # --- Phase 10: CD Foundation (__deploy schema) surface ---
 #
 # Tables live in a configurable schema (default __deploy); schema_name is

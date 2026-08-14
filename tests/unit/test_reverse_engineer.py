@@ -13,6 +13,7 @@ from db_project_manager.application.reverse_engineer import (
     ReverseEngineerService,
 )
 from db_project_manager.domain.connection import ConnectionConfig
+from db_project_manager.domain.safety import TablePresenceStats
 from db_project_manager.infrastructure.database.base import DatabaseAdapter, DatabaseError
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
@@ -60,6 +61,10 @@ class FakeAdapter(DatabaseAdapter):
 
     # Phase 9 compare surface (unused by ReverseEngineerService; stubbed for ABC).
     def get_table_row_counts(self) -> list[dict[str, Any]]:
+        return []
+
+    # Phase 11 Safety Gate surface (unused by reverse-engineer; stubbed for ABC).
+    def get_table_presence_stats(self) -> list[TablePresenceStats]:
         return []
 
     # Phase 10 CD Foundation surface (unused by reverse-engineer; stubbed for ABC).

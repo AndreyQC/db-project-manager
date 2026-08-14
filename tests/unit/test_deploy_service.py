@@ -20,6 +20,7 @@ from db_project_manager.application.deploy_service import (
 )
 from db_project_manager.domain.connection import ConnectionConfig
 from db_project_manager.domain.deploy import ScriptRecord
+from db_project_manager.domain.safety import TablePresenceStats
 from db_project_manager.infrastructure.database.base import DatabaseAdapter, DatabaseError
 
 FIXTURE_ROOT = Path(__file__).resolve().parent.parent / "fixtures" / "codebase_sample"
@@ -100,6 +101,10 @@ class DeployFakeAdapter(DatabaseAdapter):
     # Phase 9 compare surface (unused by DeployValidateService; stubbed for ABC).
     def get_table_row_counts(self) -> list[dict[str, Any]]:
         return []
+
+    # Phase 11 Safety Gate surface (configurable for safety-gate tests, S5).
+    def get_table_presence_stats(self) -> list[TablePresenceStats]:
+        return list(getattr(self, "presence_stats", []))
 
     # Phase 10 CD Foundation surface (in-memory; used by S7 runner tests).
     def get_schema_version(self, schema_name: str) -> str | None:
