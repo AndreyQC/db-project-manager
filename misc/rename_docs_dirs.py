@@ -19,14 +19,14 @@ import os
 import sys
 from pathlib import Path
 
-# old_name -> new_name. Both case variants of "-=PHASES=-" are kept for text
+# old_name -> new_name. Both case variants of "_phases_" are kept for text
 # replacement; directory lookup is case-insensitive (Windows FS).
 RENAME_MAP = {
-    "-=CHECKPOINTS=-": "_checkpoints_",
-    "-=PHASES=-": "_phases_",
-    "-=Phases=-": "_phases_",
-    "-=tasks=-": "_tasks_",
-    "-=docs=-": "_docs_",
+    "_checkpoints_": "_checkpoints_",
+    "_phases_": "_phases_",
+    "_phases_": "_phases_",
+    "_tasks_": "_tasks_",
+    "_docs_": "_docs_",
 }
 
 SKIP_DIRS = {".git"}

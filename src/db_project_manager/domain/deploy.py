@@ -16,7 +16,7 @@ autodoc block first via :func:`db_project_manager.infrastructure.sql.autodoc.str
 — keeping that dependency out of ``domain/`` preserves the clean layering
 (domain depends on nothing infrastructural).
 
-See ``-=docs=-/-=tasks=-/phase_10/Phase_10_vision_final.md`` §3 (CDF-1..CDF-11)
+See ``_docs_/_tasks_/phase_10/Phase_10_vision_final.md`` §3 (CDF-1..CDF-11)
 for the decisions encoded here.
 """
 

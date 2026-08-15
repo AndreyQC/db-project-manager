@@ -102,7 +102,7 @@ uv run pytest --cov=db_project_manager   # с покрытием
 uv run ruff check .     # линтер
 ```
 
-Структура пакетов: `domain` (модели) → `infrastructure` (БД, файлы, crypto) → `application` (сервисы) → `presentation` (CLI/GUI). Подробности: `-=tasks=-/`.
+Структура пакетов: `domain` (модели) → `infrastructure` (БД, файлы, crypto) → `application` (сервисы) → `presentation` (CLI/GUI). Подробности: `_tasks_/`.
 
 ## Лицензия
 

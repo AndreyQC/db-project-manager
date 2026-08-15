@@ -19,7 +19,7 @@ shared vocabulary of the ``deploy analyze`` dry-run safety gate:
 * :class:`SafetyGateVerdict` — the overall result written to the report and
   mapped to CLI exit codes.
 
-See ``-=docs=-/-=tasks=-/phase_11/Phase_11_vision_final.md`` §3 (SG-0..SG-7,
+See ``_docs_/_tasks_/phase_11/Phase_11_vision_final.md`` §3 (SG-0..SG-7,
 SG-M) and §4.2 for the decisions encoded here.
 """
 

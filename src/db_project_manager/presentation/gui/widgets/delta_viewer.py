@@ -5,7 +5,7 @@ A standalone ``QMainWindow`` that opens an existing ``diff_report.json`` (produc
 color-coded by status (added/removed/changed/unchanged), with a detail panel and a
 unified-diff view for changed DDL.
 
-Design (see ``-=tasks=-/phase_14/Phase_14_vision_final.md`` §4.3):
+Design (see ``_tasks_/phase_14/Phase_14_vision_final.md`` §4.3):
     - Reads a single self-describing ``diff_report.json`` (both snapshots are inside).
     - Separate window (not a dock — the main window has no docks; not an action dialog
       — those close on OK). Opened from the main window's menu, lives until closed.

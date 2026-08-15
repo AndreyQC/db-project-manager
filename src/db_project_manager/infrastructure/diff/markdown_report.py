@@ -4,7 +4,7 @@ Renders a :class:`~db_project_manager.domain.diff.DiffReport` into a human-reada
 markdown document for code review / CI artifacts. Closes BACKLOG P3
 "Markdown-отчёт сравнения".
 
-Design (see ``-=tasks=-/phase_14/Phase_14_vision_final.md`` §4.2):
+Design (see ``_tasks_/phase_14/Phase_14_vision_final.md`` §4.2):
     - One self-contained input (``diff_report.json`` is fully self-describing — it
       already carries both snapshots + summary + entries).
     - Pure function ``render_diff_markdown(report) -> str`` (no I/O); the thin

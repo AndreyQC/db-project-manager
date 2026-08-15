@@ -7,7 +7,7 @@ overload instead of "first wins". This module answers the narrow question:
     Given a call's argument list and the candidate overloads' argument types,
     which single overload does the call unambiguously resolve to?
 
-Design constraints (see ``-=docs=-/phase_08/Phase_8_vision_final.md``):
+Design constraints (see ``_docs_/phase_08/Phase_8_vision_final.md``):
 
 * **Conservative.** Type inference is deliberately limited to *literals*. Any
   argument that is not an inferrable literal (column reference, nested call,

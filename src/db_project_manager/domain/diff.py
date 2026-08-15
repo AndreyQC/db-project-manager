@@ -10,7 +10,7 @@ This module is pure pydantic — no I/O, no DB, no sqlglot. Serialization for
 ``source.json``/``target.json``/``diff_report.json`` uses the standard pydantic
 JSON machinery.
 
-See ``-=docs=-/-=tasks=-/2026-07-28/20260728_001_compare_db_vs_fs_draft.md`` for
+See ``_docs_/_tasks_/2026-07-28/20260728_001_compare_db_vs_fs_draft.md`` for
 the design decisions (granularity, db_type compatibility, report format).
 """
 
