@@ -32,6 +32,20 @@ class LoggingConfig(BaseModel):
     file_name: str = "app.log"
 
 
+class DeployConfig(BaseModel):
+    """Controlled-deployment settings (Phase 10+).
+
+    ``service_schema`` is the configurable name of the CD-foundation schema
+    (CDF-4: configurable with default ``__deploy``). Carried by the config so
+    reverse-engineer (seed/sync) and deploy (validate-presence / canonical-DDL
+    warning) read the same name without code duplication.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    service_schema: str = "__deploy"
+
+
 class CFG(BaseModel):
     """Top-level application configuration."""
 
@@ -41,6 +55,7 @@ class CFG(BaseModel):
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     # Optional default connection file path used by the GUI.
     default_connection_file: str | None = None
+    deploy: DeployConfig = Field(default_factory=DeployConfig)
 
 
 def load_yaml_file(path: Path) -> dict[str, Any]:

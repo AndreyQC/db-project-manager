@@ -12,6 +12,7 @@ import os
 
 from pydantic import BaseModel
 from PySide6.QtCore import QThreadPool
+from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
@@ -50,10 +51,15 @@ class MainWindow(QMainWindow):
         # but the Python wrapper (and its signals object) must stay alive until
         # 'finished' is delivered, otherwise the slot never fires.
         self._active_workers: dict = {}
+        # Strong refs to non-modal child windows (Delta Viewer) — without this PySide6
+        # would garbage-collect the Python wrapper once the local goes out of scope,
+        # closing the window immediately. Released in _on_child_window_closed.
+        self._child_windows: list = []
 
         self.setWindowTitle("DB Project Manager")
         self.setMinimumSize(900, 650)
         self._init_ui()
+        self._init_menu()
         self._refresh_connections()
         # Point viewer at the default output dir if it exists.
         self._viewer.set_root(self.cfg.paths.default_output_dir)
@@ -106,6 +112,50 @@ class MainWindow(QMainWindow):
         vlayout.addWidget(self._viewer)
         root.addWidget(viewer_group, stretch=1)
 
+    def _init_menu(self) -> None:
+        """Build the menu bar (Phase 14: View -> Delta Viewer)."""
+        view_menu = self.menuBar().addMenu("Вид")
+        self._delta_viewer_action = QAction("Delta Viewer…", self)
+        self._delta_viewer_action.setToolTip("Открыть отчёт сравнения для просмотра")
+        self._delta_viewer_action.triggered.connect(self._on_open_delta_viewer)
+        view_menu.addAction(self._delta_viewer_action)
+
+    # --- Delta Viewer (Phase 14) ---
+
+    def open_delta_viewer(self, report_path: str | None = None) -> None:
+        """Open the Delta Viewer window, optionally loading a report right away.
+
+        Factored out of :meth:`_on_open_delta_viewer` so tests can drive it with a
+        known path (and skip the file dialog). ``report_path=None`` opens the window
+        empty; the user then picks a JSON via the window's own toolbar.
+        """
+        from db_project_manager.presentation.gui.widgets.delta_viewer import DeltaViewerWindow
+
+        window = DeltaViewerWindow(parent=self)
+        # Release the strong ref when the window closes — otherwise we leak closed windows.
+        window.destroyed.connect(lambda _obj=None: self._on_child_window_closed(window))
+        self._child_windows.append(window)
+        if report_path is not None:
+            window.load_from_path(report_path)
+        window.show()
+
+    def _on_open_delta_viewer(self) -> None:
+        """Menu handler: ask for a diff_report.json, then open the Delta Viewer on it."""
+        from PySide6.QtWidgets import QFileDialog
+
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Открыть diff_report.json", "", "JSON (*.json)"
+        )
+        if not path:
+            return
+        self.open_delta_viewer(path)
+
+    def _on_child_window_closed(self, window) -> None:
+        try:
+            self._child_windows.remove(window)
+        except ValueError:
+            pass
+
     # --- connections ---
 
     def _refresh_connections(self) -> None:
@@ -151,6 +201,10 @@ class MainWindow(QMainWindow):
         except ConnectionStoreError as e:
             QMessageBox.critical(self, spec.title, f"Не удалось загрузить подключение: {e}")
             return
+        except ValueError as e:
+            # Raised by compare's _side_spec when a side has both/neither fields set.
+            QMessageBox.critical(self, spec.title, str(e))
+            return
 
         self._set_running(True)
         self.progress_bar.setVisible(True)
@@ -183,10 +237,74 @@ class MainWindow(QMainWindow):
         self.action_panel.mark_executed()
         if action_id == "deploy_validate":
             self._report_deploy_result(result)
+        elif action_id == "deploy_analyze":
+            # result is a SafetyGateVerdict (read-only dry-run, SG-7).
+            self._report_analyze_result(result, settings)
+        elif action_id == "compare":
+            # result is the report dir (Path). Open it in the viewer and show a summary.
+            self._viewer.set_root(str(result))
+            self._append_status(self._compare_summary(result))
         else:
             self._append_status(f"Готово: {result}")
             if action_id == "reverse_engineer":
                 self._viewer.set_root(settings.output_dir)
+
+    def _compare_summary(self, report_dir) -> str:
+        """Format an added/removed/changed/unchanged line from diff_report.json.
+
+        Best-effort: if the JSON is missing/unreadable, fall back to a plain
+        'Готово' line so a transient read failure never hides the successful run.
+        """
+        import json
+
+        from pathlib import Path
+
+        path = Path(report_dir) / "diff_report.json"
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            summary = data.get("summary", {})
+            return (
+                f"Сравнение завершено: добавлено {summary.get('added', '?')}, "
+                f"удалено {summary.get('removed', '?')}, "
+                f"изменено {summary.get('changed', '?')}, "
+                f"без изменений {summary.get('unchanged', '?')}. Отчёт: {report_dir}"
+            )
+        except Exception:  # noqa: BLE001 — best-effort summary, never fatal
+            return f"Готово: {report_dir}"
+
+    def _report_analyze_result(self, verdict, settings) -> None:
+        """Show the safety-gate verdict + point to the report (Phase 11, SG-7)."""
+        from pathlib import Path
+
+        report_md = Path(settings.output_dir) / "safety_gate_report.md"
+        touched = len(getattr(verdict, "touched", []) or [])
+        violations = getattr(verdict, "violations", []) or []
+        if getattr(verdict, "clean", False):
+            self._append_status(
+                f"✓ Safety gate: CLEAN (тронутых таблиц: {touched}). Отчёт: {report_md}"
+            )
+            QMessageBox.information(
+                self,
+                "Safety gate",
+                f"✓ Нарушений нет.\nТронутых таблиц: {touched}\nОтчёт: {report_md}",
+            )
+            return
+        self._append_status(
+            f"✗ Safety gate: VIOLATIONS ({len(violations)}) — пайплайн остановлен. "
+            f"Отчёт: {report_md}"
+        )
+        for v in violations:
+            self._append_status(
+                f"  ! {v.object_schema}.{v.name} [{v.touch.value}, "
+                f"~{v.estimated_rows} строк] — нет покрывающего pre-скрипта"
+            )
+        QMessageBox.warning(
+            self,
+            "Safety gate",
+            f"✗ Нарушений: {len(violations)}.\n"
+            "Таблицы с данными изменяются без покрывающего pre-скрипта.\n"
+            f"Отчёт: {report_md}",
+        )
 
     def _report_deploy_result(self, result) -> None:
         # DeployResult has .success / .db_name / .errors / objects_done/total

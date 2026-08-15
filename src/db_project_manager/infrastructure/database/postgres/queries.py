@@ -344,3 +344,104 @@ GET_DATABASE_SETTINGS = """
       AND s.setrole = 0
     ORDER BY 1
 """
+
+# --- table row counts (Phase 9: compare feature) ---
+# reltuples is the planner estimate; cheap to read (no COUNT(*) scan), good
+# enough as an informational "has data?" marker in the diff report.
+
+GET_TABLE_ROW_COUNTS = """
+    SELECT n.nspname AS schema_name,
+           c.relname AS table_name,
+           c.reltuples AS estimated_rows
+    FROM pg_catalog.pg_class c
+    JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+    WHERE c.relkind = 'r'
+      AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+    ORDER BY c.reltuples DESC NULLS LAST
+"""
+
+
+# --- presence stats (Phase 11: Safety Gate, deploy analyze) ---
+# Planner estimate + freshness signal for the normalized presence stats
+# (SG-4/SG-5). Identifiers are pg_catalog-qualified (LESSONS §34/§35).
+# relkind='r' mirrors GET_TABLE_ROW_COUNTS; system schemas are excluded here,
+# the service schema (__deploy) is excluded by the caller (application layer).
+
+GET_TABLE_PRESENCE_STATS = """
+    SELECT n.nspname AS schema_name,
+           c.relname AS table_name,
+           c.reltuples AS estimated_rows,
+           s.last_analyze,
+           s.last_autoanalyze,
+           s.n_mod_since_analyze
+    FROM pg_catalog.pg_class c
+    JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+    LEFT JOIN pg_catalog.pg_stat_user_tables s
+           ON s.schemaname = n.nspname AND s.relname = c.relname
+    WHERE c.relkind = 'r'
+      AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+    ORDER BY n.nspname, c.relname
+"""
+
+
+# --- Phase 10: CD Foundation (__deploy schema) surface ---
+#
+# Tables live in a configurable schema (default __deploy); schema_name is
+# interpolated as a *double-quoted identifier*. The caller (PGDatabaseAdapter)
+# whitelists it via the same rule as _validate_db_name (LESSONS §19), so SQL
+# injection through schema_name is impossible.
+#
+# All identifiers are fully-qualified and double-quoted (LESSONS §35).
+
+# Latest applied version = the most recent row by applied_at (or id).
+# Returns one row (version TEXT) or none when the table is empty.
+GET_SCHEMA_VERSION = """
+    SELECT version
+    FROM {schema}.schema_version
+    ORDER BY applied_at DESC, id DESC
+    LIMIT 1
+"""
+
+# Append-only insert of a deploy version. source: 'validate' | 'deploy' | 'manual'.
+INSERT_SCHEMA_VERSION = """
+    INSERT INTO {schema}.schema_version (version, source)
+    VALUES (:version, :source)
+"""
+
+# State lookup — PK (script_name, script_type) → at most one row.
+# Returns None when missing (script never ran).
+GET_SCRIPT_HISTORY = """
+    SELECT script_name, script_type, checksum, success,
+           error_message, duration_ms, executed_at
+    FROM {schema}.script_history
+    WHERE script_name = :script_name AND script_type = :script_type
+"""
+
+# State UPSERT: one row per (script_name, script_type). Updates the "currently
+# applied" view on every execution (success or failure).
+UPSERT_SCRIPT_HISTORY = """
+    INSERT INTO {schema}.script_history
+        (script_name, script_type, checksum, success, executed_at,
+         error_message, duration_ms)
+    VALUES
+        (:script_name, :script_type, :checksum, :success, :executed_at,
+         :error_message, :duration_ms)
+    ON CONFLICT (script_name, script_type) DO UPDATE SET
+        checksum     = EXCLUDED.checksum,
+        success      = EXCLUDED.success,
+        executed_at  = EXCLUDED.executed_at,
+        error_message = EXCLUDED.error_message,
+        duration_ms  = EXCLUDED.duration_ms
+"""
+
+# Append-only history: every attempt is recorded (never UPDATE'd). Carries
+# deploy_version/deploy_source so reports (Phase 13 CD-17) can JOIN executions
+# to a specific deploy.
+INSERT_SCRIPT_AUDIT_LOG = """
+    INSERT INTO {schema}.script_audit_log
+        (script_name, script_type, checksum, success, error_message,
+         duration_ms, executed_at, deploy_version, deploy_source)
+    VALUES
+        (:script_name, :script_type, :checksum, :success, :error_message,
+         :duration_ms, :executed_at, :deploy_version, :deploy_source)
+"""

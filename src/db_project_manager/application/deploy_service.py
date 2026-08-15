@@ -29,10 +29,20 @@ from pathlib import Path
 from loguru import logger
 
 from db_project_manager.application.graph_service import BuildGraphService
+from db_project_manager.application.script_runner import (
+    ScriptExecutionError,
+    ScriptRunner,
+)
 from db_project_manager.domain.connection import ConnectionConfig
 from db_project_manager.domain.graph import Vertex
+from db_project_manager.infrastructure.config.codebase_manifest import read_manifest
 from db_project_manager.infrastructure.database.base import DatabaseAdapter, DatabaseError
 from db_project_manager.infrastructure.database.registry import get_adapter
+from db_project_manager.infrastructure.deploy.canonical_ddl import (
+    DEFAULT_SERVICE_SCHEMA,
+    validate_deploy_ddl,
+)
+from db_project_manager.infrastructure.sql.autodoc import strip_autodoc
 
 #: Object types considered early DDL: structural, downstream of any failure
 #: here makes further deploy meaningless -> fail-fast + cleanup.
@@ -106,9 +116,13 @@ class DeployValidateService:
         self,
         graph_service: BuildGraphService | None = None,
         adapter_factory: Callable[[ConnectionConfig], DatabaseAdapter] | None = None,
+        *,
+        service_schema: str = DEFAULT_SERVICE_SCHEMA,
     ) -> None:
         self.graph_service = graph_service or BuildGraphService()
         self._adapter_factory = adapter_factory or get_adapter
+        # Phase 10: configurable __deploy schema name (CDF-4).
+        self._service_schema = service_schema
 
     def run(
         self,
@@ -178,12 +192,81 @@ class DeployValidateService:
             adapter.disconnect()
             adapter.connect(target_cfg)
 
-            # 5. Execute in deploy order with stratified error policy.
-            for i, vertex in enumerate(deploy_vertices, start=1):
-                self._emit(progress, f"[{i}/{total}] {vertex.object_type} {vertex.object_name}", i, total)
+            # Phase 10 S8: validate __deploy presence + canonical-DDL warning.
+            service_schema = self._service_schema
+            self._validate_deploy_presence(codebase_dir, service_schema)
+            for warning in validate_deploy_ddl(codebase_dir, service_schema):
+                logger.warning(f"canonical-DDL: {warning}")
+                self._emit(progress, f"canonical-DDL warning: {warning}", 0, total)
+
+            # Phase 10 S8: split vertices — service schema first (must exist
+            # before the pre-runner, which writes into __deploy.script_history),
+            # then user objects.
+            service_vertices = [v for v in deploy_vertices if v.object_schema == service_schema]
+            user_vertices = [v for v in deploy_vertices if v.object_schema != service_schema]
+
+            # Read manifest source_version + deploy source label for runner/audit.
+            try:
+                manifest = read_manifest(codebase_dir)
+                source_version = manifest.source_version
+            except Exception as e:  # noqa: BLE001 — surface as deploy error, never silent.
+                raise DeployError(
+                    f"Не удалось прочитать манифест кодовой базы: {e}"
+                ) from e
+            deploy_source = "validate"
+
+            # 5a. Apply service-schema vertices (schema + 3 tables) first.
+            done = 0
+            for vertex in service_vertices:
+                done += 1
+                self._emit(
+                    progress,
+                    f"[{done}/{total}] {vertex.object_type} {vertex.object_name}",
+                    done, total,
+                )
+                # Early-DDL failure inside __deploy is always fatal (CDF-10):
+                # without these tables the rest of the mechanic can't run.
+                self._deploy_object(adapter, codebase_dir, vertex, db_name)
+                result.objects_done = done
+
+            # 5b. Phase 10 S8: pre-runner (now __deploy.script_history exists).
+            if source_version:
+                runner = ScriptRunner(
+                    adapter, service_schema,
+                    deploy_version=source_version, deploy_source=deploy_source,
+                )
+                try:
+                    runner.run_phase(
+                        "pre", codebase_dir / "__migrations",
+                        continue_on_error=continue_on_error,
+                        on_progress=lambda m, c, t: self._emit(progress, f"pre: {m}", c, t),
+                    )
+                except ScriptExecutionError as e:
+                    result.errors.append(ObjectError(
+                        object_key=f"pre/{e.record.script_name}",
+                        object_type="pre_script",
+                        object_name=e.record.script_name,
+                        source_file=f"__migrations/pre/{e.record.script_name}",
+                        error=e.record.error_message or "pre-script failed",
+                    ))
+                    result.success = False
+                    if not continue_on_error:
+                        logger.error(f"Pre-script failed: {e}")
+                        # Skip remaining deploy; cleanup in finally.
+                        raise DeployError(str(e)) from e
+
+            # 5c. Apply user vertices in deploy order with stratified error policy.
+            aborted = False
+            for vertex in user_vertices:
+                done += 1
+                self._emit(
+                    progress,
+                    f"[{done}/{total}] {vertex.object_type} {vertex.object_name}",
+                    done, total,
+                )
                 try:
                     self._deploy_object(adapter, codebase_dir, vertex, db_name)
-                    result.objects_done = i
+                    result.objects_done = done
                 except DatabaseError as e:
                     obj_err = ObjectError(
                         object_key=vertex.object_key,
@@ -200,16 +283,50 @@ class DeployValidateService:
                             f"Ошибка в раннем DDL {vertex.object_type} '{vertex.object_name}': {e}. "
                             "Дальнейший деплой бессмысленен."
                         )
+                        aborted = True
                         break
                     if not continue_on_error:
                         logger.error(
                             f"Ошибка в объекте {vertex.object_type} '{vertex.object_name}': {e}"
                         )
+                        aborted = True
                         break
                     logger.warning(
                         f"Пропуск объекта {vertex.object_type} '{vertex.object_name}' "
                         f"из-за ошибки ({continue_on_error=}): {e}"
                     )
+
+            # 5d. Phase 10 S8: post-runner + record version — only on full success.
+            if not aborted and result.success and source_version:
+                runner = ScriptRunner(
+                    adapter, service_schema,
+                    deploy_version=source_version, deploy_source=deploy_source,
+                )
+                try:
+                    runner.run_phase(
+                        "post", codebase_dir / "__migrations",
+                        continue_on_error=continue_on_error,
+                        on_progress=lambda m, c, t: self._emit(progress, f"post: {m}", c, t),
+                    )
+                except ScriptExecutionError as e:
+                    result.errors.append(ObjectError(
+                        object_key=f"post/{e.record.script_name}",
+                        object_type="post_script",
+                        object_name=e.record.script_name,
+                        source_file=f"__migrations/post/{e.record.script_name}",
+                        error=e.record.error_message or "post-script failed",
+                    ))
+                    result.success = False
+                    if not continue_on_error:
+                        logger.error(f"Post-script failed: {e}")
+                        raise DeployError(str(e)) from e
+
+                # Record schema_version (the bookkeeping row that future RE-flow
+                # syncs back into manifest.source_version — Phase 10 cycle).
+                try:
+                    adapter.record_schema_version(service_schema, source_version, deploy_source)
+                except DatabaseError as e:
+                    logger.warning(f"Не удалось записать schema_version: {e}")
         finally:
             # 6. Cleanup unless explicitly kept.
             if not keep_db:
@@ -235,6 +352,24 @@ class DeployValidateService:
 
     # --- helpers ---
 
+    def _validate_deploy_presence(self, codebase_dir: Path, service_schema: str) -> None:
+        """Phase 10 S8 / CDF-10: hard-error if the codebase lacks __deploy.
+
+        The service schema is required for any deploy: it carries the
+        bookkeeping tables the pre/post runner writes to (script_history /
+        script_audit_log) and the version row (schema_version). Reverse-
+        engineer seeds it (S6); a codebase missing it has not been through RE.
+        """
+        tables_dir = codebase_dir / service_schema / "tables"
+        required = ("schema_version.sql", "script_history.sql", "script_audit_log.sql")
+        missing = [name for name in required if not (tables_dir / name).is_file()]
+        if missing:
+            raise DeployError(
+                f"Кодовая база не содержит служебную схему '{service_schema}' "
+                f"(отсутствуют: {', '.join(missing)}). "
+                f"Выполните reverse-engineer — теперь он seed'ит __deploy автоматически."
+            )
+
     def _deploy_object(
         self,
         adapter: DatabaseAdapter,
@@ -248,7 +383,7 @@ class DeployValidateService:
             raise DatabaseError(f"Файл объекта не найден: {source}")
         script = source.read_text(encoding="utf-8-sig")
         # Strip the autodoc header so only SQL reaches the server.
-        script = self._strip_autodoc(script)
+        script = strip_autodoc(script)
         # Phase 5: for database_setting, replace the original db name in
         # ALTER DATABASE ... SET statements with the actual target DB name.
         # The original name is stored in object_catalog (written by SQLGenerator).
@@ -257,20 +392,6 @@ class DeployValidateService:
                 f'"{vertex.object_catalog}"', f'"{target_db_name}"'
             )
         adapter.execute_script(script)
-
-    @staticmethod
-    def _strip_autodoc(script: str) -> str:
-        """Remove the leading autodoc comment block before execution."""
-        close_marker = "[[autodoc-yaml]>]"
-        if close_marker not in script:
-            return script
-        end = script.index(close_marker) + len(close_marker)
-        tail = script[end:]
-        # Drop the comment-closing '*/' if present.
-        comment_end = tail.find("*/")
-        if comment_end != -1:
-            tail = tail[comment_end + 2 :]
-        return tail.lstrip()
 
     @staticmethod
     def _format_errors(errors: list[ObjectError]) -> str:

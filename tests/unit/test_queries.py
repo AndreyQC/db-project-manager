@@ -30,6 +30,13 @@ _VALID_PG_DATABASE_ATTRS = {
 }
 _VALID_PG_DB_ROLE_SETTING_ATTRS = {"setdatabase", "setrole", "setconfig"}
 
+#: Phase 9: aliases in GET_TABLE_ROW_COUNTS — c = pg_class, n = pg_namespace.
+_VALID_PG_CLASS_ATTRS = {
+    "oid", "relname", "relnamespace", "relkind", "reltuples", "relpages",
+    "relowner", "reltablespace", "relchecks", "relhasindex",
+}
+_VALID_PG_NAMESPACE_ROW_ATTRS = {"oid", "nspname", "nspowner", "nspacl"}
+
 
 def _assert_alias_refs(query: str, alias_columns: dict[str, set[str]]) -> None:
     """Every ``alias.<attr>`` in *query* must be a known column of its catalog."""
@@ -98,6 +105,20 @@ def test_database_settings_query_uses_valid_catalog_columns() -> None:
 def test_database_settings_query_filters_role_level() -> None:
     """Phase 5 vision Q5: only db-level settings (setrole = 0) are carried over."""
     assert "s.setrole = 0" in queries.GET_DATABASE_SETTINGS
+
+
+def test_table_row_counts_query_uses_valid_catalog_columns() -> None:
+    """Phase 9: guard against typos in pg_class/pg_namespace column names."""
+    _assert_alias_refs(
+        queries.GET_TABLE_ROW_COUNTS,
+        {"c": _VALID_PG_CLASS_ATTRS, "n": _VALID_PG_NAMESPACE_ROW_ATTRS},
+    )
+    # Filters: only base tables, excluding system schemas.
+    assert "relkind = 'r'" in queries.GET_TABLE_ROW_COUNTS
+    assert "pg_catalog" in queries.GET_TABLE_ROW_COUNTS
+    assert "information_schema" in queries.GET_TABLE_ROW_COUNTS
+    # The estimated-rows column must be selected.
+    assert "reltuples" in queries.GET_TABLE_ROW_COUNTS
 
 
 def test_function_query_excludes_extension_owned() -> None:

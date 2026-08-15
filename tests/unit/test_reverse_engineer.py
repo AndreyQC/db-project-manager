@@ -13,6 +13,7 @@ from db_project_manager.application.reverse_engineer import (
     ReverseEngineerService,
 )
 from db_project_manager.domain.connection import ConnectionConfig
+from db_project_manager.domain.safety import TablePresenceStats
 from db_project_manager.infrastructure.database.base import DatabaseAdapter, DatabaseError
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
@@ -58,6 +59,27 @@ class FakeAdapter(DatabaseAdapter):
     def get_database_structure(self) -> dict[str, Any]:
         return self._structure
 
+    # Phase 9 compare surface (unused by ReverseEngineerService; stubbed for ABC).
+    def get_table_row_counts(self) -> list[dict[str, Any]]:
+        return []
+
+    # Phase 11 Safety Gate surface (unused by reverse-engineer; stubbed for ABC).
+    def get_table_presence_stats(self) -> list[TablePresenceStats]:
+        return []
+
+    # Phase 10 CD Foundation surface (unused by reverse-engineer; stubbed for ABC).
+    def get_schema_version(self, schema_name: str) -> str | None:  # noqa: ARG002
+        return getattr(self, "_schema_version", None)
+
+    def record_schema_version(self, schema_name: str, version: str, source: str) -> None:  # noqa: ARG002
+        pass
+
+    def get_script_history(self, schema_name: str, script_name: str, script_type: str):  # noqa: ARG002
+        return None
+
+    def record_script_execution(self, schema_name, record, deploy_version, deploy_source):  # noqa: ARG002
+        pass
+
 
 def _cfg() -> ConnectionConfig:
     return ConnectionConfig(
@@ -79,6 +101,12 @@ def test_service_runs_full_flow(tmp_path) -> None:
     assert progress_log[0][2] == 4
     assert progress_log[-1] == ("Готово", 4, 4)
     assert out == tmp_path / "mydb"
+    # Phase 9: a whole-DB manifest is written to the codebase root.
+    from db_project_manager.infrastructure.config.codebase_manifest import read_manifest
+
+    manifest = read_manifest(out)
+    assert manifest.db_type == "postgres"
+    assert manifest.database == "mydb"
 
 
 def test_service_wraps_database_error(tmp_path) -> None:
@@ -146,3 +174,133 @@ def test_qualify_refs_error_does_not_fail_reverse(tmp_path) -> None:
     )
     out = service.run(_cfg(), tmp_path)
     assert out.is_dir()
+
+
+# ------------------------------------------- Phase 10 S6: __deploy seed/sync
+
+
+def _service_with(adapter: FakeAdapter, **kwargs) -> ReverseEngineerService:
+    return ReverseEngineerService(adapter_factory=lambda _cfg: adapter, **kwargs)
+
+
+def test_re_without_deploy_seeds_three_tables(tmp_path) -> None:
+    """Sample structure has no __deploy → RE seeds schema + 3 tables from canonical."""
+    adapter = FakeAdapter()
+    service = _service_with(adapter)
+    out = service.run(_cfg(), tmp_path)
+
+    deploy_tables = out / "__deploy" / "tables"
+    assert (deploy_tables / "schema_version.sql").is_file()
+    assert (deploy_tables / "script_history.sql").is_file()
+    assert (deploy_tables / "script_audit_log.sql").is_file()
+    # Schema creation file too.
+    assert (out / "__deploy" / "schema __deploy.sql").is_file()
+
+
+def test_re_seed_files_carry_immutable_marker(tmp_path) -> None:
+    """Seeded __deploy files must have project.immutable: true in autodoc."""
+    from db_project_manager.infrastructure.sql.autodoc import extract_header
+
+    adapter = FakeAdapter()
+    service = _service_with(adapter)
+    out = service.run(_cfg(), tmp_path)
+
+    for name in ("schema_version", "script_history", "script_audit_log"):
+        body = (out / "__deploy" / "tables" / f"{name}.sql").read_text(encoding="utf-8")
+        meta = extract_header(body)
+        assert meta is not None, f"missing autodoc in seeded {name}.sql"
+        assert meta["project"].get("immutable") is True
+
+
+def test_re_seed_matches_canonical_ddl(tmp_path) -> None:
+    """The seeded __deploy must pass canonical validation with zero warnings."""
+    from db_project_manager.infrastructure.deploy.canonical_ddl import validate_deploy_ddl
+
+    adapter = FakeAdapter()
+    service = _service_with(adapter)
+    out = service.run(_cfg(), tmp_path)
+
+    warnings = validate_deploy_ddl(out)
+    assert warnings == [], f"seeded DDL differs from canonical: {warnings}"
+
+
+def test_re_without_deploy_seeds_calver_source_version(tmp_path) -> None:
+    """No __deploy in DB, no existing manifest → source_version = calver_seed."""
+    from db_project_manager.domain.deploy import CALVER_RE
+    from db_project_manager.infrastructure.config.codebase_manifest import read_manifest
+
+    adapter = FakeAdapter()
+    service = _service_with(adapter)
+    out = service.run(_cfg(), tmp_path)
+    manifest = read_manifest(out)
+    assert CALVER_RE.match(manifest.source_version)
+    assert manifest.source_version.endswith(".01")  # first release of the day
+
+
+def test_re_without_deploy_preserves_existing_source_version(tmp_path) -> None:
+    """Re-RE without __deploy keeps the previously-seeded source_version."""
+    from db_project_manager.infrastructure.config.codebase_manifest import (
+        CodebaseManifest,
+        write_manifest,
+        read_manifest,
+    )
+
+    adapter = FakeAdapter()
+    service = _service_with(adapter)
+    out = service.run(_cfg(), tmp_path)
+    # First RE seeded something like 2026.XX.XX.01; override with a known older value.
+    write_manifest(
+        CodebaseManifest(
+            db_type="postgres",
+            database="mydb",
+            generated_at="2026-07-29T00:00:00+00:00",
+            source_version="2026.07.29.05",
+        ),
+        out,
+    )
+    # Second RE on the same target dir — must NOT overwrite 2026.07.29.05 with a fresh seed.
+    service.run(_cfg(), tmp_path)
+    manifest = read_manifest(out)
+    assert manifest.source_version == "2026.07.29.05"
+
+
+def test_re_with_deploy_syncs_source_version(tmp_path) -> None:
+    """DB has __deploy with a recorded version → manifest.source_version mirrors it."""
+    from db_project_manager.infrastructure.config.codebase_manifest import read_manifest
+
+    adapter = FakeAdapter()
+    adapter._schema_version = "2026.08.10.05"
+    # Pretend __deploy is in the DB by patching structure (sync uses adapter.get_schema_version
+    # whenever the schema is present; we don't need the rendered files for this assertion).
+    structure = adapter._structure
+    structure["schemas"].append({"name": "__deploy"})
+
+    service = _service_with(adapter)
+    out = service.run(_cfg(), tmp_path)
+    manifest = read_manifest(out)
+    assert manifest.source_version == "2026.08.10.05"
+
+
+def test_re_with_deploy_empty_schema_version_falls_back_to_seed(tmp_path) -> None:
+    """DB has __deploy but schema_version is empty → seed + warning, calver_seed used."""
+    from db_project_manager.domain.deploy import CALVER_RE
+    from db_project_manager.infrastructure.config.codebase_manifest import read_manifest
+
+    adapter = FakeAdapter()
+    adapter._schema_version = None  # empty schema_version
+    adapter._structure["schemas"].append({"name": "__deploy"})
+
+    service = _service_with(adapter)
+    out = service.run(_cfg(), tmp_path)
+    manifest = read_manifest(out)
+    assert CALVER_RE.match(manifest.source_version)
+
+
+def test_re_custom_service_schema_name(tmp_path) -> None:
+    """service_schema='my_deploy' → files written under my_deploy/, not __deploy/."""
+    adapter = FakeAdapter()
+    service = _service_with(adapter, service_schema="my_deploy")
+    out = service.run(_cfg(), tmp_path)
+
+    assert (out / "my_deploy" / "tables" / "schema_version.sql").is_file()
+    assert not (out / "__deploy").is_dir()

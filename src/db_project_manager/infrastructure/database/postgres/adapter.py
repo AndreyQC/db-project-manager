@@ -15,6 +15,8 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
 from db_project_manager.domain.connection import ConnectionConfig, ConnectionType
+from db_project_manager.domain.deploy import ScriptRecord
+from db_project_manager.domain.safety import StatsConfidence, TablePresenceStats
 from db_project_manager.infrastructure.database.base import DatabaseAdapter, DatabaseError
 from db_project_manager.infrastructure.database.postgres import queries as q
 from db_project_manager.infrastructure.database.postgres.keywords import get_reserved
@@ -23,6 +25,51 @@ from db_project_manager.infrastructure.database.ssh_tunnel import SSHTunnelManag
 #: Identifier whitelist for temp-DB names (defends against injection in
 #: CREATE DATABASE / DROP DATABASE — see LESSONS_LEARNED §create_database).
 _DB_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def map_presence_row(
+    schema: str,
+    name: str,
+    estimated_rows: float | int | None,
+    last_analyze: Any,
+    last_autoanalyze: Any,
+    n_mod_since_analyze: int | None,
+) -> TablePresenceStats:
+    """Map a raw ``GET_TABLE_PRESENCE_STATS`` row onto the normalized model (SG-5).
+
+    Pure function (unit-testable without a DB). Fail-safe by design: anything
+    that undermines trust in ``estimated_rows == 0`` reports ``STALE`` — the
+    domain then treats the table as having data (SG-4).
+
+    ``STALE`` when:
+
+    * ``estimated_rows`` is NULL or negative (PG's ``-1`` "never analyzed"
+      sentinel) — the planner has no usable estimate;
+    * the table was never analyzed (``last_analyze`` and ``last_autoanalyze``
+      are both NULL);
+    * heavy drift — modifications since the last analyze are comparable to the
+      whole estimate (``n_mod_since_analyze >= max(estimated_rows, 1)``).
+
+    Note for Greenplum: row estimates of distributed tables may behave
+    differently — validate this mapping on a Greenplum cluster separately
+    (vision_final §4.4).
+    """
+    rows: int | None
+    if estimated_rows is None:
+        rows = None
+    else:
+        rows = int(estimated_rows)
+
+    confidence = StatsConfidence.FRESH
+    if rows is None or rows < 0:
+        confidence = StatsConfidence.STALE
+    elif last_analyze is None and last_autoanalyze is None:
+        confidence = StatsConfidence.STALE
+    elif n_mod_since_analyze is not None and n_mod_since_analyze >= max(rows, 1):
+        confidence = StatsConfidence.STALE
+    return TablePresenceStats(
+        object_schema=schema, name=name, estimated_rows=rows, confidence=confidence
+    )
 
 
 def _validate_db_name(name: str) -> str:
@@ -193,6 +240,46 @@ class PGDatabaseAdapter(DatabaseAdapter):
             logger.error(f"Не получить timestamp сервера: {e}")
             raise DatabaseError(f"Не получить timestamp сервера: {e}") from e
 
+    def get_table_row_counts(self) -> list[dict[str, Any]]:
+        """Return estimated row counts (reltuples) for user tables.
+
+        Phase 9: used by the compare feature as an informational "has data?"
+        marker in the snapshot. Returns [] if there are no user tables.
+        """
+        self._require_connection()
+        try:
+            rows = self._exec(q.GET_TABLE_ROW_COUNTS)
+            infos = [
+                {"schema_name": schema, "table_name": name, "estimated_rows": est}
+                for schema, name, est in rows
+            ]
+            logger.info(f"Row counts получены для {len(infos)} таблиц")
+            return infos
+        except Exception as e:
+            logger.error(f"Не удалось получить row counts: {e}")
+            raise DatabaseError(f"Не удалось получить row counts: {e}") from e
+
+    def get_table_presence_stats(self) -> list[TablePresenceStats]:
+        """Return normalized presence stats for user tables (Phase 11, SG-5).
+
+        Reads planner metadata only (reltuples + pg_stat_user_tables — no
+        COUNT(*) scans, LESSONS §3) and maps each row via :func:`map_presence_row`.
+        System schemas are excluded by the query; the service schema
+        (``__deploy``) is excluded by the caller (application layer, SG-M).
+        """
+        self._require_connection()
+        try:
+            rows = self._exec(q.GET_TABLE_PRESENCE_STATS)
+            stats = [
+                map_presence_row(schema, name, est, la, laa, nmod)
+                for schema, name, est, la, laa, nmod in rows
+            ]
+            logger.info(f"Presence stats получены для {len(stats)} таблиц")
+            return stats
+        except Exception as e:
+            logger.error(f"Не удалось получить presence stats: {e}")
+            raise DatabaseError(f"Не удалось получить presence stats: {e}") from e
+
     def create_database(
         self,
         name: str,
@@ -311,6 +398,123 @@ class PGDatabaseAdapter(DatabaseAdapter):
             "extensions": extensions,
             "database": database,
         }
+
+    # --- Phase 10: CD Foundation (__deploy schema) surface ---
+
+    @staticmethod
+    def _quote_identifier(name: str) -> str:
+        """Quote a SQL identifier (schema/table/column) for safe interpolation.
+
+        Whitelist ``[A-Za-z_][A-Za-z0-9_]*`` (LESSONS §19 — same rule as
+        ``_validate_db_name``). The ``__deploy`` default and any user-chosen
+        ``deploy.service_schema`` value pass; arbitrary input is rejected to
+        keep the ``{schema}`` interpolation in queries.py injection-safe.
+        """
+        import re
+
+        if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name):
+            raise DatabaseError(f"Недопустимое имя идентификатора: {name!r}")
+        return f'"{name}"'
+
+    def get_schema_version(self, schema_name: str) -> str | None:
+        """Latest calver version recorded in ``<schema>.schema_version`` or None."""
+        self._require_connection()
+        schema = self._quote_identifier(schema_name)
+        try:
+            rows = self._exec(q.GET_SCHEMA_VERSION.format(schema=schema))
+        except Exception as e:
+            # Table missing (deploy never ran) is a normal first-time case;
+            # surface as DatabaseError only for unexpected failures.
+            raise DatabaseError(f"Не удалось прочитать schema_version: {e}") from e
+        if not rows:
+            return None
+        return str(rows[0][0])
+
+    def record_schema_version(self, schema_name: str, version: str, source: str) -> None:
+        """Append a row to ``<schema>.schema_version`` (version, source)."""
+        self._require_connection()
+        schema = self._quote_identifier(schema_name)
+        try:
+            self._connection.execute(
+                text(q.INSERT_SCHEMA_VERSION.format(schema=schema)),
+                {"version": version, "source": source},
+            )
+        except Exception as e:
+            raise DatabaseError(f"Не удалось записать schema_version: {e}") from e
+
+    def get_script_history(
+        self, schema_name: str, script_name: str, script_type: str
+    ) -> ScriptRecord | None:
+        """Return the state row for ``(script_name, script_type)`` or None."""
+        self._require_connection()
+        schema = self._quote_identifier(schema_name)
+        try:
+            rows = self._exec(
+                q.GET_SCRIPT_HISTORY.format(schema=schema),
+                {"script_name": script_name, "script_type": script_type},
+            )
+        except Exception as e:
+            raise DatabaseError(f"Не удалось прочитать script_history: {e}") from e
+        if not rows:
+            return None
+        r = rows[0]
+        return ScriptRecord(
+            script_name=str(r[0]),
+            script_type=str(r[1]),  # type: ignore[arg-type]
+            checksum=str(r[2]),
+            success=bool(r[3]),
+            error_message=None if r[4] is None else str(r[4]),
+            duration_ms=int(r[5]),
+            executed_at=r[6],
+        )
+
+    def record_script_execution(
+        self,
+        schema_name: str,
+        record: ScriptRecord,
+        deploy_version: str,
+        deploy_source: str,
+    ) -> None:
+        """Atomically UPSERT state + INSERT audit log (single transaction).
+
+        The shared ``self._connection`` runs in AUTOCOMMIT — to get a real
+        transaction we open a fresh connection off the engine and downgrade
+        its isolation level for the duration of these two writes. If the audit
+        INSERT fails after the state UPSERT, both roll back (state and history
+        never diverge).
+        """
+        self._require_connection()
+        assert self._engine is not None
+        schema = self._quote_identifier(schema_name)
+        params_state = {
+            "script_name": record.script_name,
+            "script_type": record.script_type,
+            "checksum": record.checksum,
+            "success": record.success,
+            "executed_at": record.executed_at,
+            "error_message": record.error_message,
+            "duration_ms": record.duration_ms,
+        }
+        params_audit = {
+            **params_state,
+            "deploy_version": deploy_version,
+            "deploy_source": deploy_source,
+        }
+        try:
+            with self._engine.connect().execution_options(
+                isolation_level="READ_COMMITTED"
+            ) as tx_conn:
+                with tx_conn.begin():
+                    tx_conn.execute(
+                        text(q.UPSERT_SCRIPT_HISTORY.format(schema=schema)),
+                        params_state,
+                    )
+                    tx_conn.execute(
+                        text(q.INSERT_SCRIPT_AUDIT_LOG.format(schema=schema)),
+                        params_audit,
+                    )
+        except Exception as e:
+            raise DatabaseError(f"Не удалось записать script execution: {e}") from e
 
     # --- helpers: low-level readers (kept close to the POC result shape) ---
 

@@ -16,11 +16,15 @@ from typer.testing import CliRunner
 from db_project_manager.infrastructure.config.connection_store import ConnectionStore
 from db_project_manager.presentation.cli import main as cli_main
 from db_project_manager.presentation.gui.actions.cli import (
+    build_cli_compare,
+    build_cli_deploy_analyze,
     build_cli_deploy_validate,
     build_cli_graph_prepare,
     build_cli_reverse_engineer,
 )
 from db_project_manager.presentation.gui.actions.models import (
+    CompareSettings,
+    DeployAnalyzeSettings,
     DeployValidateSettings,
     GraphPrepareSettings,
     ReverseEngineerSettings,
@@ -116,6 +120,103 @@ def test_paths_with_spaces_are_quoted(tmp_path):
     assert '--output "C:/my dir/qr"' in cmd
 
 
+# --- compare (Phase 9 GUI action) ---
+
+
+def test_compare_cli_string_dir_vs_dir(tmp_path):
+    store = _store(tmp_path)
+    s = CompareSettings(source_dir="C:/src", target_dir="C:/tgt", output_dir="C:/out")
+    cmd = build_cli_compare(s, store)
+    assert cmd == "db-pm compare run --output-dir C:/out --source-dir C:/src --target-dir C:/tgt"
+
+
+def test_compare_cli_string_db_vs_db(tmp_path):
+    store = _store(tmp_path)
+    s = CompareSettings(
+        source_connection="dev", target_connection="prod", output_dir="C:/out"
+    )
+    cmd = build_cli_compare(s, store)
+    assert cmd == (
+        f"db-pm compare run --output-dir C:/out "
+        f"--source-connection-file {store.path_for('dev')} "
+        f"--target-connection-file {store.path_for('prod')}"
+    )
+
+
+def test_compare_cli_string_mixed_dir_db(tmp_path):
+    store = _store(tmp_path)
+    s = CompareSettings(
+        source_dir="C:/src", target_connection="prod", output_dir="C:/out"
+    )
+    cmd = build_cli_compare(s, store)
+    assert cmd == (
+        f"db-pm compare run --output-dir C:/out --source-dir C:/src "
+        f"--target-connection-file {store.path_for('prod')}"
+    )
+
+
+def test_compare_cli_keep_model_dir_flag(tmp_path):
+    store = _store(tmp_path)
+    s = CompareSettings(
+        source_dir="C:/src", target_dir="C:/tgt", output_dir="C:/out", keep_model_dir=True
+    )
+    cmd = build_cli_compare(s, store)
+    assert "--keep-model-dir" in cmd
+
+
+def test_compare_cli_keep_model_dir_omitted_when_off(tmp_path):
+    store = _store(tmp_path)
+    s = CompareSettings(source_dir="C:/src", target_dir="C:/tgt", output_dir="C:/out")
+    cmd = build_cli_compare(s, store)
+    assert "--keep-model-dir" not in cmd
+
+
+def test_compare_cli_paths_with_spaces_quoted(tmp_path):
+    store = _store(tmp_path)
+    s = CompareSettings(
+        source_dir="C:/my src", target_dir="C:/my tgt", output_dir="C:/my out"
+    )
+    cmd = build_cli_compare(s, store)
+    assert '--source-dir "C:/my src"' in cmd
+    assert '--target-dir "C:/my tgt"' in cmd
+    assert '--output-dir "C:/my out"' in cmd
+
+
+def test_compare_cli_omits_unset_side(tmp_path):
+    """Neither source field set → --source-* omitted; CLI will exit 2 with a clear message."""
+    store = _store(tmp_path)
+    s = CompareSettings(target_dir="C:/tgt", output_dir="C:/out")
+    cmd = build_cli_compare(s, store)
+    assert "--source-" not in cmd
+    assert "--target-dir C:/tgt" in cmd
+
+
+# --- deploy analyze (Phase 11 GUI action) ---
+
+
+def test_deploy_analyze_cli_string(tmp_path):
+    store = _store(tmp_path)
+    s = DeployAnalyzeSettings(
+        codebase_dir="C:/out/qr", target_connection="prod", output_dir="C:/reports"
+    )
+    cmd = build_cli_deploy_analyze(s, store)
+    assert cmd == (
+        f"db-pm deploy analyze --dir C:/out/qr "
+        f"--target-connection-file {store.path_for('prod')} "
+        f"--output-dir C:/reports"
+    )
+
+
+def test_deploy_analyze_cli_paths_with_spaces_quoted(tmp_path):
+    store = _store(tmp_path)
+    s = DeployAnalyzeSettings(
+        codebase_dir="C:/my code", target_connection="prod", output_dir="C:/my reports"
+    )
+    cmd = build_cli_deploy_analyze(s, store)
+    assert '--dir "C:/my code"' in cmd
+    assert '--output-dir "C:/my reports"' in cmd
+
+
 # --- typer contract tests (mocked services) ---
 
 
@@ -187,3 +288,62 @@ def test_contract_graph_prepare(tmp_path, monkeypatch):
     for subcommand in cmd.split(" && "):
         result = runner.invoke(cli_main.app, _argv(subcommand))
         assert result.exit_code == 0, f"{subcommand}: {result.output}"
+
+
+def test_contract_compare(tmp_path, monkeypatch):
+    """The GUI-built compare command parses through the real typer compare run."""
+    _patch_common(monkeypatch)
+    # compare_run calls load_cfg(...) — patch it to avoid needing config.yaml.
+    monkeypatch.setattr(cli_main, "load_cfg", lambda *a, **k: SimpleNamespace())
+    # CompareService is imported lazily inside compare_run, so patch on the source module.
+    import db_project_manager.application.compare_service as cs_module
+
+    monkeypatch.setattr(cs_module, "CompareService", lambda: SimpleNamespace(run=lambda *a, **k: tmp_path / "report"))
+    # _resolve_side checks is_dir() — create the dirs so the CLI accepts them.
+    (tmp_path / "src").mkdir()
+    (tmp_path / "tgt").mkdir()
+
+    store = _store(tmp_path)
+    cmd = build_cli_compare(
+        CompareSettings(
+            source_dir=str(tmp_path / "src"),
+            target_dir=str(tmp_path / "tgt"),
+            output_dir=str(tmp_path / "out"),
+            keep_model_dir=True,
+        ),
+        store,
+    )
+    result = runner.invoke(cli_main.app, _argv(cmd))
+    assert result.exit_code == 0, result.output
+
+
+def test_contract_deploy_analyze(tmp_path, monkeypatch):
+    """The GUI-built deploy analyze command parses through the real typer CLI."""
+    from db_project_manager.domain.safety import SafetyGateVerdict
+
+    _patch_common(monkeypatch)
+    monkeypatch.setattr(
+        cli_main, "load_cfg",
+        lambda *a, **k: SimpleNamespace(
+            deploy=SimpleNamespace(service_schema="__deploy"),
+            logging=SimpleNamespace(level="INFO"),
+            paths=SimpleNamespace(logs_dir=None),
+        ),
+    )
+    fake_service = SimpleNamespace(
+        analyze=lambda *a, **k: SafetyGateVerdict(clean=True, db_type="postgres", touched=[])
+    )
+    monkeypatch.setattr(cli_main, "SafetyGateService", lambda **kwargs: fake_service)
+
+    store = _store(tmp_path)
+    cmd = build_cli_deploy_analyze(
+        DeployAnalyzeSettings(
+            codebase_dir=str(tmp_path),
+            target_connection="prod",
+            output_dir=str(tmp_path / "report"),
+        ),
+        store,
+    )
+    result = runner.invoke(cli_main.app, _argv(cmd))
+    assert result.exit_code == 0, result.output
+    assert "CLEAN" in result.output

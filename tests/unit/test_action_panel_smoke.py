@@ -25,11 +25,15 @@ from db_project_manager.infrastructure.config.connection_store import (  # noqa:
 )
 from db_project_manager.infrastructure.config.gui_settings import GuiSettingsStore  # noqa: E402
 from db_project_manager.presentation.gui.actions.dialogs import (  # noqa: E402
+    CompareDialog,
+    DeployAnalyzeDialog,
     DeployValidateDialog,
     GraphPrepareDialog,
     ReverseEngineerDialog,
 )
 from db_project_manager.presentation.gui.actions.models import (  # noqa: E402
+    CompareSettings,
+    DeployAnalyzeSettings,
     DeployValidateSettings,
     GraphPrepareSettings,
     ReverseEngineerSettings,
@@ -78,7 +82,9 @@ def test_panel_unblocked_after_run(qapp, tmp_path, monkeypatch):
 
     window = MainWindow(cfg=CFG())
     panel = window.action_panel
-    panel.action_combo.setCurrentIndex(2)  # graph_prepare
+    # Robust to registry order changes (Phase 11 inserted deploy_analyze at
+    # index 2): look the action up by id instead of hardcoding the index.
+    panel.action_combo.setCurrentIndex(panel.action_combo.findData("graph_prepare"))
 
     panel._on_run()
     assert not panel.action_combo.isEnabled()  # running -> blocked
@@ -113,3 +119,160 @@ def test_graph_export_custom_output_dir(qapp, tmp_path):
     assert results and results[0] == export_dir / "graph.graphml"
     assert (export_dir / "graph.graphml").exists()
     assert not (codebase / ".dbm_graph" / "graph.graphml").exists()
+
+
+def test_buttons_are_last_row_compare(qapp, tmp_path):
+    """CompareDialog must keep buttons as the last row (lesson §43)."""
+    dlg = CompareDialog(ConnectionStore(tmp_path), CompareSettings())
+    assert isinstance(_last_form_widget(dlg), QDialogButtonBox)
+
+
+# --- deploy analyze (Phase 11, SG-7) ---
+
+
+def test_buttons_are_last_row_deploy_analyze(qapp, tmp_path):
+    """DeployAnalyzeDialog must keep buttons as the last row (lesson §43)."""
+    dlg = DeployAnalyzeDialog(ConnectionStore(tmp_path), DeployAnalyzeSettings())
+    assert isinstance(_last_form_widget(dlg), QDialogButtonBox)
+
+
+def test_deploy_analyze_dialog_settings_roundtrip(qapp, tmp_path):
+    """settings() must echo back what the dialog was prefilled with."""
+    from db_project_manager.domain.connection import ConnectionConfig
+
+    store = ConnectionStore(tmp_path)
+    store.save(
+        ConnectionConfig(
+            host="h", port=5432, database="prod", username="u", password="p", name="prod"
+        ),
+        crypto_env="ENVOS_CRYPTO_01",
+    )
+    settings = DeployAnalyzeSettings(
+        codebase_dir="C:/code", target_connection="prod", output_dir="C:/reports"
+    )
+    dlg = DeployAnalyzeDialog(store, settings)
+    restored = dlg.settings()
+    assert restored == settings
+
+
+def test_deploy_analyze_in_registry():
+    """The action must be registered with all four factories wired."""
+    from db_project_manager.presentation.gui.actions.registry import ACTIONS, get_action
+
+    spec = get_action("deploy_analyze")
+    assert spec in ACTIONS
+    assert spec.settings_model.__name__ == "DeployAnalyzeSettings"
+    assert spec.required_fields == ("codebase_dir", "target_connection", "output_dir")
+    assert spec.make_dialog and spec.make_worker and spec.build_cli
+
+
+def test_deploy_analyze_worker_emits_verdict(qapp, tmp_path, monkeypatch):
+    """Worker contract (lesson §42): finished carries the verdict; a hard error
+    goes through signals.error + finished(None)."""
+    from db_project_manager.domain.safety import SafetyGateVerdict
+    from db_project_manager.presentation.gui.widgets.workers import DeployAnalyzeWorker
+
+    import db_project_manager.application.safety_gate_service as sg_module
+
+    verdict = SafetyGateVerdict(clean=True, db_type="postgres", touched=[])
+    monkeypatch.setattr(
+        sg_module, "SafetyGateService",
+        lambda: type("S", (), {"analyze": staticmethod(lambda *a, **k: verdict)})(),
+    )
+    worker = DeployAnalyzeWorker(object(), tmp_path, tmp_path / "report")
+    finished: list = []
+    errors: list = []
+    worker.signals.finished.connect(finished.append)
+    worker.signals.error.connect(errors.append)
+    worker.run()
+    assert finished == [verdict]
+    assert errors == []
+
+
+def test_deploy_analyze_worker_error_contract(qapp, tmp_path, monkeypatch):
+    from db_project_manager.application.safety_gate_service import SafetyGateError
+    from db_project_manager.presentation.gui.widgets.workers import DeployAnalyzeWorker
+
+    import db_project_manager.application.safety_gate_service as sg_module
+
+    def _raise(*a, **k):
+        raise SafetyGateError("target newer than source")
+
+    monkeypatch.setattr(
+        sg_module, "SafetyGateService",
+        lambda: type("S", (), {"analyze": staticmethod(_raise)})(),
+    )
+    worker = DeployAnalyzeWorker(object(), tmp_path, tmp_path / "report")
+    finished: list = []
+    errors: list = []
+    worker.signals.finished.connect(finished.append)
+    worker.signals.error.connect(errors.append)
+    worker.run()
+    assert finished == [None]
+    assert errors and "target newer" in errors[0]
+
+
+def test_compare_connection_combo_has_empty_placeholder(qapp, tmp_path):
+    """Regression: with connections present, a side's combo must offer a "(каталог)"
+    placeholder so filling the directory field does not violate the connection/dir XOR.
+
+    Before the fix, _connections_combo defaulted to index 0 (first connection) →
+    "_side_spec: указаны и подключение, и каталог" error when the user picked a dir.
+    """
+    store = ConnectionStore(tmp_path)
+    # Seed two connections so the combo is non-empty (the bug only manifests then).
+    store.save(
+        # Minimal ConnectionConfig; password must be encrypted via the store API.
+        __import__(
+            "db_project_manager.domain.connection", fromlist=["ConnectionConfig"]
+        ).ConnectionConfig(
+            host="h", port=5432, database="a", username="u", password="p", name="conn_a"
+        ),
+        crypto_env="ENVOS_CRYPTO_01",
+    )
+    store.save(
+        __import__(
+            "db_project_manager.domain.connection", fromlist=["ConnectionConfig"]
+        ).ConnectionConfig(
+            host="h", port=5432, database="b", username="u", password="p", name="conn_b"
+        ),
+        crypto_env="ENVOS_CRYPTO_01",
+    )
+
+    dlg = CompareDialog(store, CompareSettings())
+    # First entry is the placeholder; its userData is "" (read back as no connection).
+    assert dlg._source_connection.itemText(0) == "(каталог вместо подключения)"
+    assert dlg._source_connection.itemData(0) == ""
+    # And it is selected by default (not the first real connection).
+    assert dlg._source_connection.currentIndex() == 0
+    assert dlg._source_connection.currentData() == ""
+
+    # Filling the directory field and reading settings → no connection set.
+    dlg._source_dir.setText("/some/dir")
+    s = dlg.settings()
+    assert s.source_connection == ""
+    assert s.source_dir == "/some/dir"
+
+
+def test_compare_worker_reports_error_on_missing_side(qapp, tmp_path):
+    """CompareWorker surfaces a CompareError when a side is misconfigured.
+
+    Builds two DIR sides pointing at non-existent dirs (no manifest) → CompareService
+    raises CompareError → worker emits error + finished(None).
+    """
+    from db_project_manager.application.compare_service import SideSpec
+    from db_project_manager.domain.diff import SnapshotSourceKind
+    from db_project_manager.presentation.gui.widgets.workers import CompareWorker
+
+    src = SideSpec(SnapshotSourceKind.DIR, str(tmp_path / "nope_src"))
+    tgt = SideSpec(SnapshotSourceKind.DIR, str(tmp_path / "nope_tgt"))
+    worker = CompareWorker(src, tgt, tmp_path / "out")
+    errors: list[str] = []
+    finishes: list = []
+    worker.signals.error.connect(lambda msg: errors.append(msg))
+    worker.signals.finished.connect(lambda result: finishes.append(result))
+    worker.run()
+
+    assert errors, "worker must emit an error on missing manifest"
+    assert "не содержит" in errors[0] or "manifest" in errors[0].lower()
+    assert finishes == [None]

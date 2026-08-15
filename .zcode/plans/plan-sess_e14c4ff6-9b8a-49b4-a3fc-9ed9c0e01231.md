@@ -204,8 +204,8 @@ def qualify_refs(
 ### P6.S07. Документация и закрытие фазы
 
 - `LESSONS_LEARNED.md` §36 — урок про пост-процессор и tradeoff regex-vs-AST
-- `-=tasks=-/BACKLOG.md` — отметить follow-up: AST-based qualify через sqlglot (если regex даст false positives в проде)
-- `-=CHECKPOINTS=-/20260720_003_checkpoint.md` — Phase 6 complete
+- `_tasks_/BACKLOG.md` — отметить follow-up: AST-based qualify через sqlglot (если regex даст false positives в проде)
+- `_checkpoints_/20260720_003_checkpoint.md` — Phase 6 complete
 - Vision/plan docs минимально (один `phase_06/001_plan_phase_06.md` без draft/final цикла, т.к. все design-решения уже собраны)
 
 **Коммиты:** `docs(...)` раздельно.

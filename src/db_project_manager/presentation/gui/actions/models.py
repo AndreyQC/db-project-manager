@@ -41,3 +41,39 @@ class GraphPrepareSettings(BaseModel):
     validate_graph: bool = True
     # Optional export destination dir. Empty = <codebase>/.dbm_graph/.
     output_dir: str = ""
+
+
+class CompareSettings(BaseModel):
+    """Settings for the compare action (Phase 9 / GUI action).
+
+    Two sides (source/target), each is either a DB connection or a reverse-engineer
+    directory. Exactly one of ``<side>_connection`` / ``<side>_dir`` must be set per
+    side — this XOR rule is enforced at build time (SideSpec construction / CLI),
+    not by pydantic, because the panel leaves both empty until the user configures.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    source_connection: str = ""
+    source_dir: str = ""
+    target_connection: str = ""
+    target_dir: str = ""
+    # Report destination (source.json / target.json / diff_report.json).
+    output_dir: str = ""
+    keep_model_dir: bool = False
+
+
+class DeployAnalyzeSettings(BaseModel):
+    """Settings for the deploy analyze action (Phase 11 / GUI action).
+
+    Run-only safety gate against an EXISTING target DB (read-only — nothing
+    is applied). Field named ``target_connection`` to avoid colliding with
+    BaseModel attribute names (LESSONS §40) and to stress "existing target".
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    codebase_dir: str = ""
+    target_connection: str = ""
+    # Report destination (safety_gate_report.md / .json / diff_report.json).
+    output_dir: str = ""

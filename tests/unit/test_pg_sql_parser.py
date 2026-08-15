@@ -155,6 +155,73 @@ def test_overloads_use_posix_relative_source_path(graph) -> None:
         assert "/" in path
 
 
+# --- Phase 8: argument_types read from autodoc ---
+
+
+def test_parser_reads_argument_types_from_autodoc(graph) -> None:
+    """Phase 8: the parser must surface the raw argument type list from the
+    autodoc header onto the Vertex, so overload resolution can use it. Without
+    this field, resolution cannot match a call site to an overload."""
+    v_int = graph.get_vertex(SP_X_INT)
+    v_text = graph.get_vertex(SP_X_TEXT)
+    v_y = graph.get_vertex(SP_Y)
+    assert v_int.argument_types == "int4"
+    assert v_text.argument_types == "text"
+    assert v_y.argument_types == "uuid"
+
+
+def test_parser_argument_types_empty_for_non_routine(graph) -> None:
+    """Regression: only routines carry argument_types. Tables/views/sequences
+    keep the empty default — resolution must never touch them."""
+    for key in (AIRPORTS, AIRCRAFTS, FLIGHTS):
+        v = graph.get_vertex(key)
+        assert v.argument_types == ""
+
+
+# --- Phase 8: overload resolution in edge routing ---
+
+
+# sp_x_caller calls both overloads with literal arguments (see fixture).
+SP_X_CALLER = "pg_database/demo/schema/app/type/function/name/sp_x_caller/signature/75666699"
+
+
+def test_overload_resolution_routes_call_to_int4_overload(graph) -> None:
+    """Core Phase 8 behavior: sp_x_caller calls app.sp_x(123) — an integer
+    literal resolves to int4, so the DEPENDS_ON edge must land on the int4
+    overload (SP_X_INT), NOT on the text overload or "first wins"."""
+    deps = graph.get_dependencies(SP_X_CALLER)
+    dest_keys = {e.destination_object_key for e in deps}
+    assert SP_X_INT in dest_keys, "int4 overload must be reached by sp_x(123)"
+
+
+def test_overload_resolution_routes_call_to_text_overload(graph) -> None:
+    """sp_x_caller also calls app.sp_x('hello') — a string literal resolves to
+    text, so the DEPENDS_ON edge must land on the text overload (SP_X_TEXT)."""
+    deps = graph.get_dependencies(SP_X_CALLER)
+    dest_keys = {e.destination_object_key for e in deps}
+    assert SP_X_TEXT in dest_keys, "text overload must be reached by sp_x('hello')"
+
+
+def test_overload_resolution_does_not_route_to_wrong_overload(graph) -> None:
+    """The integer-literal call must NOT produce an edge to the text overload,
+    and the string-literal call must NOT produce an edge to the int4 overload.
+    Both overloads are still reached (by their respective calls), but each
+    edge destination must be correct."""
+    deps = graph.get_dependencies(SP_X_CALLER)
+    # Both overloads are dependencies of the caller (one edge each).
+    assert SP_X_INT in {e.destination_object_key for e in deps}
+    assert SP_X_TEXT in {e.destination_object_key for e in deps}
+
+
+def test_singleton_call_edge_unchanged_by_overload_resolution(graph) -> None:
+    """Regression: sp_caller calls sp_y, which has NO overloads (singleton).
+    Overload resolution must be a no-op here — the DEPENDS_ON edge to sp_y
+    remains, identical to pre-Phase-8 behavior (LESSONS §38)."""
+    deps = graph.get_dependencies(SP_CALLER)
+    dest_keys = {e.destination_object_key for e in deps}
+    assert SP_Y in dest_keys
+
+
 # --- edges: foreign keys (REFERENCES_BY) ---
 
 

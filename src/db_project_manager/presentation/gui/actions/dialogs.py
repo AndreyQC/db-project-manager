@@ -27,6 +27,8 @@ from db_project_manager.infrastructure.config.connection_store import Connection
 from db_project_manager.presentation.gui.actions.models import (
     EXPORT_FORMATS,
     FORMAT_NONE,
+    CompareSettings,
+    DeployAnalyzeSettings,
     DeployValidateSettings,
     GraphPrepareSettings,
     ReverseEngineerSettings,
@@ -38,6 +40,10 @@ FORMAT_LABELS = {
     "dot": "dot (Graphviz)",
     FORMAT_NONE: "только build (без экспорта)",
 }
+
+#: Placeholder for the "no connection selected" combo entry (compare action),
+#: where a side can be a directory instead. Read back as "" in settings().
+CONNECTION_EMPTY_LABEL = "(каталог вместо подключения)"
 
 
 class BaseActionDialog(QDialog):
@@ -82,14 +88,29 @@ class BaseActionDialog(QDialog):
         if directory:
             edit.setText(directory)
 
-    def _connections_combo(self, store: ConnectionStore, current: str) -> QComboBox:
+    def _connections_combo(
+        self, store: ConnectionStore, current: str, *, allow_empty: bool = False
+    ) -> QComboBox:
+        """Connection dropdown populated from ``store.list_names()``.
+
+        When ``allow_empty`` is True (compare action), a leading placeholder entry
+        (:data:`CONNECTION_EMPTY_LABEL`) lets the user pick "no connection — I'll use
+        a directory instead", read back as "" in settings(). This avoids the XOR
+        violation that otherwise occurs because the combo defaults to index 0 (the
+        first connection) whenever the user fills the directory field.
+        """
         combo = QComboBox()
         combo.setEditable(False)
-        combo.addItems(store.list_names())
+        if allow_empty:
+            combo.addItem(CONNECTION_EMPTY_LABEL, userData="")
+        for name in store.list_names():
+            combo.addItem(name, userData=name)
         if current:
-            idx = combo.findText(current)
+            idx = combo.findData(current)
             if idx >= 0:
                 combo.setCurrentIndex(idx)
+        elif allow_empty:
+            combo.setCurrentIndex(0)  # the placeholder
         return combo
 
     # --- interface ---
@@ -156,6 +177,34 @@ class DeployValidateDialog(BaseActionDialog):
         )
 
 
+class DeployAnalyzeDialog(BaseActionDialog):
+    """Settings for 'Safety gate: проанализировать деплой' (Phase 11, SG-7)."""
+
+    def __init__(
+        self,
+        store: ConnectionStore,
+        settings: DeployAnalyzeSettings,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__("Safety gate (deploy analyze) — настройки", parent)
+        self._codebase_dir = self._dir_row(settings.codebase_dir, "Каталог кодовой базы:")
+        self._target_connection = self._connections_combo(store, settings.target_connection)
+        self._form.addRow("Целевая БД (существует, с данными):", self._target_connection)
+        self._output_dir = self._dir_row(
+            settings.output_dir,
+            "Каталог для отчётов:",
+            placeholder="safety_gate_report.md / .json / diff_report.json",
+        )
+        self._add_buttons()
+
+    def settings(self) -> DeployAnalyzeSettings:
+        return DeployAnalyzeSettings(
+            codebase_dir=self._codebase_dir.text().strip(),
+            target_connection=self._target_connection.currentText(),
+            output_dir=self._output_dir.text().strip(),
+        )
+
+
 class GraphPrepareDialog(BaseActionDialog):
     """Settings for 'Подготовить граф для просмотра в Gephi'."""
 
@@ -191,4 +240,62 @@ class GraphPrepareDialog(BaseActionDialog):
             format=self._format.currentData(),
             validate_graph=self._validate.isChecked(),
             output_dir=self._output_dir.text().strip(),
+        )
+
+
+class CompareDialog(BaseActionDialog):
+    """Settings for 'Сравнить состояния (БД или каталог reverse-engineer)'.
+
+    Two sides (source/target); each side offers a connection combo AND a directory
+    row — exactly one must be filled per side (XOR enforced at SideSpec build time).
+    """
+
+    def __init__(
+        self,
+        store: ConnectionStore,
+        settings: CompareSettings,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__("Сравнение состояний — настройки", parent)
+
+        # allow_empty=True: a side may be a directory instead of a connection.
+        # The leading placeholder (CONNECTION_EMPTY_LABEL) lets the user pick
+        # "no connection" so filling the directory field does not violate XOR.
+        self._source_connection = self._connections_combo(
+            store, settings.source_connection, allow_empty=True
+        )
+        self._form.addRow("Source: подключение (БД):", self._source_connection)
+        self._source_dir = self._dir_row(
+            settings.source_dir,
+            "Source: каталог reverse-engineer:",
+            placeholder="укажите ИЛИ подключение, ИЛИ каталог",
+        )
+
+        self._target_connection = self._connections_combo(
+            store, settings.target_connection, allow_empty=True
+        )
+        self._form.addRow("Target: подключение (БД):", self._target_connection)
+        self._target_dir = self._dir_row(
+            settings.target_dir,
+            "Target: каталог reverse-engineer:",
+            placeholder="укажите ИЛИ подключение, ИЛИ каталог",
+        )
+
+        self._output_dir = self._dir_row(settings.output_dir, "Каталог для отчётов:")
+        self._keep_model_dir = QCheckBox("Сохранить временный каталог reverse-engineer (для отладки)")
+        self._keep_model_dir.setChecked(settings.keep_model_dir)
+        self._form.addRow(self._keep_model_dir)
+
+        self._add_buttons()  # LESSONS §43 — last row of the form
+
+    def settings(self) -> CompareSettings:
+        return CompareSettings(
+            # currentData() returns "" for the placeholder entry, the connection
+            # name otherwise — so an unset connection is read back as "".
+            source_connection=str(self._source_connection.currentData() or ""),
+            source_dir=self._source_dir.text().strip(),
+            target_connection=str(self._target_connection.currentData() or ""),
+            target_dir=self._target_dir.text().strip(),
+            output_dir=self._output_dir.text().strip(),
+            keep_model_dir=self._keep_model_dir.isChecked(),
         )

@@ -292,3 +292,132 @@ def test_update_header_extends_existing_qualify_report() -> None:
     parsed = extract_header(decorated)
     assert parsed is not None
     assert parsed["qualify_report"] == ["a", "b"]
+
+
+# --- immutable marker (Phase 10 / CDF-10) ---
+
+
+def test_build_metadata_omits_immutable_when_false() -> None:
+    """Default immutable=False: 'immutable' must NOT appear in project section.
+
+    Keeps ordinary objects' headers clean (CDF-10: omit-when-false).
+    """
+    meta = build_metadata(
+        object_catalog="db", object_schema="s", object_type="table", object_name="t"
+    )
+    assert meta["project"] == {"build": True}
+    assert "immutable" not in meta["project"]
+
+
+def test_build_metadata_includes_immutable_when_true() -> None:
+    """immutable=True: 'immutable: true' added to project section."""
+    meta = build_metadata(
+        object_catalog="db",
+        object_schema="__deploy",
+        object_type="table",
+        object_name="schema_version",
+        immutable=True,
+    )
+    assert meta["project"] == {"build": True, "immutable": True}
+
+
+def test_ensure_header_propagates_immutable_through_roundtrip() -> None:
+    """immutable=True written via ensure_header survives extract_header."""
+    body = "CREATE TABLE __deploy.schema_version (id int);\n"
+    decorated = ensure_header(
+        body,
+        object_catalog="db",
+        object_schema="__deploy",
+        object_type="table",
+        object_name="schema_version",
+        immutable=True,
+    )
+    parsed = extract_header(decorated)
+    assert parsed is not None
+    assert parsed["project"]["immutable"] is True
+
+
+def test_ensure_header_default_immutable_absent_in_roundtrip() -> None:
+    """Default immutable=False: parsed header's project has no 'immutable' key."""
+    body = "CREATE TABLE s.t (id int);\n"
+    decorated = ensure_header(
+        body, object_catalog="db", object_schema="s", object_type="table", object_name="t"
+    )
+    parsed = extract_header(decorated)
+    assert parsed is not None
+    assert "immutable" not in parsed["project"]
+    assert parsed["project"] == {"build": True}
+
+
+def test_vertex_defaults_immutable_false() -> None:
+    """Vertex model defaults immutable to False when not passed (parser fallback path)."""
+    from db_project_manager.domain.graph import Vertex
+
+    v = Vertex(object_key="pg_database/db/schema/s/type/table/name/t", object_type="table")
+    assert v.immutable is False
+
+
+def test_vertex_accepts_immutable_true() -> None:
+    """Vertex carries the immutable flag for __deploy objects."""
+    from db_project_manager.domain.graph import Vertex
+
+    v = Vertex(
+        object_key="pg_database/db/schema/__deploy/type/table/name/schema_version",
+        object_type="table",
+        immutable=True,
+    )
+    assert v.immutable is True
+
+
+def test_parser_reads_immutable_from_autodoc(tmp_path) -> None:
+    """pg_sql_parser extracts project.immutable into Vertex (CDF-10 wiring)."""
+    from db_project_manager.infrastructure.parsing.pg_sql_parser import PgSqlParser
+
+    body = (
+        f"{MARKER_OPEN}\n"
+        "object:\n"
+        "  object_catalog: db\n"
+        "  object_schema: __deploy\n"
+        "  object_type: table\n"
+        "  object_name: schema_version\n"
+        "  object_key: pg_database/db/schema/__deploy/type/table/name/schema_version\n"
+        "project:\n"
+        "  build: true\n"
+        "  immutable: true\n"
+        f"{MARKER_CLOSE}\n"
+        "*/\n"
+        "CREATE TABLE __deploy.schema_version (id int);"
+    )
+    f = tmp_path / "schema_version.sql"
+    f.write_text(body, encoding="utf-8")
+    parser = PgSqlParser()
+    vertex, _, _ = parser._parse_file(f, tmp_path)
+    assert vertex is not None
+    assert vertex.immutable is True
+    assert vertex.object_schema == "__deploy"
+
+
+def test_parser_defaults_immutable_false_when_absent(tmp_path) -> None:
+    """Ordinary autodoc (no immutable field) → Vertex.immutable=False."""
+    from db_project_manager.infrastructure.parsing.pg_sql_parser import PgSqlParser
+
+    body = (
+        f"{MARKER_OPEN}\n"
+        "object:\n"
+        "  object_catalog: db\n"
+        "  object_schema: bookings\n"
+        "  object_type: table\n"
+        "  object_name: aircrafts\n"
+        "  object_key: pg_database/db/schema/bookings/type/table/name/aircrafts\n"
+        "project:\n"
+        "  build: true\n"
+        f"{MARKER_CLOSE}\n"
+        "*/\n"
+        "CREATE TABLE bookings.aircrafts (id int);"
+    )
+    f = tmp_path / "aircrafts.sql"
+    f.write_text(body, encoding="utf-8")
+    parser = PgSqlParser()
+    vertex, _, _ = parser._parse_file(f, tmp_path)
+    assert vertex is not None
+    assert vertex.immutable is False

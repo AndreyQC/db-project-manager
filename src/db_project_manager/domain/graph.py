@@ -54,8 +54,20 @@ class Vertex(BaseModel):
     #: autodoc header; included in ``object_key`` when non-empty so overloads
     #: get distinct keys instead of silently overwriting each other in the graph.
     object_signature: str = Field("", description="Canonical signature hash for overloaded functions/procedures")
+    #: Raw comma-joined argument type list for overloaded functions/procedures
+    #: (e.g. "int4", "text,varchar"), as produced by the adapter from
+    #: ``pg_type.typname``. Empty for non-routine / no-arg objects. Populated by
+    #: the parser from the autodoc header; used by overload resolution (Phase 8)
+    #: to match a call site to a specific overload. Carries DATA for type
+    #: inference, not identity (identity remains object_key — LESSONS §26).
+    argument_types: str = Field("", description="Raw argument types for overloaded functions/procedures")
     object_source_file: str = Field("", description="Path to the source SQL file")
     build: bool = Field(True, description="Whether this object is deployed (project.build in autodoc)")
+    #: Phase 10 (CDF-10): marker that this object is managed by db-pm and must
+    #: not be hand-edited. Set by reverse-engineer for objects in the service
+    #: schema (``__deploy``). Lives in the autodoc ``project`` section next to
+    #: ``build``; omitted (False) for ordinary objects.
+    immutable: bool = Field(False, description="Managed by db-pm; do not hand-edit (project.immutable in autodoc)")
     extra: dict[str, Any] = Field(default_factory=dict, description="Raw autodoc fields not covered above")
 
 

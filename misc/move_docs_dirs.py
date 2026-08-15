@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Перемещение документационных каталогов в -=docs=- и обновление ссылок.
+Перемещение документационных каталогов в _docs_ и обновление ссылок.
 
 Что делает скрипт:
-  -=CHECKPOINTS=-  ->  -=docs=-/-=CHECKPOINTS=-
-  -=PHASES=-       ->  -=docs=-/-=PHASES=-
-  -=tasks=-        ->  -=docs=-/-=tasks=-
+  _checkpoints_  ->  _docs_/_checkpoints_
+  _phases_       ->  _docs_/_phases_
+  _tasks_        ->  _docs_/_tasks_
 
   1. Во всех текстовых файлах репозитория заменяет упоминания этих каталогов
-     на новые пути (добавляет префикс ``-=docs=-/``).
-  2. (Опционально) физически переносит три каталога внутрь ``-=docs=-``.
+     на новые пути (добавляет префикс ``_docs_/``).
+  2. (Опционально) физически переносит три каталога внутрь ``_docs_``.
 
 Безопасность:
   * По умолчанию работает в режиме dry-run (только отчёт, ничего не меняет).
@@ -21,8 +21,8 @@
                         замены идёмпотентны, так что порядок не критичен).
   * ``--show-diff``   — показать построчные примеры замен в отчёте.
 
-Идемпотентность: замена использует negative lookbehind ``(?<!-=docs=-/)``,
-поэтому повторный запуск не дублирует префикс ``-=docs=-/-=docs=-/...``.
+Идемпотентность: замена использует negative lookbehind ``(?<!_docs_/)``,
+поэтому повторный запуск не дублирует префикс ``_docs_/_docs_/...``.
 
 Использование::
 
@@ -45,8 +45,8 @@ from pathlib import Path
 # --- Конфигурация -----------------------------------------------------------
 
 # Перемещаемые каталоги и целевой родитель.
-DIRS_TO_MOVE: tuple[str, ...] = ("-=CHECKPOINTS=-", "-=PHASES=-", "-=tasks=-")
-NEW_PARENT = "-=docs=-"
+DIRS_TO_MOVE: tuple[str, ...] = ("_checkpoints_", "_phases_", "_tasks_")
+NEW_PARENT = "_docs_"
 
 # Каталоги, которые не сканируем при поиске упоминаний (подстраховка поверх
 # учёта .gitignore через ``git ls-files``). node_modules/target/dist могут
@@ -121,8 +121,8 @@ def iter_candidate_files(root: Path):
     Если git недоступен или репозиторий не инициализирован, используем обход
     с пропуском EXCLUDE_DIRS. Сам этот скрипт исключаем намеренно: он содержит
     ``DIRS_TO_MOVE`` с «голыми» именами каталогов и описания их в docstring.
-    Если переписать их на ``-=docs=-/<name>``, логика поиска источников/целей
-    перемещения сломается (``root / "-=docs=-/-=CHECKPOINTS=-"`` — двойной путь).
+    Если переписать их на ``_docs_/<name>``, логика поиска источников/целей
+    перемещения сломается (``root / "_docs_/_checkpoints_"`` — двойной путь).
 
     Файлы, которые ``git ls-files`` не вернул (например, игнорируемые), не
     сканируем: наши ссылки живут в трекаемых исходниках и документации.
@@ -342,7 +342,7 @@ def step_move_dirs(root: Path, do_move: bool) -> None:
 
 def build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        description="Перенос -=CHECKPOINTS=-/-=PHASES=-/-=tasks=- в -=docs=- "
+        description="Перенос _checkpoints_/_phases_/_tasks_ в _docs_ "
                     "и обновление ссылок.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="По умолчанию — сухой прогон. Используйте --apply / --move-dirs.",
@@ -361,7 +361,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--move-dirs",
         action="store_true",
-        help="Физически переместить каталоги в -=docs=- (без флага — dry-run).",
+        help="Физически переместить каталоги в _docs_ (без флага — dry-run).",
     )
     p.add_argument(
         "--show-diff",

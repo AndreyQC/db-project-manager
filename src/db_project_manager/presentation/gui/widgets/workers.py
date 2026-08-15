@@ -167,3 +167,132 @@ class DeployValidateWorker(QRunnable):
         except Exception as e:  # noqa: BLE001
             self.signals.error.emit(f"Непредвиденная ошибка: {e}")
             self.signals.finished.emit(None)
+
+
+class DeployAnalyzeWorker(QRunnable):
+    """Run the safety-gate dry-run off the UI thread (Phase 11, SG-7).
+
+    Read-only with respect to the target DB: SafetyGateService never calls a
+    mutating adapter method. Emits the SafetyGateVerdict through 'finished'
+    (object); SafetyGateError and unexpected errors go via signals.error with
+    finished(None) — the same contract as DeployValidateWorker.
+    """
+
+    def __init__(
+        self,
+        conn_cfg: ConnectionConfig,
+        codebase_dir: str | Path,
+        output_dir: str | Path,
+    ) -> None:
+        super().__init__()
+        self.conn_cfg = conn_cfg
+        self.codebase_dir = Path(codebase_dir)
+        self.output_dir = Path(output_dir)
+        self.signals = WorkerSignals()
+
+    def run(self) -> None:
+        from db_project_manager.application.safety_gate_service import (
+            SafetyGateError,
+            SafetyGateService,
+        )
+
+        service = SafetyGateService()
+
+        def progress(message: str, current: int, total: int) -> None:
+            self.signals.progress.emit(message, current, total)
+            self.signals.status.emit(message)
+
+        try:
+            verdict = service.analyze(
+                self.codebase_dir, self.conn_cfg, self.output_dir, progress=progress
+            )
+            self.signals.finished.emit(verdict)
+        except SafetyGateError as e:
+            self.signals.error.emit(f"Safety gate: {e}")
+            self.signals.finished.emit(None)
+        except Exception as e:  # noqa: BLE001
+            self.signals.error.emit(f"Непредвиденная ошибка: {e}")
+            self.signals.finished.emit(None)
+
+
+class CompareWorker(QRunnable):
+    """Run a DB/codebase comparison off the UI thread.
+
+    Delegates to CompareService.run; emits the output-dir Path on success, None on
+    error. CompareError (db_type mismatch, missing manifest) is reported via
+    signals.error with its message.
+    """
+
+    def __init__(
+        self,
+        source,  # SideSpec
+        target,  # SideSpec
+        output_dir: str | Path,
+        *,
+        keep_model_dir: bool = False,
+    ) -> None:
+        super().__init__()
+        self.source = source
+        self.target = target
+        self.output_dir = Path(output_dir)
+        self.keep_model_dir = keep_model_dir
+        self.signals = WorkerSignals()
+
+    def run(self) -> None:  # noqa: C901 (Qt entrypoint)
+        from db_project_manager.application.compare_service import CompareError, CompareService
+
+        service = CompareService()
+
+        def progress(message: str, current: int, total: int) -> None:
+            self.signals.progress.emit(message, current, total)
+            self.signals.status.emit(message)
+
+        try:
+            result = service.run(
+                self.source,
+                self.target,
+                self.output_dir,
+                keep_model_dir=self.keep_model_dir,
+                progress=progress,
+            )
+            self.signals.status.emit(f"Сравнение завершено: {result}")
+            self.signals.finished.emit(result)
+        except CompareError as e:
+            self.signals.error.emit(str(e))
+            self.signals.finished.emit(None)
+        except Exception as e:  # noqa: BLE001
+            self.signals.error.emit(f"Непредвиденная ошибка: {e}")
+            self.signals.finished.emit(None)
+
+
+class LoadDiffReportWorker(QRunnable):
+    """Load + parse a ``diff_report.json`` off the UI thread (Phase 14).
+
+    Used by :class:`DeltaViewerWindow` to keep large-file parsing off the UI thread.
+    Emits the parsed :class:`~db_project_manager.domain.diff.DiffReport` on success,
+    or ``None`` + an error message on failure (missing/invalid file).
+    """
+
+    def __init__(self, path: str | Path) -> None:
+        super().__init__()
+        self.path = Path(path)
+        self.signals = WorkerSignals()
+
+    def run(self) -> None:  # noqa: C901 (Qt entrypoint)
+        from db_project_manager.domain.diff import DiffReport
+        from pydantic import ValidationError
+
+        try:
+            text = self.path.read_text(encoding="utf-8")
+            report = DiffReport.model_validate_json(text)
+            self.signals.status.emit(f"Отчёт загружен: {self.path.name}")
+            self.signals.finished.emit(report)
+        except (ValidationError, ValueError) as e:
+            self.signals.error.emit(f"Не удалось разобрать отчёт: {e}")
+            self.signals.finished.emit(None)
+        except OSError as e:
+            self.signals.error.emit(f"Не удалось прочитать файл: {e}")
+            self.signals.finished.emit(None)
+        except Exception as e:  # noqa: BLE001
+            self.signals.error.emit(f"Непредвиденная ошибка: {e}")
+            self.signals.finished.emit(None)

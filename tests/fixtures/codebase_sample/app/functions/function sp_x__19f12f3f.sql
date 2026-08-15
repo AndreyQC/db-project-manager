@@ -7,6 +7,7 @@ object:
   object_name: sp_x
   object_key: pg_database/demo/schema/app/type/function/name/sp_x/signature/19f12f3f
   object_signature: '19f12f3f'
+  argument_types: int4
 project:
   build: true
 [[autodoc-yaml]>]

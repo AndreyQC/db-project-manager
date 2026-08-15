@@ -4,6 +4,7 @@ Layout:
     db-pm reverse-engineer --connection-file <conn.yaml> --output <dir>
     db-pm graph     build|export|show|validate  --dir <dir> [...]
     db-pm deploy    validate                    --dir <dir> --connection-file <conn.yaml> [...]
+    db-pm deploy    analyze                     --dir <dir> --target-connection-file <conn.yaml> [...]
 
 Connection management (create/edit) is UI-only; the CLI consumes a connection
 file produced in the GUI (see roadmap §8).
@@ -21,6 +22,10 @@ from db_project_manager.application.deploy_service import (
     DeployValidateService,
 )
 from db_project_manager.application.graph_service import BuildGraphService
+from db_project_manager.application.safety_gate_service import (
+    SafetyGateError,
+    SafetyGateService,
+)
 from db_project_manager.application.reverse_engineer import (
     ReverseEngineerError,
     build_default_service,
@@ -38,8 +43,10 @@ from db_project_manager.infrastructure.logging_setup import configure as configu
 app = typer.Typer(no_args_is_help=True, add_completion=False, help="DB Project Manager CLI.")
 graph_app = typer.Typer(no_args_is_help=True, help="Граф зависимостей кодовой базы.")
 deploy_app = typer.Typer(no_args_is_help=True, help="Деплой кодовой базы в базу данных.")
+compare_app = typer.Typer(no_args_is_help=True, help="Сравнение состояния БД и кодовой базы.")
 app.add_typer(graph_app, name="graph")
 app.add_typer(deploy_app, name="deploy")
+app.add_typer(compare_app, name="compare")
 
 
 @app.callback()
@@ -233,6 +240,126 @@ def graph_validate(
     typer.secho("✓ Граф валиден: циклов и висячих ссылок нет.", fg=typer.colors.GREEN)
 
 
+# --- compare subapp (Phase 9) ---
+
+
+def _resolve_side(
+    label: str,
+    dir_opt: Path | None,
+    conn_opt: Path | None,
+) -> object:
+    """Resolve a comparison side into a SideSpec (DIR or DB).
+
+    Exactly one of ``dir_opt`` / ``conn_opt`` must be set; otherwise exit code 2.
+    Returns a :class:`SideSpec` (DB side carries a loaded ConnectionConfig).
+    """
+    from db_project_manager.application.compare_service import SideSpec
+    from db_project_manager.domain.diff import SnapshotSourceKind
+
+    if dir_opt is not None and conn_opt is not None:
+        typer.secho(
+            f"Укажите ровно один из --{label}-dir / --{label}-connection-file (не оба).",
+            fg=typer.colors.RED, err=True,
+        )
+        raise typer.Exit(code=2)
+    if dir_opt is None and conn_opt is None:
+        typer.secho(
+            f"Укажите один из --{label}-dir или --{label}-connection-file.",
+            fg=typer.colors.RED, err=True,
+        )
+        raise typer.Exit(code=2)
+
+    if dir_opt is not None:
+        if not dir_opt.is_dir():
+            typer.secho(f"Каталог не существует: {dir_opt}", fg=typer.colors.RED, err=True)
+            raise typer.Exit(code=2)
+        return SideSpec(SnapshotSourceKind.DIR, str(dir_opt))
+
+    # conn_opt is set — load the connection file.
+    conn_cfg = _load_connection(conn_opt)
+    return SideSpec(SnapshotSourceKind.DB, str(conn_opt), conn_cfg=conn_cfg)
+
+
+@compare_app.command("run")
+def compare_run(
+    output_dir: Annotated[Path, typer.Option("--output-dir", help="Каталог для отчётов сравнения.")],
+    source_dir: Annotated[Optional[Path], typer.Option("--source-dir", help="Каталог reverse-engineer (source).")] = None,
+    source_connection_file: Annotated[
+        Optional[Path], typer.Option("--source-connection-file", help="Подключение к БД (source).")
+    ] = None,
+    target_dir: Annotated[Optional[Path], typer.Option("--target-dir", help="Каталог reverse-engineer (target).")] = None,
+    target_connection_file: Annotated[
+        Optional[Path], typer.Option("--target-connection-file", help="Подключение к БД (target).")
+    ] = None,
+    keep_model_dir: Annotated[
+        bool, typer.Option("--keep-model-dir", help="Сохранить временный каталог reverse-engineer.")
+    ] = False,
+    config: Annotated[Optional[Path], typer.Option("--config", help="Путь к config.yaml.")] = None,
+) -> None:
+    """Сравнить два состояния (БД или каталог reverse-engineer) и записать отчёт."""
+    from db_project_manager.application.compare_service import CompareError, CompareService
+
+    load_cfg(config if config is not None else None)
+    configure_logging()
+
+    src = _resolve_side("source", source_dir, source_connection_file)
+    tgt = _resolve_side("target", target_dir, target_connection_file)
+
+    service = CompareService()
+
+    def progress(message: str, current: int, total: int) -> None:
+        if total:
+            typer.echo(f"[{current}/{total}] {message}")
+        else:
+            typer.echo(message)
+
+    try:
+        result = service.run(
+            src, tgt, output_dir, keep_model_dir=keep_model_dir, progress=progress
+        )
+    except CompareError as e:
+        typer.secho(f"✗ {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from e
+
+    typer.secho(f"✓ Отчёт сравнения: {result}", fg=typer.colors.GREEN)
+
+
+@compare_app.command("report")
+def compare_report(
+    from_path: Annotated[Path, typer.Option("--from", help="Путь к diff_report.json.")],
+    output: Annotated[
+        Optional[Path],
+        typer.Option("--output", "-o", help="Куда писать diff_report.md. По умолчанию рядом с --from."),
+    ] = None,
+) -> None:
+    """Сгенерировать markdown-отчёт из готового diff_report.json (офлайн, Phase 14).
+
+    Читает уже существующий ``diff_report.json`` (результат ``db-pm compare run``) и
+    пишет читаемый ``diff_report.md`` рядом. Не подключается к БД и не выполняет
+    повторное сравнение — работает офлайн.
+    """
+    from pydantic import ValidationError
+
+    from db_project_manager.infrastructure.diff.markdown_report import write_diff_markdown
+
+    configure_logging()
+
+    if not from_path.is_file():
+        typer.secho(f"Файл не найден: {from_path}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
+
+    try:
+        result = write_diff_markdown(from_path, output)
+    except ValidationError as e:
+        typer.secho(f"Не удалось разобрать diff_report.json: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from e
+    except Exception as e:  # noqa: BLE001 — surface any I/O / parse failure as exit 2
+        typer.secho(f"Ошибка генерации отчёта: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from e
+
+    typer.secho(f"✓ Markdown-отчёт: {result}", fg=typer.colors.GREEN)
+
+
 # --- deploy subapp ---
 
 
@@ -298,6 +425,74 @@ def deploy_validate(
             err=True,
         )
         raise typer.Exit(code=1)
+
+
+@deploy_app.command("analyze")
+def deploy_analyze(
+    directory: Annotated[Path, typer.Option("--dir", help="Codebase root to analyze.")],
+    target_connection_file: Annotated[
+        Path,
+        typer.Option(
+            "--target-connection-file",
+            help="Connection YAML of the EXISTING target DB (must hold data).",
+        ),
+    ],
+    output_dir: Annotated[
+        Path,
+        typer.Option("--output-dir", help="Where to write safety_gate_report.{md,json}."),
+    ],
+    config: Annotated[Optional[Path], typer.Option("--config", help="Path to config.yaml.")] = None,
+) -> None:
+    """Safety gate (dry-run): analyze codebase vs the EXISTING target DB. Read-only.
+
+    Compares the codebase against the live target database, estimates data
+    presence for touched tables and matches them with pre-script coverage
+    (project.covers). Nothing is applied to the target.
+
+    Exit codes: 0 — clean; 1 — safety-gate violations; 2 — hard error.
+    """
+    cfg = load_cfg(config if config is not None else None)
+    configure_logging(level=cfg.logging.level, console=True, logs_dir=cfg.paths.logs_dir)
+    conn_cfg = _load_connection(target_connection_file)
+
+    service = SafetyGateService(service_schema=cfg.deploy.service_schema)
+
+    def progress(message: str, current: int, total: int) -> None:
+        if total:
+            typer.echo(f"[{current}/{total}] {message}")
+        else:
+            typer.echo(message)
+
+    try:
+        verdict = service.analyze(directory, conn_cfg, output_dir, progress=progress)
+    except SafetyGateError as e:
+        typer.secho(f"✗ Safety gate: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from e
+
+    md_path = output_dir / "safety_gate_report.md"
+    if verdict.clean:
+        typer.secho(
+            f"✓ Safety gate: CLEAN (тронутых таблиц: {len(verdict.touched)}). "
+            f"Отчёт: {md_path}",
+            fg=typer.colors.GREEN,
+        )
+        return
+
+    typer.secho(
+        f"✗ Safety gate: VIOLATIONS ({len(verdict.violations)}) — пайплайн остановлен "
+        f"(CD-9). Тронутых таблиц: {len(verdict.touched)}. Отчёт: {md_path}",
+        fg=typer.colors.RED,
+        err=True,
+    )
+    for violation in verdict.violations:
+        typer.secho(
+            f"  ! {violation.object_schema}.{violation.name} "
+            f"[{violation.touch.value}, ~{violation.estimated_rows} строк] — "
+            f"нет покрывающего pre-скрипта",
+            fg=typer.colors.RED,
+            err=True,
+        )
+    raise typer.Exit(code=1)
 
 
 if __name__ == "__main__":
