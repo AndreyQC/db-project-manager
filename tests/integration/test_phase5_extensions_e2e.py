@@ -47,7 +47,9 @@ def test_extensions_and_overloads_roundtrip(pg_conn_cfg, tmp_path: Path) -> None
 
     # --- Setup: create extensions and overloaded functions in the source DB ---
     adapter._connection.execute(text("CREATE EXTENSION IF NOT EXISTS citext;"))
-    adapter._connection.execute(text("CREATE EXTENSION IF NOT EXISTS uuid-ossp;"))
+    # Extension names with a dash MUST be quoted — unquoted 'uuid-ossp' parses
+    # as uuid - ossp (syntax error). PG docs: CREATE EXTENSION "uuid-ossp".
+    adapter._connection.execute(text('CREATE EXTENSION IF NOT EXISTS "uuid-ossp";'))
     adapter._connection.execute(text("SET work_mem = '64MB';"))
     adapter._connection.execute(text(
         "CREATE OR REPLACE FUNCTION public.f(int) RETURNS int LANGUAGE sql AS 'SELECT $1 * 2';"
@@ -86,12 +88,15 @@ def test_extensions_and_overloads_roundtrip(pg_conn_cfg, tmp_path: Path) -> None
 
         # --- Graph build ---
         svc = BuildGraphService()
-        graph = svc.build(out, build_only=True)
+        graph = svc.build(out)
 
         # Both overloads must be present (Phase 4 fix: silent overwrite).
+        # Vertex key format: pg_database/<db>/schema/public/type/function/
+        # name/f/signature/<hash> — match on the name segment, not on a
+        # human-readable 'function public.f' substring.
         overload_keys = [
             k for k in graph.vertices
-            if "function public.f" in k and "/signature/" in k
+            if "/function/name/f/" in k and "/signature/" in k
         ]
         assert len(overload_keys) == 2, (
             f"Expected 2 overloads of f(int)/f(text), got {len(overload_keys)}: {overload_keys}"
@@ -152,9 +157,16 @@ def test_extensions_and_overloads_roundtrip(pg_conn_cfg, tmp_path: Path) -> None
         # We must reconnect first: after the check.disconnect() above the adapter
         # is disconnected and drop_database requires a connection.
         adapter.connect(pg_conn_cfg)
-        for name in ("public.people", "public.f", "public.f"):
+        # Table first (FK/DEFAULT-free, but keeps order obvious), then the two
+        # overloads — DROP FUNCTION requires the exact argument list.
+        drops = (
+            "DROP TABLE IF EXISTS public.people CASCADE",
+            "DROP FUNCTION IF EXISTS public.f(int)",
+            "DROP FUNCTION IF EXISTS public.f(text)",
+        )
+        for stmt in drops:
             try:
-                adapter._connection.execute(text(f"DROP TABLE IF EXISTS {name} CASCADE"))
+                adapter._connection.execute(text(stmt))
             except Exception:
                 pass
         adapter.disconnect()
