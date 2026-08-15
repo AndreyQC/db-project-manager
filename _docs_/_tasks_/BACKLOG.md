@@ -344,3 +344,28 @@ Deploy затем падает: `psycopg2.ProgrammingError: can't execute an emp
 **Триггер:** любой integration-прогон RE→deploy на «чистой» PG (10 упавших
 интеграционных тестов при закрытии Phase 11 уже починены фикстурой `8ed60ab`;
 эти 2 — отдельная корневая причина).
+
+**Статус:** выполнено (2026-08-15). При разборе вскрылись **три** независимые
+причины, а не одна гипотеза выше:
+
+1. **Comment-only скрипт (гипотеза подтвердилась).** `_get_database_properties`
+   всегда непуст (encoding/lc_collate/lc_ctype), поэтому `database settings.sql`
+   эмитится даже при пустых settings — body = только комментарии → empty query.
+   Вариант (b) отвергнут: autodoc-заголовок файла несёт `db_properties` для
+   `CREATE DATABASE` temp-БД. Реализован вариант (a): новый
+   `infrastructure/sql/sql_text.py::has_executable_sql` (учёт `'…'`, `"…"`,
+   `$$…$$`, `--`, `/* */` — false «пусто» тихо пропустил бы исполняемый SQL);
+   `_deploy_object` пропускает comment-only с логом, вершина остаётся в графе.
+   Регрессия: `test_deploy_service.py::test_comment_only_script_is_skipped_not_failed`.
+2. **Баг сетапа `test_phase5_extensions_e2e`:** `CREATE EXTENSION IF NOT EXISTS
+   uuid-ossp` без кавычек — имя с дефисом парсится как `uuid - ossp` (SyntaxError);
+   тест не доходил до деплоя. Плюс два латентных бага того же теста: устаревший
+   `build_only=True` (API-дрейф `BuildGraphService.build`) и фильтр ключей
+   `"function public.f"` вместо актуального формата `/function/name/f/`.
+3. **Межтестовая контаминация:** общая БД `postgres` контейнера накапливала
+   объекты от предыдущих тестов → order-dependent падение qualify-теста на
+   `_validate_deploy_presence`. Фикстура `pg_conn_cfg` теперь создаёт чистую
+   пер-тестовую БД (`dbpm_it_<hex>`) и удаляет её в teardown.
+
+**Проверки:** `uv run pytest -m integration` — 16 passed (было 14 passed /
+2 failed); unit — 700 passed; ruff — чисто.
