@@ -43,6 +43,7 @@ from db_project_manager.infrastructure.deploy.canonical_ddl import (
     validate_deploy_ddl,
 )
 from db_project_manager.infrastructure.sql.autodoc import strip_autodoc
+from db_project_manager.infrastructure.sql.sql_text import has_executable_sql
 
 #: Object types considered early DDL: structural, downstream of any failure
 #: here makes further deploy meaningless -> fail-fast + cleanup.
@@ -391,6 +392,16 @@ class DeployValidateService:
             script = script.replace(
                 f'"{vertex.object_catalog}"', f'"{target_db_name}"'
             )
+        # BACKLOG P1: a script may be comments-only (e.g. database_setting of
+        # a DB without explicit db-level settings — properties live in the
+        # autodoc header, the body has no ALTERs). PostgreSQL rejects an empty
+        # statement list, so skip; the vertex itself stays valid in the graph.
+        if not has_executable_sql(script):
+            logger.info(
+                f"Пропуск {vertex.object_type} '{vertex.object_name}': "
+                f"исполняемого SQL нет (только комментарии)."
+            )
+            return
         adapter.execute_script(script)
 
     @staticmethod

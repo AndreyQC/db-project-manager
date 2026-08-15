@@ -358,6 +358,55 @@ def test_database_setting_script_db_name_replaced_in_deploy(tmp_path: Path) -> N
     assert result.objects_total == 19
 
 
+def test_comment_only_script_is_skipped_not_failed(tmp_path: Path) -> None:
+    """BACKLOG P1: RE of a DB without explicit db-level settings emits
+    'settings/database settings.sql' whose body is the comment banner only
+    (CREATE DATABASE properties live in the autodoc header). Deploy must skip
+    the execution instead of failing with 'can't execute an empty query'."""
+    import shutil
+
+    from db_project_manager.infrastructure.sql.sql_text import has_executable_sql
+
+    dst = tmp_path / "codebase"
+    shutil.copytree(FIXTURE_ROOT, dst)
+    # Rewrite the settings file the way real RE renders it on a clean PG:
+    # autodoc header kept, body = comments only (no ALTER statements).
+    settings = dst / "settings" / "database settings.sql"
+    text = settings.read_text(encoding="utf-8")
+    header = text[: text.index("-- Параметры уровня базы")]
+    settings.write_text(
+        header + "-- Параметры уровня базы (ALTER DATABASE ... SET).\n",
+        encoding="utf-8",
+    )
+
+    class RecordingAdapter(DeployFakeAdapter):
+        """Records raw script bodies reaching execute_script."""
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.scripts: list[str] = []
+
+        def execute_script(self, script: str) -> None:
+            self.scripts.append(script)
+            super().execute_script(script)
+
+    adapter = RecordingAdapter()
+    svc = DeployValidateService(adapter_factory=lambda _cfg: adapter)
+    result = svc.run(_conn(), dst)
+
+    # Deploy succeeds; the comment-only vertex still counts (graph unchanged).
+    assert result.success is True
+    assert result.objects_total == 19
+    assert result.objects_done == result.objects_total
+    # db_properties from the comment-only file's header still reach
+    # create_database — skipping execution does not drop the vertex.
+    props = adapter._db_properties[adapter.created_dbs[0]]
+    assert props.get("encoding") == "UTF8"
+    # Every script actually executed has executable SQL.
+    assert adapter.scripts
+    assert all(has_executable_sql(s) for s in adapter.scripts)
+
+
 # ------------------------------------------- Phase 10 S8: __deploy integration
 
 
