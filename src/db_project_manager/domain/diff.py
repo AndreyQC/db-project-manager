@@ -20,6 +20,8 @@ from enum import Enum
 
 from pydantic import BaseModel, ConfigDict
 
+from db_project_manager.domain.delta import ColumnDiff, ColumnSnapshot
+
 
 class SnapshotSourceKind(str, Enum):
     """What a comparison side is backed by.
@@ -79,6 +81,10 @@ class ObjectSnapshot(BaseModel):
     sql_normalized: str       # sqlglot-normalized SQL body (audit/debug)
     sql_hash: str             # 8 hex SHA-256 of sql_normalized
     estimated_rows: int | None = None  # tables only (reltuples); None otherwise
+    # Phase 12 (ALT-1b): columns extracted from the SQL body at snapshot-build time.
+    # None = not extracted (non-table object, unparseable DDL) → structural diff
+    # unavailable → fail-safe downstream; [] = extracted, the table has no columns.
+    columns: list[ColumnSnapshot] | None = None
 
 
 class StateSnapshot(BaseModel):
@@ -115,6 +121,13 @@ class DiffEntry(BaseModel):
     status: DiffStatus
     source_snapshot: ObjectSnapshot | None = None
     target_snapshot: ObjectSnapshot | None = None
+    # Phase 12 (CD-ALT-1): column-level detail for CHANGED tables — filled by the
+    # comparator when both sides carry extracted columns. Additive defaults keep old
+    # reports parsing.
+    column_diffs: list[ColumnDiff] = []
+    # True = at least one side has columns=None → structural diff impossible for this
+    # entry; the classifier must treat any change as unrepresented (fail-safe, ALT-2).
+    columns_unavailable: bool = False
 
 
 class EdgeSnapshot(BaseModel):
