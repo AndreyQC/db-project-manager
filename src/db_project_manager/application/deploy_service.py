@@ -360,10 +360,19 @@ class DeployValidateService:
         bookkeeping tables the pre/post runner writes to (script_history /
         script_audit_log) and the version row (schema_version). Reverse-
         engineer seeds it (S6); a codebase missing it has not been through RE.
+
+        File names differ by origin: RE *seeding* writes canonical unprefixed
+        names (``schema_version.sql``), while the generator rendering a DB that
+        already had __deploy emits prefixed ones (``table schema_version.sql``).
+        Both spellings are accepted (found by the Phase 12 rehearsal flow).
         """
         tables_dir = codebase_dir / service_schema / "tables"
-        required = ("schema_version.sql", "script_history.sql", "script_audit_log.sql")
-        missing = [name for name in required if not (tables_dir / name).is_file()]
+        missing = [
+            name
+            for name in ("schema_version.sql", "script_history.sql", "script_audit_log.sql")
+            if not (tables_dir / name).is_file()
+            and not (tables_dir / f"table {name}").is_file()
+        ]
         if missing:
             raise DeployError(
                 f"Кодовая база не содержит служебную схему '{service_schema}' "

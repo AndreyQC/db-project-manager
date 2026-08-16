@@ -504,3 +504,31 @@ def test_deploy_pre_script_failure_aborts(tmp_path: Path) -> None:
         svc.run(_conn(), dst)
     # Cleanup still happened.
     assert adapter.dropped_dbs
+
+
+def test_validate_deploy_presence_accepts_prefixed_service_tables(tmp_path):
+    """Phase 12 rehearsal finding: RE rendering a DB that already had __deploy
+    emits `table schema_version.sql` (prefixed), while seeding writes unprefixed
+    canonical names — the presence check must accept both spellings."""
+    from db_project_manager.application.deploy_service import DeployError, DeployValidateService
+
+    service = DeployValidateService()
+    tables_dir = tmp_path / "__deploy" / "tables"
+    tables_dir.mkdir(parents=True)
+    for name in ("schema_version.sql", "script_history.sql", "script_audit_log.sql"):
+        (tables_dir / f"table {name}").write_text("-- canonical-ish\n", encoding="utf-8")
+
+    # Prefixed-only spelling must pass (previously raised DeployError).
+    service._validate_deploy_presence(tmp_path, "__deploy")
+
+    # Mixed spelling passes too.
+    (tables_dir / "table schema_version.sql").unlink()
+    (tables_dir / "schema_version.sql").write_text("-- seeded\n", encoding="utf-8")
+    service._validate_deploy_presence(tmp_path, "__deploy")
+
+    # Truly missing file still fails (remove both spellings).
+    (tables_dir / "table script_history.sql").unlink()
+    import pytest
+
+    with pytest.raises(DeployError, match="script_history"):
+        service._validate_deploy_presence(tmp_path, "__deploy")
