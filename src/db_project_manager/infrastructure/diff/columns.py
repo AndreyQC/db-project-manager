@@ -95,11 +95,20 @@ def extract_columns(body: str, *, dialect: str = DEFAULT_DIALECT) -> list[Column
 
 
 def _has_not_null(column_def: exp.ColumnDef) -> bool:
-    """True iff the column has an inline NOT NULL constraint."""
-    return any(
-        isinstance(constraint.kind, exp.NotNullColumnConstraint)
-        for constraint in column_def.constraints or []
-    )
+    """True iff the column has a real inline NOT NULL constraint.
+
+    Careful: sqlglot renders an explicit ``NULL`` marker (RE writes
+    ``"col" text NULL`` for nullable columns) as
+    ``NotNullColumnConstraint(allow_null=True)`` — the opposite of NOT NULL.
+    Only ``allow_null`` falsy constraints count (LESSONS §44: verify the
+    actual sqlglot semantics, don't assume from the class name).
+    """
+    for constraint in column_def.constraints or []:
+        kind = constraint.kind
+        if isinstance(kind, exp.NotNullColumnConstraint):
+            if not kind.args.get("allow_null", False):
+                return True
+    return False
 
 
 def _default_expression(column_def: exp.ColumnDef, *, dialect: str) -> str | None:

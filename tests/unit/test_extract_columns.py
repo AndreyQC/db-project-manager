@@ -149,6 +149,18 @@ def test_column_without_type_returns_none() -> None:
 # ---------------------------------------------------- inline table constraints
 
 
+def test_explicit_null_marker_means_nullable() -> None:
+    """RE renders `"col" text NULL` for nullable columns; sqlglot models the
+    explicit NULL as NotNullColumnConstraint(allow_null=True) — must NOT be
+    treated as NOT NULL (found in S8 integration, LESSONS §44)."""
+    ddl = 'CREATE TABLE "app"."orders" (\n    "id" int4 NOT NULL,\n    "note" text NULL\n);'
+    cols = _extract(ddl)
+    assert cols is not None
+    by_name = {c.name: c for c in cols}
+    assert by_name["id"].nullable is False
+    assert by_name["note"].nullable is True
+
+
 def test_inline_constraints_do_not_become_columns() -> None:
     ddl = """
     CREATE TABLE app.items (
