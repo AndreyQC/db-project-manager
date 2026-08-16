@@ -125,17 +125,43 @@ class AdapterFactory:
 
 
 class StubGate:
-    """Gate stub: records the databases it analyzed; returns a fixed verdict."""
+    """Gate stub: records analyzed DBs; returns a verdict, optionally violating.
 
-    def __init__(self, *, clean: bool = True) -> None:
+    When *report* is set, the stub also writes diff_report.json like the real
+    gate does — that's what the residual-violation downgrade reads.
+    """
+
+    def __init__(self, *, clean: bool = True, report: dict | None = None) -> None:
         self.clean = clean
+        self.report = report
         self.databases: list[str] = []
 
     def analyze(self, codebase_dir, target_cfg, output_dir, progress=None):
+        from db_project_manager.application.compare_service import DIFF_REPORT_FILENAME
+        from db_project_manager.domain.safety import (
+            DataPresence,
+            StatsConfidence,
+            TableTouchKind,
+            TouchedTable,
+        )
+
         self.databases.append(target_cfg.database)
+        if self.report is not None:
+            out = Path(output_dir)
+            out.mkdir(parents=True, exist_ok=True)
+            (out / DIFF_REPORT_FILENAME).write_text(
+                json.dumps(self.report, ensure_ascii=False), encoding="utf-8"
+            )
+        touched = [] if self.clean else [
+            TouchedTable(
+                object_schema="app", name="orders", touch=TableTouchKind.CHANGED,
+                estimated_rows=100, confidence=StatsConfidence.FRESH,
+                presence=DataPresence.HAS_DATA, covered_by=[],
+            )
+        ]
         return SafetyGateVerdict(
             clean=self.clean, db_type="postgres",
-            source_version=SOURCE_VERSION, target_version=None, touched=[],
+            source_version=SOURCE_VERSION, target_version=None, touched=touched,
         )
 
 
@@ -323,6 +349,7 @@ def test_apply_success_order_pre_delta_post_version(tmp_path: Path) -> None:
 
 
 def test_gate_violation_stops_before_pre(tmp_path: Path) -> None:
+    """Violating gate without a readable diff report → conservative rejection."""
     codebase = _make_codebase(tmp_path, pre="SELECT 1;\n", seed="SELECT 1;\n")
     factory = AdapterFactory()
     service = _service(factory, gate=StubGate(clean=False))
@@ -330,6 +357,36 @@ def test_gate_violation_stops_before_pre(tmp_path: Path) -> None:
         service.apply(codebase, _conn(), tmp_path / "out", rehearsal=False)
     assert "record_script" not in factory.kinds
     assert "execute_script" not in factory.kinds
+
+
+def test_gate_violation_downgraded_for_safe_delta(tmp_path: Path) -> None:
+    """Gate flags the data table, but its diff classifies SAFE (ALT-3) → proceed."""
+    codebase = _make_codebase(tmp_path)
+    factory = AdapterFactory()
+    gate = StubGate(clean=False, report=_added_note_report(kind="added"))
+    service = _service(factory, gate=gate)
+    result = service.apply(codebase, _conn(), tmp_path / "out", rehearsal=False)
+    assert result.applied >= 1  # the safe alter went through
+    delta_execs = [
+        c for c in factory.calls
+        if c[0] == "execute_script" and 'ALTER TABLE "app"."orders"' in c[2]
+    ]
+    assert delta_execs
+
+
+def test_gate_violation_kept_for_unsafe_delta(tmp_path: Path) -> None:
+    """Gate flags the table AND its diff is a drop → rejection stands."""
+    codebase = _make_codebase(tmp_path)
+    factory = AdapterFactory()
+    gate = StubGate(clean=False, report=_added_note_report(kind="dropped"))
+    service = _service(factory, gate=gate)
+    with pytest.raises(DeployApplyRejected, match="safety-gate"):
+        service.apply(codebase, _conn(), tmp_path / "out", rehearsal=False)
+    delta_execs = [
+        c for c in factory.calls
+        if c[0] == "execute_script" and "ALTER TABLE" in c[2]
+    ]
+    assert delta_execs == []
 
 
 def test_cd11_residual_unsafe_rejects(tmp_path: Path) -> None:

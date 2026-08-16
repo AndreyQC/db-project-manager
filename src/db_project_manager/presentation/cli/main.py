@@ -559,6 +559,14 @@ def deploy_plan(
         raise typer.Exit(code=2) from e
 
     md_path = output_dir / "plan.md"
+    if plan.violations:
+        typer.secho(
+            f"! План содержит BLOCKED-операции ({len(plan.violations)}) — деплой "
+            "невозможен без pre-скриптов/решений. Отчёт: " + str(md_path),
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=1)
     typer.secho(
         f"✓ План готов: операций {len(plan.operations)} "
         f"(safe: {len(plan.safe_ops)}, needs-pre: {len(plan.needs_pre_ops)}, "

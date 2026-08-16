@@ -234,3 +234,29 @@ def test_apply_without_rehearsal_note(monkeypatch, tmp_path) -> None:
     )
     assert result.exit_code == 0
     assert "без репетиции" in result.output
+
+
+def test_plan_with_blocked_ops_exits_one(monkeypatch, tmp_path) -> None:
+    """A plan that documents BLOCKED operations is written, but signals CI (exit 1)."""
+    from db_project_manager.domain.delta import (
+        OperationClass,
+        PlannedOperation,
+    )
+
+    orig_init = _StubService.__init__
+
+    def _init(self, service_schema="__deploy"):  # noqa: ANN001
+        orig_init(self, service_schema)
+        self.plan_result = DeltaPlan(
+            db_type="postgres",
+            operations=[PlannedOperation(
+                object_key="k", object_type="table", object_schema="app",
+                object_name="orders", action="alter",
+                classification=OperationClass.BLOCKED, reason="нет pre-скрипта",
+            )],
+        )
+
+    monkeypatch.setattr(_StubService, "__init__", _init)
+    result = _invoke_plan(monkeypatch, tmp_path)
+    assert result.exit_code == 1
+    assert "BLOCKED" in (result.stderr or "") or "BLOCKED" in result.output

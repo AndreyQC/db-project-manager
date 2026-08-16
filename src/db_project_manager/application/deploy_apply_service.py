@@ -62,10 +62,12 @@ from db_project_manager.application.script_runner import (
 )
 from db_project_manager.domain.connection import ConnectionConfig
 from db_project_manager.domain.delta import DeltaPlan, OperationClass
-from db_project_manager.domain.diff import DiffReport, SnapshotSourceKind
+from db_project_manager.domain.diff import DiffReport, DiffStatus, SnapshotSourceKind
 from db_project_manager.domain.safety import (
+    DataPresence,
     TablePresenceStats,
     check_version_relation,
+    classify_presence,
 )
 from db_project_manager.infrastructure.config.codebase_manifest import (
     ManifestError,
@@ -73,6 +75,7 @@ from db_project_manager.infrastructure.config.codebase_manifest import (
 )
 from db_project_manager.infrastructure.database.base import DatabaseAdapter, DatabaseError
 from db_project_manager.infrastructure.database.registry import get_adapter
+from db_project_manager.infrastructure.deploy.alter_plan import classify
 from db_project_manager.infrastructure.deploy.canonical_ddl import DEFAULT_SERVICE_SCHEMA
 from db_project_manager.infrastructure.deploy.pre_coverage import read_pre_coverage
 from db_project_manager.infrastructure.sql.autodoc import strip_autodoc
@@ -80,6 +83,9 @@ from db_project_manager.infrastructure.sql.autodoc import strip_autodoc
 SEED_DIR_NAME = "__migrations/seed"
 REHEARSAL_DIR_NAME = "rehearsal"
 REHEARSAL_PREFIX = "dbpm_rehearsal"
+
+#: Diff statuses that make a table "touched" (mirrors the safety gate).
+_TOUCHED_STATUSES = (DiffStatus.CHANGED, DiffStatus.REMOVED)
 
 
 class DeployApplyError(Exception):
@@ -369,14 +375,24 @@ class DeployApplyService:
                 verdict = gate.analyze(codebase_dir, conn_cfg, output_dir, progress=progress)
             except SafetyGateError as e:
                 raise DeployApplyError(str(e)) from e
-            if not verdict.clean:
-                raise DeployApplyRejected(
-                    "safety-gate: непокрытые таблицы с данными "
-                    f"({len(verdict.violations)}): "
-                    + "; ".join(
-                        f"{t.object_schema}.{t.name}" for t in verdict.violations
-                    )
+            if verdict.violations:
+                residual = self._gate_residual_violations(
+                    verdict, adapter, codebase_dir, output_dir
                 )
+                if residual and execute:
+                    raise DeployApplyRejected(
+                        "safety-gate: непокрытые таблицы с данными, дельта по ним "
+                        "не классифицируется как safe "
+                        f"({len(residual)}): "
+                        + "; ".join(f"{t.object_schema}.{t.name}" for t in residual)
+                    )
+                if residual:
+                    # Plan mode: the violations are the point of the review —
+                    # they surface as BLOCKED operations in plan.md instead.
+                    logger.info(
+                        "plan: gate-нарушения попадут в план как BLOCKED-операции "
+                        f"({len(residual)})."
+                    )
 
             if execute and manifest.source_version:
                 self._emit(progress, "Выполнение pre-скриптов…", 0, 0)
@@ -476,6 +492,67 @@ class DeployApplyService:
             adapter.disconnect()
 
     # ---------------------------------------------------------------- helpers
+
+    def _gate_residual_violations(
+        self, verdict, adapter: DatabaseAdapter, codebase_dir: Path, output_dir: Path
+    ) -> list:
+        """Gate violations that survive the Phase 12 column-level classification.
+
+        The Phase 11 gate is table-level (any touched data table without a
+        covering pre-script is a violation); ALT-3 additionally allows SAFE
+        column changes (e.g. ADD COLUMN nullable) on data tables. This method
+        re-classifies each gate violation against the gate's own diff report
+        (already written to *output_dir*) and keeps only the tables whose delta
+        is genuinely non-safe. A missing/unreadable report is conservative:
+        every violation stays.
+        """
+        try:
+            report = DiffReport.model_validate_json(
+                (output_dir / DIFF_REPORT_FILENAME).read_text(encoding="utf-8")
+            )
+        except (OSError, ValueError) as e:
+            logger.warning(
+                f"Не удалось перечитать отчёт gate для классификации ({e}) — "
+                "все gate-нарушения считаются действующими (fail-safe)."
+            )
+            return list(verdict.violations)
+
+        stats = self._presence_lookup(adapter)
+        coverage = read_pre_coverage(codebase_dir / "__migrations")
+
+        residual = []
+        for violation in verdict.violations:
+            key = (violation.object_schema, violation.name)
+            entry = next(
+                (
+                    e for e in report.entries
+                    if e.status in _TOUCHED_STATUSES
+                    and (snap := e.source_snapshot or e.target_snapshot) is not None
+                    and snap.object_type == "table"
+                    and (snap.object_schema, snap.object_name) == key
+                ),
+                None,
+            )
+            if entry is None:
+                residual.append(violation)
+                continue
+            table_stats = stats.get(key)
+            presence = (
+                classify_presence(table_stats) if table_stats is not None
+                else DataPresence.UNKNOWN
+            )
+            op = classify(
+                entry, presence, bool(coverage.get(key, [])),
+                include_drops=False,
+            )
+            if op.classification is OperationClass.SAFE:
+                logger.info(
+                    f"gate: {key[0]}.{key[1]} тронута с данными, но дельта safe "
+                    f"({op.reason}) — пропускаем gate-нарушение (ALT-3)."
+                )
+            else:
+                residual.append(violation)
+        return residual
 
     def _gate_service(self):
         """Lazily build the real gate unless a test injected a stub."""
