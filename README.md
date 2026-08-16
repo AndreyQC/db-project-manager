@@ -2,7 +2,7 @@
 
 Инструмент для работы со структурой баз данных (PostgreSQL/Greenplum; Snowflake/MSSQL/MySQL — в планах): чтение метаданных каталога, генерация дерева SQL-файлов (по одному на объект), построение графа зависимостей, валидация деплоя на пустую временную БД, и (в будущих фазах) миграции.
 
-> Статус: Phase 11 — Safety Gate готов: reverse-engineering, граф зависимостей, validation deploy, compare и dry-run анализ деплоя на существующую БД с данными (CLI + GUI). Real-target apply и ALTER — Phase 12.
+> Статус: Phase 12 — ALTER + Delta готов: reverse-engineering, граф зависимостей, validation deploy, compare, safety gate (deploy analyze) и controlled apply к существующей БД с репетицией (CLI). Post-deploy отчёты — Phase 13.
 
 ## Возможности
 
@@ -74,6 +74,30 @@ db-pm deploy analyze \
     --target-connection-file connections/prod.yaml \
     --output-dir ./sg_report
 # Отчёты: safety_gate_report.md, safety_gate_report.json + diff_report.json
+
+# Дельта деплоя на СУЩЕСТВУЮЩУЮ БД — Phase 12 (dry-run).
+# Column-level diff, классификация операций safe / needs-pre / blocked,
+# артефакты для review: delta/NNN_*.sql, plan.json, plan.md.
+# Exit codes: 0 — ok; 1 — BLOCKED-операции (нужны pre-скрипты/решения); 2 — ошибка.
+db-pm deploy plan \
+    --dir ./output/mydb \
+    --target-connection-file connections/prod.yaml \
+    --output-dir ./sg_report \
+    [--include-drops]
+
+# Применение дельты к СУЩЕСТВУЮЩУЮ БД (изменяет её!) — Phase 12.
+# По умолчанию: репетиция — состояние таргета воспроизводится в temp-БД,
+# прогоняется seed (__migrations/seed/ — только в репетиции) и весь пайплайн;
+# затем против таргета: pre-скрипты -> повторная дельта (CD-11, только SAFE)
+# -> применение с stop-on-error -> post-скрипты -> запись schema_version
+# (source='apply'). Восстановление после сбоя — повторным apply (дельта
+# пересчитывается, исполненные pre/post скипаются).
+# Флаги: --include-drops (REMOVED-объекты), --no-rehearsal (CI),
+# --keep-rehearsal-db (отладка).
+db-pm deploy apply \
+    --dir ./output/mydb \
+    --target-connection-file connections/prod.yaml \
+    --output-dir ./sg_report
 
 # Сравнение двух состояний (БД или каталог reverse-engineer) — Phase 9
 db-pm compare run \
