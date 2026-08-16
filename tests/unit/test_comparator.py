@@ -197,3 +197,26 @@ def test_backward_compat_state_without_edges_field():
     tgt = StateSnapshot.model_validate(raw_state)
     report = compare(src, tgt)
     assert report.edge_entries == []
+
+
+def test_compare_ignores_catalog_segment_in_object_key():
+    """Phase 12 rehearsal finding: the same object RE'd from differently-NAMED
+    databases must compare as unchanged — the DB name is environment-specific,
+    not identity (schema/type/name/signature is)."""
+    src_key = "pg_database/prod_db/schema/app/type/table/name/orders"
+    tgt_key = "pg_database/dbpm_rehearsal_x/schema/app/type/table/name/orders"
+    src = _state({src_key: _obj(src_key)})
+    tgt = _state({tgt_key: _obj(tgt_key)})
+    report = compare(src, tgt)
+    assert report.summary == {"added": 0, "removed": 0, "changed": 0, "unchanged": 1}
+    # entry carries the source-side (codebase) key — that's what the plan matches
+    assert report.entries[0].object_key == src_key
+
+
+def test_compare_catalog_insensitive_added_removed():
+    src = _state({"pg_database/dev_db/schema/app/type/table/name/new_t": _obj("k")})
+    tgt = _state({"pg_database/prod_db/schema/app/type/table/name/old_t": _obj("k")})
+    report = compare(src, tgt)
+    statuses = {e.object_key.rsplit("/", 1)[-1]: e.status for e in report.entries}
+    assert statuses["new_t"] is DiffStatus.ADDED
+    assert statuses["old_t"] is DiffStatus.REMOVED
