@@ -26,6 +26,7 @@ from db_project_manager.domain.diff import (
     EdgeDiffEntry,
     StateSnapshot,
 )
+from db_project_manager.infrastructure.diff.columns import diff_columns
 
 
 def compare(source: StateSnapshot, target: StateSnapshot) -> DiffReport:
@@ -73,11 +74,23 @@ def compare(source: StateSnapshot, target: StateSnapshot) -> DiffReport:
             ))
         else:
             changed += 1
+            # Phase 12 (CD-ALT-1): a CHANGED table carries its column-level diff when
+            # both sides have extracted columns; if either side is unavailable (None),
+            # mark it so the classifier can fall back to the fail-safe path (ALT-2).
+            column_diffs: list = []
+            columns_unavailable = False
+            if src_obj.object_type == "table":
+                if src_obj.columns is None or tgt_obj.columns is None:
+                    columns_unavailable = True
+                else:
+                    column_diffs = diff_columns(src_obj.columns, tgt_obj.columns)
             entries.append(DiffEntry(
                 object_key=key,
                 status=DiffStatus.CHANGED,
                 source_snapshot=src_obj,
                 target_snapshot=tgt_obj,
+                column_diffs=column_diffs,
+                columns_unavailable=columns_unavailable,
             ))
 
     summary = {

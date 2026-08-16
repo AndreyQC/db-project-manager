@@ -32,7 +32,7 @@ from __future__ import annotations
 import sqlglot
 from sqlglot import exp
 
-from db_project_manager.domain.delta import ColumnSnapshot
+from db_project_manager.domain.delta import ColumnChangeKind, ColumnDiff, ColumnSnapshot
 from db_project_manager.infrastructure.diff.normalize_sql import DEFAULT_DIALECT
 
 #: Type synonyms sqlglot does NOT collapse on its own (base name, before modifiers).
@@ -111,3 +111,86 @@ def _default_expression(column_def: exp.ColumnDef, *, dialect: str) -> str | Non
                 return None
             return expression.sql(dialect=dialect)
     return None
+
+
+# ------------------------------------------------------------- column diffing
+
+
+def _canonical_default(default: str | None) -> str | None:
+    """Whitespace-free form of a default expression, for comparison purposes.
+
+    Whitespace outside single-quoted literals is dropped entirely (``a + b`` ==
+    ``a+b``); whitespace inside literals is preserved (``'a b'`` != ``'ab'``);
+    doubled single quotes inside a literal are passed through.
+    """
+    if default is None:
+        return None
+    out: list[str] = []
+    in_quote = False
+    i = 0
+    while i < len(default):
+        ch = default[i]
+        if ch == "'":
+            if in_quote and i + 1 < len(default) and default[i + 1] == "'":
+                out.append("''")
+                i += 2
+                continue
+            in_quote = not in_quote
+            out.append(ch)
+        elif ch.isspace() and not in_quote:
+            pass
+        else:
+            out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def diff_columns(
+    source: list[ColumnSnapshot], target: list[ColumnSnapshot]
+) -> list[ColumnDiff]:
+    """Column-level diff of two extracted column lists (CD-ALT-1).
+
+    Direction is relative to *source* (the codebase side): ADDED = in source only,
+    DROPPED = in target only. A column present on both sides may yield several diffs
+    (e.g. TYPE_CHANGED + NULLABILITY_CHANGED). Column renames are NOT detected — a
+    rename manifests as DROPPED + ADDED (ALT-3, deliberate: guessing is unsafe).
+
+    The result is sorted by column name, then by kind value, for determinism.
+    """
+    src_by_name = {c.name: c for c in source}
+    tgt_by_name = {c.name: c for c in target}
+
+    diffs: list[ColumnDiff] = []
+    for name in sorted(set(src_by_name) | set(tgt_by_name)):
+        src_col = src_by_name.get(name)
+        tgt_col = tgt_by_name.get(name)
+        if src_col is None:
+            assert tgt_col is not None
+            diffs.append(ColumnDiff(
+                column=name, kind=ColumnChangeKind.DROPPED,
+                source_column=None, target_column=tgt_col,
+            ))
+            continue
+        if tgt_col is None:
+            diffs.append(ColumnDiff(
+                column=name, kind=ColumnChangeKind.ADDED,
+                source_column=src_col, target_column=None,
+            ))
+            continue
+        if src_col.type != tgt_col.type:
+            diffs.append(ColumnDiff(
+                column=name, kind=ColumnChangeKind.TYPE_CHANGED,
+                source_column=src_col, target_column=tgt_col,
+            ))
+        if src_col.nullable != tgt_col.nullable:
+            diffs.append(ColumnDiff(
+                column=name, kind=ColumnChangeKind.NULLABILITY_CHANGED,
+                source_column=src_col, target_column=tgt_col,
+            ))
+        if _canonical_default(src_col.default) != _canonical_default(tgt_col.default):
+            diffs.append(ColumnDiff(
+                column=name, kind=ColumnChangeKind.DEFAULT_CHANGED,
+                source_column=src_col, target_column=tgt_col,
+            ))
+
+    return sorted(diffs, key=lambda d: (d.column, d.kind.value))
