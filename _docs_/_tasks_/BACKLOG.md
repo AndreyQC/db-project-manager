@@ -393,3 +393,61 @@ Delta Viewer (Phase 14) уже показывает `diff_report.json`; план
 (`presentation/gui/widgets/delta_viewer.py`).
 
 **Не блокирует Phase 12.**
+
+---
+
+## P3. Multi-statement normalize + comment-level diff (по итогам Phase 12)
+
+**Контекст:** `infrastructure/diff/normalize_sql.py` использует `parse_one` —
+нормализует только ПЕРВЫЙ statement тела. `COMMENT ON`-строки в табличных файлах
+не участвуют в `sql_hash`: comment-only правки дают UNCHANGED (поведение Phase 9,
+сохранено в Phase 12). ColumnSnapshot.comment в v1 не заполняется по той же
+причине (см. `Phase_12_plan.md` S2, «Известное ограничение»).
+
+**Действие:** перевести normalize на `sqlglot.parse` (все statements) с защитным
+переходом — смена хэша сделает ВСЕ существующие объекты «изменившимися», нужен
+формат-бамп/миграция (напр. версии snapshot или канонический пересчёт обеих
+сторон). Затем: `extract_columns` парсит `COMMENT ON COLUMN` → `comment` в
+`ColumnSnapshot` → `COMMENT_CHANGED` в column-diff (классифицируется safe).
+
+**Триггер:** первые жалобы «отредактировал комментарий — деплой не увидел».
+
+**Связано:** `infrastructure/diff/{normalize_sql,columns}.py`, `domain/delta.py`.
+
+---
+
+## P3. Авто-генератор seed «одной записи на таблицу» (ALT-8b)
+
+**Контекст (Phase 12, ALT-8):** seed репетиции — пользовательские скрипты
+`__migrations/seed/*.sql` (детерминированно, FK-порядок на авторе). Ручной seed
+скучен для больших схем.
+
+**Действие:** генератор черновика seed по структуре: INSERT одной строки на
+таблицу из DEFAULT-значений (NOT NULL-колонки без DEFAULT → таблица в протокол
+пропусков), порядок вставок по топосорту FK. Черновик предлагается
+`db-pm deploy rehearsal-seed --dir ... > __migrations/seed/...` — коммитится и
+дальше живёт как обычный seed-скрипт (не регенерируется).
+
+**Триггер:** регулярная работа с apply на схемах >30 таблиц.
+
+**Связано:** `application/deploy_apply_service.py` (`_run_seed`), BACKLOG-запись
+P3 GUI plan/apply.
+
+---
+
+## P3. deploy analyze: даунгрейд safe-alter нарушений по ALT-3
+
+**Контекст (Phase 12):** `deploy plan`/`apply` даунгрейдят gate-нарушения через
+колоночную классификацию (`_gate_residual_violations`): тронутая таблица с
+данными, дельта по которой safe (ADD COLUMN nullable), пропускается. Standalone
+`deploy analyze` (Phase 11) остался table-level строгим — та же ситуация даёт
+VIOLATIONS, хотя `apply` прошёл бы.
+
+**Действие:** синхронизировать `SafetyGateService.analyze` с residual-логикой
+(или задокументировать расхождение как осознанное: analyze = «худший случай»,
+apply = точная классификация).
+
+**Триггер:** путаница пользователей «analyze красный, apply зелёный».
+
+**Связано:** `application/{safety_gate_service,deploy_apply_service}.py`;
+`_tasks_/phase_12/Phase_12_result.md` (отклонения).
