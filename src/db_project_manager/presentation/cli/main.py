@@ -5,6 +5,8 @@ Layout:
     db-pm graph     build|export|show|validate  --dir <dir> [...]
     db-pm deploy    validate                    --dir <dir> --connection-file <conn.yaml> [...]
     db-pm deploy    analyze                     --dir <dir> --target-connection-file <conn.yaml> [...]
+    db-pm deploy    plan                        --dir <dir> --target-connection-file <conn.yaml> [...]
+    db-pm deploy    apply                       --dir <dir> --target-connection-file <conn.yaml> [...]
 
 Connection management (create/edit) is UI-only; the CLI consumes a connection
 file produced in the GUI (see roadmap §8).
@@ -17,6 +19,11 @@ from typing import Annotated, Optional
 
 import typer
 
+from db_project_manager.application.deploy_apply_service import (
+    DeployApplyError,
+    DeployApplyRejected,
+    DeployApplyService,
+)
 from db_project_manager.application.deploy_service import (
     DeployPermissionError,
     DeployValidateService,
@@ -493,6 +500,155 @@ def deploy_analyze(
             err=True,
         )
     raise typer.Exit(code=1)
+
+
+@deploy_app.command("plan")
+def deploy_plan(
+    directory: Annotated[Path, typer.Option("--dir", help="Codebase root to plan.")],
+    target_connection_file: Annotated[
+        Path,
+        typer.Option(
+            "--target-connection-file",
+            help="Connection YAML of the EXISTING target DB.",
+        ),
+    ],
+    output_dir: Annotated[
+        Path,
+        typer.Option("--output-dir", help="Where to write delta/ + plan.{json,md}."),
+    ],
+    include_drops: Annotated[
+        bool,
+        typer.Option(
+            "--include-drops",
+            help="Allow DROP artifacts for REMOVED objects (data tables still blocked).",
+        ),
+    ] = False,
+    config: Annotated[Optional[Path], typer.Option("--config", help="Path to config.yaml.")] = None,
+) -> None:
+    """Dry-run delta plan: safety gate + ALTER plan + artifacts. Read-only.
+
+    Compares the codebase against the live target database, classifies every
+    operation (safe / needs-pre / blocked) and writes the review artifacts:
+    delta/NNN_*.sql, plan.json, plan.md. Nothing is applied and no
+    pre-scripts are executed.
+
+    Exit codes: 0 — ok; 1 — safety-gate violations; 2 — hard error.
+    """
+    cfg = load_cfg(config if config is not None else None)
+    configure_logging(level=cfg.logging.level, console=True, logs_dir=cfg.paths.logs_dir)
+    conn_cfg = _load_connection(target_connection_file)
+
+    service = DeployApplyService(service_schema=cfg.deploy.service_schema)
+
+    def progress(message: str, current: int, total: int) -> None:
+        if total:
+            typer.echo(f"[{current}/{total}] {message}")
+        else:
+            typer.echo(message)
+
+    try:
+        plan = service.plan(
+            directory, conn_cfg, output_dir,
+            include_drops=include_drops, progress=progress,
+        )
+    except DeployApplyRejected as e:
+        typer.secho(f"✗ Plan отклонён: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from e
+    except DeployApplyError as e:
+        typer.secho(f"✗ Plan: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from e
+
+    md_path = output_dir / "plan.md"
+    typer.secho(
+        f"✓ План готов: операций {len(plan.operations)} "
+        f"(safe: {len(plan.safe_ops)}, needs-pre: {len(plan.needs_pre_ops)}, "
+        f"blocked: {len(plan.violations)}). Отчёт: {md_path}",
+        fg=typer.colors.GREEN,
+    )
+
+
+@deploy_app.command("apply")
+def deploy_apply(
+    directory: Annotated[Path, typer.Option("--dir", help="Codebase root to apply.")],
+    target_connection_file: Annotated[
+        Path,
+        typer.Option(
+            "--target-connection-file",
+            help="Connection YAML of the EXISTING target DB (will be MUTATED).",
+        ),
+    ],
+    output_dir: Annotated[
+        Path,
+        typer.Option("--output-dir", help="Where to write artifacts (delta/, plan.*, rehearsal/)."),
+    ],
+    include_drops: Annotated[
+        bool,
+        typer.Option(
+            "--include-drops",
+            help="Apply DROP artifacts for REMOVED objects (data tables still blocked).",
+        ),
+    ] = False,
+    no_rehearsal: Annotated[
+        bool,
+        typer.Option(
+            "--no-rehearsal",
+            help="Skip the rehearsal phase (CI/throwaway targets only!).",
+        ),
+    ] = False,
+    keep_rehearsal_db: Annotated[
+        bool,
+        typer.Option(
+            "--keep-rehearsal-db",
+            help="Keep the rehearsal temp DB after the run (for debugging).",
+        ),
+    ] = False,
+    config: Annotated[Optional[Path], typer.Option("--config", help="Path to config.yaml.")] = None,
+) -> None:
+    """MUTATES the target DB: rehearse the delta on a temp analog, then apply.
+
+    Full pipeline: safety gate → pre-scripts → re-computed delta (only SAFE
+    operations allowed, CD-11) → apply with stop-on-error → post-scripts →
+    record schema_version. By default the whole pipeline first runs against a
+    rehearsal DB reproducing the target state (seeded from
+    __migrations/seed/); a rehearsal failure leaves the target untouched.
+
+    Exit codes: 0 — ok; 1 — safety violations; 2 — hard error.
+    """
+    cfg = load_cfg(config if config is not None else None)
+    configure_logging(level=cfg.logging.level, console=True, logs_dir=cfg.paths.logs_dir)
+    conn_cfg = _load_connection(target_connection_file)
+
+    service = DeployApplyService(service_schema=cfg.deploy.service_schema)
+
+    def progress(message: str, current: int, total: int) -> None:
+        if total:
+            typer.echo(f"[{current}/{total}] {message}")
+        else:
+            typer.echo(message)
+
+    try:
+        result = service.apply(
+            directory, conn_cfg, output_dir,
+            include_drops=include_drops,
+            rehearsal=not no_rehearsal,
+            keep_rehearsal_db=keep_rehearsal_db,
+            progress=progress,
+        )
+    except DeployApplyRejected as e:
+        typer.secho(f"✗ Apply отклонён: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from e
+    except DeployApplyError as e:
+        typer.secho(f"✗ Apply: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from e
+
+    rehearsal_note = (
+        f", репетиция: {result.rehearsal_db}" if result.rehearsal_db else " (без репетиции)"
+    )
+    typer.secho(
+        f"✓ Apply завершён: применено операций {result.applied}/{result.planned}, "
+        f"версия {result.applied_version}{rehearsal_note}. Артефакты: {result.output_dir}",
+        fg=typer.colors.GREEN,
+    )
 
 
 if __name__ == "__main__":
