@@ -116,6 +116,10 @@ class PlannedOperation(BaseModel):
     classification: OperationClass
     reason: str
     script_file: str = ""    # relative artifact path, filled by the artifact writer
+    # Informational (tables): carried into plan.json / plan.md so CI and review see
+    # WHY the classification is what it is without re-reading presence stats.
+    estimated_rows: int | None = None
+    covered_by: list[str] = []
 
 
 class DeltaPlan(BaseModel):

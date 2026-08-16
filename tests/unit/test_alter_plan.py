@@ -100,6 +100,7 @@ def test_added_object_creates_safe() -> None:
 
 def test_removed_without_flag_blocks() -> None:
     op = _classify(status=DiffStatus.REMOVED)
+    assert op.action == "drop"   # drop-candidate, but execution is gated by BLOCKED
     assert op.classification is OperationClass.BLOCKED
     assert "--include-drops" in op.reason
 

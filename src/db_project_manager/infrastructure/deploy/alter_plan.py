@@ -240,13 +240,13 @@ def classify(
     if entry.status is DiffStatus.REMOVED:
         if not include_drops:
             return PlannedOperation(
-                **base, action=_ACTION_SKIP, classification=OperationClass.BLOCKED,
+                **base, action=_ACTION_DROP, classification=OperationClass.BLOCKED,
                 reason="объекта нет в кодовой базе; авто-DROP запрещён (ALT-6, "
                        "требуется явный --include-drops)",
             )
         if snap.object_type == "table" and presence in _WITH_DATA:
             return PlannedOperation(
-                **base, action=_ACTION_SKIP, classification=OperationClass.BLOCKED,
+                **base, action=_ACTION_DROP, classification=OperationClass.BLOCKED,
                 reason="DROP таблицы с данными — только через pre-скрипт (ALT-6)",
             )
         return PlannedOperation(**base, action=_ACTION_DROP,
