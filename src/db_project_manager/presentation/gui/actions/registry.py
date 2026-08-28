@@ -24,6 +24,8 @@ from db_project_manager.presentation.gui.actions.cli import (
     build_cli_deploy_validate,
     build_cli_graph_prepare,
     build_cli_reverse_engineer,
+    build_cli_yaml_apply,
+    build_cli_yaml_generate,
 )
 from db_project_manager.presentation.gui.actions.models import (
     CompareSettings,
@@ -31,6 +33,8 @@ from db_project_manager.presentation.gui.actions.models import (
     DeployValidateSettings,
     GraphPrepareSettings,
     ReverseEngineerSettings,
+    YamlApplySettings,
+    YamlGenerateSettings,
 )
 
 
@@ -157,6 +161,41 @@ def _make_compare_worker(store, settings: CompareSettings):
     )
 
 
+def _make_yaml_generate_dialog(store, settings, parent):
+    from db_project_manager.presentation.gui.actions.dialogs import YamlGenerateDialog
+
+    return YamlGenerateDialog(store, settings, parent)
+
+
+def _make_yaml_apply_dialog(store, settings, parent):
+    from db_project_manager.presentation.gui.actions.dialogs import YamlApplyDialog
+
+    return YamlApplyDialog(store, settings, parent)
+
+
+def _make_yaml_generate_worker(store, settings: YamlGenerateSettings):
+    del store  # yaml generate does not use connections
+    from db_project_manager.presentation.gui.widgets.workers import YamlGenerateWorker
+
+    return YamlGenerateWorker(
+        settings.source_dir,
+        settings.db_type,
+        settings.output_file,
+        source_version=settings.source_version,
+    )
+
+
+def _make_yaml_apply_worker(store, settings: YamlApplySettings):
+    del store  # yaml apply does not use connections
+    from db_project_manager.presentation.gui.widgets.workers import YamlApplyWorker
+
+    return YamlApplyWorker(
+        settings.yaml_file,
+        settings.target_db_type,
+        settings.output_dir,
+    )
+
+
 ACTIONS: list[ActionSpec] = [
     ActionSpec(
         action_id="reverse_engineer",
@@ -202,6 +241,24 @@ ACTIONS: list[ActionSpec] = [
         make_worker=_make_compare_worker,
         build_cli=build_cli_compare,
         required_fields=("output_dir",),
+    ),
+    ActionSpec(
+        action_id="yaml_generate",
+        title="YAML: сгенерировать из каталога SQL (GP/PG → YAML)",
+        settings_model=YamlGenerateSettings,
+        make_dialog=_make_yaml_generate_dialog,
+        make_worker=_make_yaml_generate_worker,
+        build_cli=build_cli_yaml_generate,
+        required_fields=("source_dir", "output_file"),
+    ),
+    ActionSpec(
+        action_id="yaml_apply",
+        title="YAML: применить к каталогу (YAML → GP/PG codebase)",
+        settings_model=YamlApplySettings,
+        make_dialog=_make_yaml_apply_dialog,
+        make_worker=_make_yaml_apply_worker,
+        build_cli=build_cli_yaml_apply,
+        required_fields=("yaml_file", "output_dir"),
     ),
 ]
 

@@ -265,6 +265,101 @@ class CompareWorker(QRunnable):
             self.signals.finished.emit(None)
 
 
+class YamlGenerateWorker(QRunnable):
+    """Run db-pm yaml generate off the UI thread (Phase 13)."""
+
+    def __init__(
+        self,
+        source_dir: str | Path,
+        db_type: str,
+        output_file: str | Path,
+        source_version: str = "",
+    ) -> None:
+        super().__init__()
+        self.source_dir = Path(source_dir)
+        self.db_type = db_type
+        self.output_file = Path(output_file)
+        self.source_version = source_version
+        self.signals = WorkerSignals()
+
+    def run(self) -> None:  # noqa: C901 (Qt entrypoint)
+        from db_project_manager.application.yaml_apply_service import YamlApplyError
+        from db_project_manager.infrastructure.yaml_project.generator import (
+            generate_yaml_project,
+        )
+        from db_project_manager.infrastructure.yaml_project.serializer import (
+            serialize_yaml_project,
+        )
+
+        try:
+            self.signals.status.emit(
+                f"Сканирование каталога: {self.source_dir} (db_type={self.db_type})"
+            )
+            project = generate_yaml_project(
+                self.source_dir,
+                self.db_type,
+                source_version=self.source_version,
+            )
+            yaml_text = serialize_yaml_project(project)
+            self.output_file.parent.mkdir(parents=True, exist_ok=True)
+            self.output_file.write_text(yaml_text, encoding="utf-8")
+            self.signals.status.emit(f"YAML сохранён: {self.output_file}")
+            self.signals.finished.emit(self.output_file)
+        except YamlApplyError as e:
+            self.signals.error.emit(f"YAML generate: {e}")
+            self.signals.finished.emit(None)
+        except Exception as e:  # noqa: BLE001
+            self.signals.error.emit(f"Непредвиденная ошибка: {e}")
+            self.signals.finished.emit(None)
+
+
+class YamlApplyWorker(QRunnable):
+    """Run db-pm yaml apply off the UI thread (Phase 13)."""
+
+    def __init__(
+        self,
+        yaml_file: str | Path,
+        target_db_type: str,
+        output_dir: str | Path,
+    ) -> None:
+        super().__init__()
+        self.yaml_file = Path(yaml_file)
+        self.target_db_type = target_db_type
+        self.output_dir = Path(output_dir)
+        self.signals = WorkerSignals()
+
+    def run(self) -> None:  # noqa: C901 (Qt entrypoint)
+        from db_project_manager.application.yaml_apply_service import (
+            YamlApplyError,
+            YamlApplyService,
+        )
+        from db_project_manager.infrastructure.yaml_project.serializer import (
+            parse_yaml_project,
+        )
+
+        try:
+            self.signals.status.emit(f"Чтение YAML: {self.yaml_file}")
+            yaml_text = self.yaml_file.read_text(encoding="utf-8")
+            project = parse_yaml_project(yaml_text)
+            self.signals.status.emit(
+                f"Применение YAML → {self.target_db_type}: {self.output_dir}"
+            )
+            service = YamlApplyService()
+            result = service.run(project, self.output_dir, self.target_db_type)
+            self.signals.status.emit(
+                f"YAML apply done: schemas={result.schemas_count}, "
+                f"objects={result.objects_count}, "
+                f"output={result.output_dir}"
+            )
+            self.signals.finished.emit(result)
+        except YamlApplyError as e:
+            self.signals.error.emit(f"YAML apply: {e}")
+            self.signals.finished.emit(None)
+        except Exception as e:  # noqa: BLE001
+            self.signals.error.emit(f"Непредвиденная ошибка: {e}")
+            self.signals.finished.emit(None)
+
+
 class LoadDiffReportWorker(QRunnable):
     """Load + parse a ``diff_report.json`` off the UI thread (Phase 14).
 

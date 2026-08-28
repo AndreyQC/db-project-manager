@@ -77,3 +77,32 @@ class DeployAnalyzeSettings(BaseModel):
     target_connection: str = ""
     # Report destination (safety_gate_report.md / .json / diff_report.json).
     output_dir: str = ""
+
+
+class YamlGenerateSettings(BaseModel):
+    """Settings for 'db-pm yaml generate' (Phase 13 / GUI action).
+
+    Walks a Greenplum/Postgres SQL directory and produces a portable YAML file.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    source_dir: str = ""
+    db_type: str = "greenplum"  # greenplum | postgres
+    output_file: str = ""
+    source_version: str = ""
+
+
+class YamlApplySettings(BaseModel):
+    """Settings for 'db-pm yaml apply' (Phase 13 / GUI action).
+
+    Reads a YAML file and generates a full codebase (SQL + manifest + graph)
+    for a target DB type. GP → PG transformation: external tables are skipped,
+    DISTRIBUTED BY / WITH options are dropped.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    yaml_file: str = ""
+    target_db_type: str = "postgres"  # greenplum | postgres
+    output_dir: str = ""

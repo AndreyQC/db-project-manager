@@ -32,6 +32,8 @@ from db_project_manager.presentation.gui.actions.models import (
     DeployValidateSettings,
     GraphPrepareSettings,
     ReverseEngineerSettings,
+    YamlApplySettings,
+    YamlGenerateSettings,
 )
 
 FORMAT_LABELS = {
@@ -298,4 +300,84 @@ class CompareDialog(BaseActionDialog):
             target_dir=self._target_dir.text().strip(),
             output_dir=self._output_dir.text().strip(),
             keep_model_dir=self._keep_model_dir.isChecked(),
+        )
+
+
+class YamlGenerateDialog(BaseActionDialog):
+    """Settings for 'db-pm yaml generate' (Phase 13)."""
+
+    def __init__(
+        self,
+        store: ConnectionStore,
+        settings: YamlGenerateSettings,
+        parent: QWidget | None = None,
+    ) -> None:
+        del store  # yaml generate does not use connections
+        super().__init__("YAML generate — настройки", parent)
+        self._source_dir = self._dir_row(
+            settings.source_dir,
+            "Каталог с SQL-файлами:",
+            placeholder="например C:\\YandexDisk\\...\\cis_zup",
+        )
+        self._db_type = QComboBox()
+        self._db_type.addItem("Greenplum", userData="greenplum")
+        self._db_type.addItem("PostgreSQL", userData="postgres")
+        idx = self._db_type.findData(settings.db_type)
+        if idx >= 0:
+            self._db_type.setCurrentIndex(idx)
+        self._form.addRow("Тип БД-источника:", self._db_type)
+        self._output_file = self._dir_row(
+            settings.output_file,
+            "Выходной YAML-файл:",
+            placeholder="например output.yaml",
+        )
+        self._source_version = QLineEdit(settings.source_version)
+        self._source_version.setPlaceholderText("необязательно, например 2026.08.27.01")
+        self._form.addRow("Версия источника (calver):", self._source_version)
+        self._add_buttons()
+
+    def settings(self) -> YamlGenerateSettings:
+        return YamlGenerateSettings(
+            source_dir=self._source_dir.text().strip(),
+            db_type=self._db_type.currentData(),
+            output_file=self._output_file.text().strip(),
+            source_version=self._source_version.text().strip(),
+        )
+
+
+class YamlApplyDialog(BaseActionDialog):
+    """Settings for 'db-pm yaml apply' (Phase 13)."""
+
+    def __init__(
+        self,
+        store: ConnectionStore,
+        settings: YamlApplySettings,
+        parent: QWidget | None = None,
+    ) -> None:
+        del store  # yaml apply does not use connections
+        super().__init__("YAML apply — настройки", parent)
+        self._yaml_file = self._dir_row(
+            settings.yaml_file,
+            "YAML-файл:",
+            placeholder="выберите .yaml файл",
+        )
+        self._target_db_type = QComboBox()
+        self._target_db_type.addItem("PostgreSQL", userData="postgres")
+        self._target_db_type.addItem("Greenplum", userData="greenplum")
+        idx = self._target_db_type.findData(settings.target_db_type)
+        if idx >= 0:
+            self._target_db_type.setCurrentIndex(idx)
+        self._form.addRow("Целевой тип БД:", self._target_db_type)
+        self._output_dir = self._dir_row(
+            settings.output_dir,
+            "Каталог кодовой базы (output):",
+            placeholder="например C:\\Projects\\my_codebase",
+        )
+        self._add_buttons()
+
+    def settings(self) -> YamlApplySettings:
+        return YamlApplySettings(
+            yaml_file=self._yaml_file.text().strip(),
+            target_db_type=self._target_db_type.currentData(),
+            output_dir=self._output_dir.text().strip(),
         )

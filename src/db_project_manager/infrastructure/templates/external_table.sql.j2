@@ -1,0 +1,11 @@
+-- Создание внешней таблицы {{ _qi(schema) }}.{{ _qi(name) }}
+DROP EXTERNAL TABLE IF EXISTS {{ _qi(schema) }}.{{ _qi(name) }} CASCADE;
+
+CREATE WRITABLE EXTERNAL TABLE {{ _qi(schema) }}.{{ _qi(name) }} (
+{% for col in columns %}
+    {{ _qi(col.name) }} {{ col.type }}{{ _null_mod(col) }}{{ _comma(col, loop) }}
+{% endfor %}
+)
+LOCATION ('{{ location }}')
+FORMAT '{{ format_type }}'{% if format_options %}({{ format_options }}){% endif %}
+ENCODING '{{ encoding }}';

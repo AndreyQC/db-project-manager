@@ -51,9 +51,11 @@ app = typer.Typer(no_args_is_help=True, add_completion=False, help="DB Project M
 graph_app = typer.Typer(no_args_is_help=True, help="Граф зависимостей кодовой базы.")
 deploy_app = typer.Typer(no_args_is_help=True, help="Деплой кодовой базы в базу данных.")
 compare_app = typer.Typer(no_args_is_help=True, help="Сравнение состояния БД и кодовой базы.")
+yaml_app = typer.Typer(no_args_is_help=True, help="YAML project: generate from directory or apply to target.")
 app.add_typer(graph_app, name="graph")
 app.add_typer(deploy_app, name="deploy")
 app.add_typer(compare_app, name="compare")
+app.add_typer(yaml_app, name="yaml")
 
 
 @app.callback()
@@ -655,6 +657,143 @@ def deploy_apply(
     typer.secho(
         f"✓ Apply завершён: применено операций {result.applied}/{result.planned}, "
         f"версия {result.applied_version}{rehearsal_note}. Артефакты: {result.output_dir}",
+        fg=typer.colors.GREEN,
+    )
+
+
+# --- yaml subapp (Phase 13) ---
+
+
+_VALID_DB_TYPES = ("greenplum", "postgres")
+
+
+@yaml_app.command("generate")
+def yaml_generate(
+    source: Annotated[
+        Path,
+        typer.Option("--source", help="Directory with SQL files (reverse-engineer output)."),
+    ],
+    db_type: Annotated[
+        str,
+        typer.Option("--db-type", help=f"Source database type: {', '.join(_VALID_DB_TYPES)}."),
+    ],
+    output: Annotated[
+        Path,
+        typer.Option("--output", "-o", help="Output YAML file path."),
+    ],
+    source_version: Annotated[
+        str,
+        typer.Option("--source-version", help="Optional calver version string (e.g. 2026.08.27.01)."),
+    ] = "",
+) -> None:
+    """Generate a portable YAML project from a directory of SQL files.
+
+    Walks ``--source``, parses all ``*.sql`` files (with or without autodoc
+    headers), extracts schema/table/column/function/view definitions, and writes
+    a ``.yaml`` file that can later be used to generate a full codebase via
+    ``db-pm yaml apply``.
+
+    Exit codes: 0 — ok; 1 — generation error.
+    """
+    if db_type not in _VALID_DB_TYPES:
+        typer.secho(
+            f"Invalid --db-type: {db_type!r}. Must be one of: {', '.join(_VALID_DB_TYPES)}.",
+            fg=typer.colors.RED, err=True,
+        )
+        raise typer.Exit(code=2)
+
+    configure_logging()
+
+    try:
+        from db_project_manager.infrastructure.yaml_project import (
+            YamlGeneratorError,
+            generate_yaml_project,
+            serialize_yaml_project,
+        )
+    except ImportError as e:
+        typer.secho(f"Import error: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from e
+
+    try:
+        project = generate_yaml_project(source, db_type, source_version=source_version)
+        yaml_text = serialize_yaml_project(project)
+        output.write_text(yaml_text, encoding="utf-8")
+    except YamlGeneratorError as e:
+        typer.secho(f"Generation error: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from e
+    except Exception as e:  # noqa: BLE001
+        typer.secho(f"Unexpected error: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from e
+
+    typer.secho(f"Generated YAML: {output}", fg=typer.colors.GREEN)
+
+
+@yaml_app.command("apply")
+def yaml_apply(
+    yaml_file: Annotated[
+        Path,
+        typer.Option("--yaml", help="YAML project file to apply."),
+    ],
+    target_db_type: Annotated[
+        str,
+        typer.Option("--target-db-type", help=f"Target database type: {', '.join(_VALID_DB_TYPES)}."),
+    ],
+    output: Annotated[
+        Path,
+        typer.Option("--output", "-o", help="Output directory for the generated codebase."),
+    ],
+) -> None:
+    """Generate a full codebase (SQL files + manifest + graph) from a YAML project.
+
+    Parses the YAML file, validates compatibility with ``--target-db-type``,
+    generates SQL files using the existing Jinja2 templates (table, view, function,
+    external_table), writes a ``dbpm.manifest.json``, and runs ``graph build``.
+
+    For ``greenplum -> postgres``: external tables are skipped (Postgres has no
+    writable external tables), ``DISTRIBUTED BY`` / ``WITH (...)`` options are
+    dropped. For ``postgres -> greenplum``: an error is raised.
+
+    Exit codes: 0 — ok; 1 — validation / generation error; 2 — target type incompatible.
+    """
+    if target_db_type not in _VALID_DB_TYPES:
+        typer.secho(
+            f"Invalid --target-db-type: {target_db_type!r}. Must be one of: {', '.join(_VALID_DB_TYPES)}.",
+            fg=typer.colors.RED, err=True,
+        )
+        raise typer.Exit(code=2)
+
+    configure_logging()
+
+    try:
+        from db_project_manager.application.yaml_apply_service import (
+            YamlApplyError,
+            YamlApplyService,
+        )
+        from db_project_manager.infrastructure.yaml_project import parse_yaml_project
+    except ImportError as e:
+        typer.secho(f"Import error: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from e
+
+    try:
+        yaml_text = yaml_file.read_text(encoding="utf-8")
+        project = parse_yaml_project(yaml_text)
+    except Exception as e:  # noqa: BLE001
+        typer.secho(f"Failed to parse YAML: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from e
+
+    try:
+        service = YamlApplyService()
+        result = service.run(project, output, target_db_type)
+    except YamlApplyError as e:
+        typer.secho(f"Apply error: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from e
+    except Exception as e:  # noqa: BLE001
+        typer.secho(f"Unexpected error: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from e
+
+    typer.secho(
+        f"Applied: schemas={result.schemas_count}, objects={result.objects_count}, "
+        f"output={result.output_dir}",
         fg=typer.colors.GREEN,
     )
 

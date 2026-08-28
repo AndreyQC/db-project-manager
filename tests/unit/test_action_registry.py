@@ -18,7 +18,8 @@ def test_action_ids_unique():
 def test_expected_actions_present():
     ids = {a.action_id for a in ACTIONS}
     assert ids == {
-        "reverse_engineer", "deploy_validate", "deploy_analyze", "graph_prepare", "compare",
+        "reverse_engineer", "deploy_validate", "deploy_analyze",
+        "graph_prepare", "compare", "yaml_generate", "yaml_apply",
     }
 
 

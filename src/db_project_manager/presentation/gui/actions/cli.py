@@ -16,6 +16,8 @@ from db_project_manager.presentation.gui.actions.models import (
     DeployValidateSettings,
     GraphPrepareSettings,
     ReverseEngineerSettings,
+    YamlApplySettings,
+    YamlGenerateSettings,
 )
 
 
@@ -96,3 +98,26 @@ def build_cli_compare(settings: CompareSettings, store: ConnectionStore) -> str:
     if settings.keep_model_dir:
         parts.append("--keep-model-dir")
     return " ".join(parts)
+
+
+def build_cli_yaml_generate(settings: YamlGenerateSettings, store: ConnectionStore) -> str:
+    del store  # yaml generate does not use connections
+    parts = [
+        "db-pm yaml generate",
+        f"--source {_quote(settings.source_dir)}",
+        f"--db-type {settings.db_type}",
+        f"--output {_quote(settings.output_file)}",
+    ]
+    if settings.source_version:
+        parts.append(f"--source-version {settings.source_version}")
+    return " ".join(parts)
+
+
+def build_cli_yaml_apply(settings: YamlApplySettings, store: ConnectionStore) -> str:
+    del store  # yaml apply does not use connections
+    return (
+        f"db-pm yaml apply "
+        f"--yaml {_quote(settings.yaml_file)} "
+        f"--target-db-type {settings.target_db_type} "
+        f"--output {_quote(settings.output_dir)}"
+    )
