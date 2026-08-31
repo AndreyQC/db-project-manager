@@ -21,13 +21,19 @@ Design decisions:
 - ``object_key`` format follows the existing convention
   (``database/<db>/schema/<s>/type/<t>/name/<n>``) WITHOUT the catalog
   segment — consistent with the identity-key decision in LESSONS §51.
+- Serialized entity keys are descriptive (``schema_name``, ``table_name``,
+  ``column_name``, ``view_name``, ``function_name``, ``external_table_name``)
+  instead of a generic ``name`` at every nesting level: in a long YAML file
+  a bare ``name`` is ambiguous when scanning for errors. The Python attribute
+  stays ``name`` (aliases are serialization-only); parsing accepts both the
+  descriptive key and the legacy ``name``.
 """
 
 from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 
 class YamlColumn(BaseModel):
@@ -35,7 +41,10 @@ class YamlColumn(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    name: str
+    name: str = Field(
+        serialization_alias="column_name",
+        validation_alias=AliasChoices("column_name", "name"),
+    )
     type: str
     nullable: bool = True
     default: str | None = None
@@ -46,7 +55,10 @@ class YamlTable(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    name: str
+    name: str = Field(
+        serialization_alias="table_name",
+        validation_alias=AliasChoices("table_name", "name"),
+    )
     columns: list[YamlColumn] = []
     distributed_by: list[str] = []  # Greenplum only; Postgres: empty
     with_options: dict[str, str] = {}  # Greenplum only; e.g. {appendoptimized: true, orientation: column}
@@ -61,7 +73,10 @@ class YamlExternalTable(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    name: str
+    name: str = Field(
+        serialization_alias="external_table_name",
+        validation_alias=AliasChoices("external_table_name", "name"),
+    )
     columns: list[YamlColumn] = []
     location: str  # raw LOCATION clause content, e.g. "pxf://staging_tr.../?PROFILE=JDBC&SERVER=..."
     format_type: str = "CUSTOM"  # FORMAT 'CUSTOM' / 'TEXT' / 'CSV' etc.
@@ -74,7 +89,10 @@ class YamlView(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    name: str
+    name: str = Field(
+        serialization_alias="view_name",
+        validation_alias=AliasChoices("view_name", "name"),
+    )
     columns: list[YamlColumn] = []
     definition: str  # full SELECT ... AS ... or CREATE MATERIALIZED VIEW ...
     is_materialized: bool = False
@@ -85,7 +103,10 @@ class YamlFunction(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    name: str
+    name: str = Field(
+        serialization_alias="function_name",
+        validation_alias=AliasChoices("function_name", "name"),
+    )
     arguments: list[dict[str, str]] = []  # [{name: p_x, type: text}, ...]; name may be empty
     returns: str = ""  # e.g. "json", "void", "TABLE(...)"
     definition: str  # full SQL body after AS $$
@@ -99,7 +120,10 @@ class YamlSchema(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    name: str
+    name: str = Field(
+        serialization_alias="schema_name",
+        validation_alias=AliasChoices("schema_name", "name"),
+    )
     tables: list[YamlTable] = []
     views: list[YamlView] = []
     functions: list[YamlFunction] = []

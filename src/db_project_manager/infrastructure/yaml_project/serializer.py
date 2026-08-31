@@ -17,8 +17,11 @@ def serialize_yaml_project(project: YamlProject) -> str:
 
     The output is sorted by key within each mapping so that the same project
     always produces a deterministic file (important for git diffs).
+
+    Entity names are dumped under descriptive keys (``schema_name``,
+    ``table_name``, ``column_name``, ...) — see ``domain/yaml_project.py``.
     """
-    data = project.model_dump(mode="python", exclude_none=True)
+    data = project.model_dump(mode="python", exclude_none=True, by_alias=True)
     return yaml.safe_dump(
         data,
         allow_unicode=True,

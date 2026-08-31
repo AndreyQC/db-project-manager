@@ -15,6 +15,7 @@ import json
 from pathlib import Path
 
 import pytest
+import yaml
 
 from db_project_manager.application.yaml_apply_service import (
     YamlApplyError,
@@ -132,6 +133,80 @@ class TestSerializerRoundtrip:
         assert len(s.external_tables) == 1
         assert s.external_tables[0].name == "ext_sales"
         assert "pxf" in s.external_tables[0].location
+
+
+class TestDescriptiveKeys:
+    """Serialized entities use descriptive name keys (schema_name, table_name, ...)."""
+
+    def _full_project(self) -> YamlProject:
+        return YamlProject(
+            db_type="greenplum",
+            database="mydb",
+            generated_at="2026-08-27T00:00:00+00:00",
+            schemas=[
+                YamlSchema(
+                    name="public",
+                    tables=[
+                        YamlTable(
+                            name="users",
+                            columns=[YamlColumn(name="id", type="int4", nullable=False)],
+                        ),
+                    ],
+                    views=[YamlView(name="v_users", definition="SELECT 1")],
+                    functions=[YamlFunction(name="get_count", definition="SELECT 1")],
+                    external_tables=[
+                        YamlExternalTable(
+                            name="ext_sales",
+                            location="pxf://sales",
+                            columns=[YamlColumn(name="amount", type="numeric")],
+                        ),
+                    ],
+                ),
+            ],
+        )
+
+    def test_serialized_yaml_uses_descriptive_keys(self):
+        yaml_text = serialize_yaml_project(self._full_project())
+        # Raw dict (roundtrip through yaml.safe_load) — robust to quoting styles (LESSONS §28)
+        raw = yaml.safe_load(yaml_text)
+        schema = raw["schemas"][0]
+        assert schema["schema_name"] == "public"
+        assert schema["tables"][0]["table_name"] == "users"
+        assert schema["tables"][0]["columns"][0]["column_name"] == "id"
+        assert schema["views"][0]["view_name"] == "v_users"
+        assert schema["functions"][0]["function_name"] == "get_count"
+        assert schema["external_tables"][0]["external_table_name"] == "ext_sales"
+        assert schema["external_tables"][0]["columns"][0]["column_name"] == "amount"
+
+    def test_legacy_name_keys_still_parse(self):
+        """YAML written before the descriptive-key change (bare `name`) still parses."""
+        legacy_yaml = """
+db_type: postgres
+database: mydb
+generated_at: "2026-08-27T00:00:00+00:00"
+schemas:
+  - name: public
+    tables:
+      - name: users
+        columns:
+          - name: id
+            type: int4
+            nullable: false
+    views:
+      - name: v_users
+        definition: SELECT 1
+    functions:
+      - name: get_count
+        definition: SELECT 1
+"""
+        parsed = parse_yaml_project(legacy_yaml)
+        s = parsed.schemas[0]
+        assert s.name == "public"
+        assert s.tables[0].name == "users"
+        assert s.tables[0].columns[0].name == "id"
+        assert s.tables[0].columns[0].nullable is False
+        assert s.views[0].name == "v_users"
+        assert s.functions[0].name == "get_count"
 
 
 class TestGenerateYamlProject:
