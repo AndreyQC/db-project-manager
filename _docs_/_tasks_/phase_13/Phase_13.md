@@ -86,6 +86,22 @@ Depth-tracking parenthesis counter корректно обрабатывает:
   `column_name`, ...) — первый в блоке; алфавитный порядок прятал имя под
   сотнями строк колонок. Уроки — LESSONS §53-54.
 
+### Feedback-фиксы yaml apply (31.08, коммит `d5ab2cb`)
+
+- Раскладка вывода приведена к конвенции RE `<schema>/<kind>/<type> <name>.sql`
+  без вложенных подкаталогов: `external_tables/external_table x.sql`
+  (было `external_tables/ext/ext x.sql`), аналогично tables/views/
+  materialized_views/functions.
+- `_inject_gp_options`: инъекция через `rfind(");")`, `WITH (...)` и
+  `DISTRIBUTED BY (...)` — отдельные клавизы; прежний `replace(");", ...)`
+  портил SQL (съедена закрывающая скобка, DISTRIBUTED BY внутри WITH).
+- `with_options` рендерятся независимо от `distributed_by` (раньше тиходроп
+  при DISTRIBUTED RANDOMLY — 123 таблицы на cis_zup).
+- `DEFAULT` колонок сохраняется (раньше `_default_mod` возвращал пустую
+  строку — потеря 244 выражений на cis_zup).
+- Инвариант: roundtrip `generate -> apply -> generate` на cis_zup даёт
+  0 расхождений по всем полям всех 277 объектов. Урок — LESSONS §55.
+
 ### Компоненты
 
 | Файл | Назначение |
