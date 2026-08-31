@@ -71,6 +71,21 @@ Depth-tracking parenthesis counter корректно обрабатывает:
 - `LOCATION(...)` на той же строке что и closing `)` column list
 - Trailing/leading commas: `col TYPE,` и `,col TYPE`
 
+### Feedback-фиксы (31.08, реальная база cis_zup, коммит `e5a6f50`)
+
+- Детект external table: clause-regex `\bLOCATION\s*\(` вместо подстроки
+  `"LOCATION" in upper` — колонки `location_guid`/`sublocation_name` превращали
+  17 обычных таблиц в external (потеря NOT NULL / distributed_by / with_options).
+  Проверено на корпусе: 106/87 → 123 tables / 70 external, 0 ext с пустым location.
+- `_RE_FORMAT`: внешний слой скобок опций снимается, `format_options`
+  хранится без них (шаблон `external_table.sql.j2` добавляет скобки сам);
+  ранее lookahead `\)` обрезал закрывающую скобку.
+- Типы колонок нормализуются в `YamlColumn` (единая точка): lowercase,
+  пробелы вокруг скобок/запятых схлопываются — `NUMERIC (38, 0)` → `numeric(38,0)`.
+- Сериализация `sort_keys=False`: ключ имени (`schema_name`, `table_name`,
+  `column_name`, ...) — первый в блоке; алфавитный порядок прятал имя под
+  сотнями строк колонок. Уроки — LESSONS §53-54.
+
 ### Компоненты
 
 | Файл | Назначение |
