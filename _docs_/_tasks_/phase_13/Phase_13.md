@@ -22,28 +22,33 @@ db_type: greenplum
 database: cis_zup
 generated_at: 2026-08-28T...
 schemas:
-  - name: cis_dmt_zup
+  - schema_name: cis_dmt_zup
     tables:
-      - name: lu_zup_costcenters
+      - table_name: lu_zup_costcenters
         columns:
-          - name: cost_center_code; type: text; nullable: true
-          - name: cost_centers_guid; type: text; nullable: false
+          - column_name: cost_center_code; type: text; nullable: true
+          - column_name: cost_centers_guid; type: text; nullable: false
         distributed_by: []           # GP only; [] = DISTRIBUTED RANDOMLY
         with_options: {appendoptimized: TRUE, orientation: COLUMN, ...}  # GP only
     views: [...]
     functions: [...]
-  - name: ch_cis_zup
+  - schema_name: ch_cis_zup
     external_tables:
-      - name: ext_w_staging_tr_zup_headcount_calc_result
+      - external_table_name: ext_w_staging_tr_zup_headcount_calc_result
         location: "pxf://...?PROFILE=JDBC&..."
         format_type: CUSTOM
         format_options: "(FORMATTER='pxfwritable_export')"
         encoding: UTF8
-        columns: [...]   # nullable=True для всех external table колонок
+        columns: [...]   # column_name; nullable=True для всех external table колонок
 ```
 
 Ключевые решения:
 - `db_type` —Literal驱动 validation; GP-специфичные поля (`distributed_by`, `with_options`) присутствуют для greenplum, отсутствуют для postgres
+- имена сущностей сериализуются описательными ключами (`schema_name`/
+  `table_name`/`column_name`/`view_name`/`function_name`/`external_table_name`),
+  не общим `name` на всех уровнях (feedback 2026-08-31: в длинном YAML общий
+  `name` затрудняет поиск ошибок); Python-атрибут остаётся `name`, чтение
+  принимает и legacy `name` (AliasChoices) — старые файлы парсятся
 - `definition` для views/functions — сырой SQL body, не re-normalized
 - `columns` для external tables — всегда `nullable=True` (GP semantics)
 - Identity key без catalog-сегмента (`database/<db>/schema/<s>/type/<t>/name/<n>`)
