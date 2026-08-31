@@ -15,17 +15,17 @@ from db_project_manager.domain.yaml_project import YamlProject
 def serialize_yaml_project(project: YamlProject) -> str:
     """Render a YamlProject to a YAML string.
 
-    The output is sorted by key within each mapping so that the same project
-    always produces a deterministic file (important for git diffs).
-
-    Entity names are dumped under descriptive keys (``schema_name``,
-    ``table_name``, ``column_name``, ...) — see ``domain/yaml_project.py``.
+    Keys are emitted in model field-declaration order (NOT alphabetically):
+    the entity name key (``schema_name`` / ``table_name`` / ...) comes FIRST
+    in its block, so a reader sees *what* the object is before its columns —
+    alphabetical sorting buried the name under hundreds of column lines.
+    Declaration order is deterministic, so the file stays diff-friendly.
     """
     data = project.model_dump(mode="python", exclude_none=True, by_alias=True)
     return yaml.safe_dump(
         data,
         allow_unicode=True,
-        sort_keys=True,
+        sort_keys=False,
         width=200,  # avoid line-wrapping of long SQL strings
     )
 

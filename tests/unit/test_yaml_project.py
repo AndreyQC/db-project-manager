@@ -35,6 +35,9 @@ from db_project_manager.infrastructure.yaml_project import (
     parse_yaml_project,
     serialize_yaml_project,
 )
+from db_project_manager.infrastructure.yaml_project.autodoc_parser import (
+    parse_autodoc_object,
+)
 
 
 class TestSerializerRoundtrip:
@@ -207,6 +210,83 @@ schemas:
         assert s.tables[0].columns[0].nullable is False
         assert s.views[0].name == "v_users"
         assert s.functions[0].name == "get_count"
+
+
+class TestGpParsingRegressions:
+    """Regressions from real-codebase feedback 2026-08-31 (GP cis_zup)."""
+
+    def test_location_column_name_does_not_make_table_external(self):
+        """A column named location_guid must not turn a regular GP table into
+        an external one (the old substring check "LOCATION" in sql matched it)."""
+        sql_body = """DROP TABLE IF EXISTS s.t CASCADE;
+
+CREATE TABLE s.t (
+    position_code TEXT NULL
+    ,location_guid TEXT NULL
+    ,source_system_key TEXT NOT NULL
+)
+WITH (APPENDOPTIMIZED = TRUE, ORIENTATION = COLUMN)
+DISTRIBUTED BY (source_system_key);
+"""
+        header = {"object": {
+            "object_type": "table", "object_schema": "s", "object_name": "t",
+        }}
+        obj = parse_autodoc_object(header, sql_body, "greenplum")
+        assert isinstance(obj, YamlTable)
+        assert obj.name == "t"
+        # NOT NULL survived (external-table path would force nullable=True everywhere)
+        cols = {c.name: c for c in obj.columns}
+        assert cols["source_system_key"].nullable is False
+        assert cols["location_guid"].nullable is True
+        # GP options extracted instead of being lost
+        assert obj.distributed_by == ["source_system_key"]
+        assert obj.with_options == {"appendoptimized": "TRUE", "orientation": "COLUMN"}
+
+    def test_real_external_table_still_detected_and_format_options_full(self):
+        sql_body = """CREATE WRITABLE EXTERNAL TABLE s.ext_t (
+    "x" NUMERIC (38, 0),
+    "y" TEXT
+)
+LOCATION ('pxf://tbl?PROFILE=JDBC&SERVER=s')
+FORMAT 'CUSTOM' (FORMATTER='pxfwritable_export')
+ENCODING 'UTF8';
+"""
+        header = {"object": {
+            "object_type": "table", "object_schema": "s", "object_name": "ext_t",
+        }}
+        obj = parse_autodoc_object(header, sql_body, "greenplum")
+        assert isinstance(obj, YamlExternalTable)
+        assert obj.location == "pxf://tbl?PROFILE=JDBC&SERVER=s"
+        # Outer parens stripped (the SQL template adds them back); NOT the old
+        # truncated "(FORMATTER='pxfwritable_export'" without a closing paren.
+        assert obj.format_options == "FORMATTER='pxfwritable_export'"
+        assert obj.encoding == "UTF8"
+        # Type with GP-style spaces normalized
+        assert obj.columns[0].type == "numeric(38,0)"
+
+    def test_column_type_normalization(self):
+        assert YamlColumn(name="a", type="NUMERIC (38, 0)").type == "numeric(38,0)"
+        assert YamlColumn(name="a", type="varchar(50)").type == "varchar(50)"
+        # Multi-word types keep their inner spaces
+        assert YamlColumn(name="a", type="double precision").type == "double precision"
+
+    def test_serializer_puts_name_key_first(self):
+        """The entity name key must be the FIRST key of its block, so a long
+        YAML file can be scanned by name (feedback: alphabetical sorting buried
+        schema_name under hundreds of column lines)."""
+        project = YamlProject(
+            db_type="postgres",
+            database="d",
+            generated_at="2026-08-31T00:00:00+00:00",
+            schemas=[YamlSchema(
+                name="s",
+                tables=[YamlTable(name="t", columns=[YamlColumn(name="c", type="text")])],
+            )],
+        )
+        raw = yaml.safe_load(serialize_yaml_project(project))
+        assert list(raw["schemas"][0])[0] == "schema_name"
+        assert list(raw["schemas"][0]["tables"][0])[0] == "table_name"
+        assert list(raw["schemas"][0]["tables"][0]["columns"][0])[0] == "column_name"
 
 
 class TestGenerateYamlProject:

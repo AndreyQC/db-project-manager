@@ -116,13 +116,6 @@ def _parse_greenplum(sql_body: str) -> list[dict]:
             if depth == 0:
                 paren_end = i
                 break
-        if ch == "(":
-            depth += 1
-        elif ch == ")":
-            depth -= 1
-            if depth == 0:
-                paren_end = i
-                break
     if paren_end <= paren_start:
         return []
 

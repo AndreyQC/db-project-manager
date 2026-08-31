@@ -73,8 +73,12 @@ def parse_autodoc_object(
     # object_catalog is used for identity only; not stored in YamlProject
 
     if object_type == "table":
-        # GP external tables may be tagged as "table" in autodoc — detect by LOCATION
-        if "LOCATION" in sql_body.upper() and db_type == "greenplum":
+        # GP external tables may be tagged as "table" in autodoc — detect by the
+        # LOCATION clause. Must be a clause match (LOCATION followed by "("), NOT a
+        # substring: column names like location_guid/sublocation_name contain
+        # "LOCATION" and would silently misclassify regular tables as external
+        # (losing NOT NULL / distributed_by / with_options — Phase 13 feedback).
+        if db_type == "greenplum" and _RE_LOCATION.search(sql_body):
             return _parse_external_table_from_autodoc(obj, sql_body, object_schema, object_name)
         return _parse_table_from_autodoc(obj, sql_body, db_type, object_schema, object_name)
     elif object_type == "view":
@@ -493,7 +497,12 @@ _RE_ENCODING = re.compile(
 
 
 def _parse_external_location_and_format(sql: str) -> tuple[str, str, str]:
-    """Extract location, format_type, format_options from an external table SQL body."""
+    """Extract location, format_type, format_options from an external table SQL body.
+
+    ``format_options`` is stored WITHOUT the outer parentheses — the SQL template
+    adds them back (``FORMAT 'CUSTOM' ({{ format_options }})``). GP DDL always
+    wraps the options, e.g. ``FORMAT 'CUSTOM' (FORMATTER='pxfwritable_export')``.
+    """
     loc_match = _RE_LOCATION.search(sql)
     location = loc_match.group(1).strip() if loc_match else ""
 
@@ -501,6 +510,8 @@ def _parse_external_location_and_format(sql: str) -> tuple[str, str, str]:
     if fmt_match:
         format_type = fmt_match.group(1).strip().upper()
         format_options = fmt_match.group(2).strip()
+        if format_options.startswith("(") and format_options.endswith(")"):
+            format_options = format_options[1:-1].strip()
     else:
         format_type = "CUSTOM"
         format_options = ""
@@ -511,14 +522,16 @@ def _parse_external_location_and_format(sql: str) -> tuple[str, str, str]:
 # LOCATION ('pxf://...?QUOTE_COLUMNS=true') — URL may contain double quotes
 # and other special chars. Match everything between the OUTERMOST single quotes.
 _RE_LOCATION = re.compile(
-    r"LOCATION\s*\(\s*'([^']+)'\s*\)",
+    r"\bLOCATION\s*\(\s*'([^']+)'\s*\)",
     re.IGNORECASE | re.DOTALL,
 )
 
 # FORMAT 'CUSTOM' (FORMATTER=...) or FORMAT 'TEXT' etc.
-# Group 1: format type. Group 2: everything until ENCODING/closing paren/semicolon.
+# Group 1: format type. Group 2: everything until ENCODING / end of statement.
+# The closing ')' of the options wrapper must NOT be a lookahead boundary —
+# that truncated the options to an unbalanced "(FORMATTER='...'".
 _RE_FORMAT = re.compile(
-    r"FORMAT\s+'([A-Z]+)'\s*(.*?)\s*(?=ENCODING|\)|;|$)",
+    r"FORMAT\s+'([A-Z]+)'\s*(.*?)\s*(?=ENCODING|;|$)",
     re.IGNORECASE | re.DOTALL,
 )
 

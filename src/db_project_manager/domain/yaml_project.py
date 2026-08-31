@@ -31,9 +31,27 @@ Design decisions:
 
 from __future__ import annotations
 
+import re
 from typing import Literal
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
+
+
+def normalize_column_type(value: str) -> str:
+    """Normalize a column type spelling to a canonical single form.
+
+    Source DDL may spell the same type differently (``NUMERIC(38,0)`` vs
+    ``NUMERIC (38, 0)`` — GP accepts spaces around the modifier). Whitespace
+    around parens/commas is collapsed so that the YAML (and any comparison of
+    two spellings) is stable. Multi-word types (``double precision``) keep
+    their single inner spaces. The value is lower-cased — the documented
+    canonical form of this format.
+    """
+    v = re.sub(r"\s+", " ", value.strip().lower())
+    v = re.sub(r"\s*\(\s*", "(", v)
+    v = re.sub(r"\s*\)\s*", ")", v)
+    v = re.sub(r"\s*,\s*", ",", v)
+    return v
 
 
 class YamlColumn(BaseModel):
@@ -48,6 +66,11 @@ class YamlColumn(BaseModel):
     type: str
     nullable: bool = True
     default: str | None = None
+
+    @field_validator("type", mode="before")
+    @classmethod
+    def _normalize_type(cls, value: str) -> str:
+        return normalize_column_type(value) if isinstance(value, str) else value
 
 
 class YamlTable(BaseModel):
