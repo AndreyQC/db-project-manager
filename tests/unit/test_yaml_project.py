@@ -293,9 +293,9 @@ class TestGenerateYamlProject:
     """Test generate_yaml_project on a synthetic directory."""
 
     def test_generates_yaml_project_from_files(self, tmp_path: Path):
-        # Create a minimal SQL file structure
+        # Create a minimal SQL file structure (RE layout: <schema>/<kind>/<type> <name>.sql)
         schema_dir = tmp_path / "testdb" / "public"
-        tables_dir = schema_dir / "tables" / "table"
+        tables_dir = schema_dir / "tables"
         tables_dir.mkdir(parents=True)
 
         sql = """\
@@ -386,8 +386,8 @@ class TestYamlApplyValidation:
         assert result.objects_count == 2
         assert result.skipped_external_tables == 0
 
-        # External table SQL file was written
-        ext_file = tmp_path / "public" / "external_tables" / "ext" / "ext ext_data.sql"
+        # External table SQL file was written (RE layout: <schema>/<kind>/<object_type> <name>.sql)
+        ext_file = tmp_path / "public" / "external_tables" / "external_table ext_data.sql"
         assert ext_file.exists()
         content = ext_file.read_text(encoding="utf-8")
         assert "CREATE WRITABLE EXTERNAL TABLE" in content
@@ -466,6 +466,89 @@ class TestYamlApplyValidation:
         assert result.objects_count == 3
 
 
+class TestApplyLayout:
+    """yaml apply must reproduce the RE directory layout exactly:
+    ``<schema>/<kind>/<object_type> <name>.sql`` — no nested per-type
+    subdirectory, no double prefixes (feedback 31.08: external_tables/ext/
+    "ext ext_x.sql" instead of external_tables/"external_table ext_x.sql").
+    """
+
+    def test_all_object_types_use_re_layout(self, tmp_path: Path):
+        project = YamlProject(
+            db_type="greenplum",
+            database="d",
+            generated_at="2026-08-31T00:00:00+00:00",
+            schemas=[YamlSchema(
+                name="s",
+                tables=[YamlTable(name="t1", columns=[YamlColumn(name="c", type="text")])],
+                views=[
+                    YamlView(name="v1", definition="SELECT 1"),
+                    YamlView(name="mv1", definition="SELECT 2", is_materialized=True),
+                ],
+                functions=[YamlFunction(name="f1", definition="SELECT 1")],
+                external_tables=[YamlExternalTable(
+                    name="ext1", location="pxf://t", columns=[YamlColumn(name="c", type="text")],
+                )],
+            )],
+        )
+        YamlApplyService().run(project, tmp_path, "greenplum")
+
+        expected = [
+            "s/schema s.sql",
+            "s/tables/table t1.sql",
+            "s/views/view v1.sql",
+            "s/materialized_views/materialized_view mv1.sql",
+            "s/functions/function f1.sql",
+            "s/external_tables/external_table ext1.sql",
+        ]
+        for rel in expected:
+            assert (tmp_path / rel).exists(), f"missing {rel}"
+        # No nested per-type subdirectories, no double "ext ext_" prefixes
+        assert not (tmp_path / "s" / "tables" / "table").exists()
+        assert not (tmp_path / "s" / "external_tables" / "ext").exists()
+
+    def test_gp_options_and_defaults_rendered(self, tmp_path: Path):
+        """WITH/DISTRIBUTED BY are separate clauses after the closing paren;
+        column DEFAULTs survive the apply (were silently dropped)."""
+        project = YamlProject(
+            db_type="greenplum",
+            database="d",
+            generated_at="2026-08-31T00:00:00+00:00",
+            schemas=[YamlSchema(
+                name="s",
+                tables=[
+                    YamlTable(
+                        name="t1",
+                        columns=[
+                            YamlColumn(name="id", type="int4", nullable=False),
+                            YamlColumn(
+                                name="ts", type="timestamp", nullable=False,
+                                default="(CURRENT_TIMESTAMP AT TIME ZONE 'utc')",
+                            ),
+                        ],
+                        distributed_by=["id"],
+                        with_options={"appendoptimized": "TRUE", "orientation": "COLUMN"},
+                    ),
+                    # WITH options without distributed_by (DISTRIBUTED RANDOMLY)
+                    # must still render the WITH clause.
+                    YamlTable(
+                        name="t2",
+                        columns=[YamlColumn(name="c", type="text", nullable=True)],
+                        with_options={"orientation": "COLUMN"},
+                    ),
+                ],
+            )],
+        )
+        YamlApplyService().run(project, tmp_path, "greenplum")
+
+        t1 = (tmp_path / "s" / "tables" / "table t1.sql").read_text(encoding="utf-8")
+        assert ")\nWITH (appendoptimized=TRUE, orientation=COLUMN)\nDISTRIBUTED BY (\"id\");" in t1
+        assert " DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'utc')" in t1
+
+        t2 = (tmp_path / "s" / "tables" / "table t2.sql").read_text(encoding="utf-8")
+        assert ")\nWITH (orientation=COLUMN);" in t2
+
+
 class TestExternalTableTemplate:
     """Test that external table SQL is rendered correctly."""
 
@@ -497,7 +580,7 @@ class TestExternalTableTemplate:
         service = YamlApplyService()
         service.run(project, tmp_path, "greenplum")
 
-        ext_file = tmp_path / "ch" / "external_tables" / "ext" / "ext ext_sales.sql"
+        ext_file = tmp_path / "ch" / "external_tables" / "external_table ext_sales.sql"
         content = ext_file.read_text(encoding="utf-8")
 
         assert "CREATE WRITABLE EXTERNAL TABLE" in content

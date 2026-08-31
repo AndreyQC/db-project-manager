@@ -49,6 +49,13 @@ def _template_helpers() -> dict:
     def null_mod(col: dict) -> str:
         return " NULL" if col.get("nullable", True) else " NOT NULL"
 
+    def default_mod(col: dict) -> str:
+        # YAML columns carry the DEFAULT expression as raw text (parsed from the
+        # source DDL) — re-emit it verbatim. Dropping it here silently lost
+        # DEFAULTs on the apply → generate roundtrip (244 columns on cis_zup).
+        d = col.get("default")
+        return f" DEFAULT {d}" if d else ""
+
     def comma(col: dict, loop, constraints: list | None = None) -> str:
         return "," if not loop.last else ""
 
@@ -65,7 +72,7 @@ def _template_helpers() -> dict:
         "_qi": qi,
         "_qqi": qqi,
         "_null_mod": null_mod,
-        "_default_mod": lambda col: "",
+        "_default_mod": default_mod,
         "_type_mod": type_mod,
         "_comma": comma,
         "_comment_mod": comment_mod,
@@ -289,18 +296,21 @@ CREATE SCHEMA IF NOT EXISTS {self._qi(schema.name)};
             "comment": None,
         }
 
-        # GP-specific: append WITH (...) and DISTRIBUTED BY options
-        if target_db_type == "greenplum" and table.distributed_by:
+        # GP-specific clauses: WITH (...) and DISTRIBUTED BY (...) are SEPARATE
+        # clauses in GP DDL. WITH must render even when distributed_by is empty
+        # (DISTRIBUTED RANDOMLY) — gating both on distributed_by silently dropped
+        # with_options for 123 tables on cis_zup.
+        if target_db_type == "greenplum":
             gp_parts = []
             if table.with_options:
                 opts = ", ".join(
                     f"{k}={v}" for k, v in table.with_options.items()
                 )
-                gp_parts.append(opts)
+                gp_parts.append(f"WITH ({opts})")
             if table.distributed_by:
                 cols_str = ", ".join(self._qi(c) for c in table.distributed_by)
                 gp_parts.append(f"DISTRIBUTED BY ({cols_str})")
-            ctx["gp_options"] = "WITH (" + ", ".join(gp_parts) + ")"
+            ctx["gp_options"] = "\n".join(gp_parts)
         else:
             ctx["gp_options"] = ""
 
@@ -318,7 +328,7 @@ CREATE SCHEMA IF NOT EXISTS {self._qi(schema.name)};
 
 {sql_body}
 """
-        tables_dir = output_dir / schema.name / "tables" / "table"
+        tables_dir = output_dir / schema.name / "tables"
         tables_dir.mkdir(parents=True, exist_ok=True)
         path = tables_dir / f"table {table.name}.sql"
         path.write_text(sql, encoding="utf-8")
@@ -361,13 +371,16 @@ CREATE SCHEMA IF NOT EXISTS {self._qi(schema.name)};
 
 {sql_body}
 """
-        views_dir = (
-            output_dir / schema.name / "views" / "view"
-            if not view.is_materialized
-            else output_dir / schema.name / "views" / "materialized_view"
-        )
+        # Layout follows the RE convention (<schema>/<kind>/<object_type> <name>.sql):
+        # views -> views/, materialized views -> materialized_views/ (separate kind dir).
+        if view.is_materialized:
+            views_dir = output_dir / schema.name / "materialized_views"
+            file_name = f"materialized_view {view.name}.sql"
+        else:
+            views_dir = output_dir / schema.name / "views"
+            file_name = f"view {view.name}.sql"
         views_dir.mkdir(parents=True, exist_ok=True)
-        path = views_dir / f"view {view.name}.sql"
+        path = views_dir / file_name
         path.write_text(sql, encoding="utf-8")
         return 1
 
@@ -417,7 +430,7 @@ CREATE SCHEMA IF NOT EXISTS {self._qi(schema.name)};
 
 {sql_body}
 """
-        funcs_dir = output_dir / schema.name / "functions" / "function"
+        funcs_dir = output_dir / schema.name / "functions"
         funcs_dir.mkdir(parents=True, exist_ok=True)
         path = funcs_dir / f"function {function.name}.sql"
         path.write_text(sql, encoding="utf-8")
@@ -468,9 +481,9 @@ CREATE SCHEMA IF NOT EXISTS {self._qi(schema.name)};
 
 {sql_body}
 """
-        ext_dir = output_dir / schema.name / "external_tables" / "ext"
+        ext_dir = output_dir / schema.name / "external_tables"
         ext_dir.mkdir(parents=True, exist_ok=True)
-        path = ext_dir / f"ext {ext.name}.sql"
+        path = ext_dir / f"external_table {ext.name}.sql"
         path.write_text(sql, encoding="utf-8")
         return 1
 
@@ -508,14 +521,24 @@ def _build_autodoc_header(
 
 
 def _inject_gp_options(sql: str, gp_options: str) -> str:
-    """Inject GP WITH (...) and DISTRIBUTED BY options into a CREATE TABLE SQL.
+    """Insert GP clauses (WITH (...) / DISTRIBUTED BY (...)) after the closing
+    parenthesis of the column list.
 
-    Finds the closing parenthesis of the column list and inserts GP options before it.
-    The options are expected to appear right before the closing ``);`` of the
-    CREATE TABLE column-definition block.
+    The template ends the CREATE TABLE statement with ``);``. The clauses go
+    BETWEEN the closing ``)`` and the ``;``::
+
+        CREATE TABLE t (
+            ...
+        )
+        WITH (...)
+        DISTRIBUTED BY (...);
+
+    The old implementation replaced the FIRST ``);`` — which consumed the
+    column-list closing paren and produced invalid SQL (``...NOT NULL
+    WITH (... DISTRIBUTED BY (x)));``), plus the roundtrip parser then read
+    ``WITH`` as a column name.
     """
-    # Pattern: column list ends with ``)`` followed by ``;`` or newline + ``)``
-    # We insert gp_options right before the final ``)`` that closes the column list
-    # and before ``DISTRIBUTED`` / ``WITH``.
-    # Simple approach: replace ``);`` with ``{gp_options});``
-    return sql.replace(");", f"{gp_options});", 1)
+    idx = sql.rfind(");")
+    if idx < 0:
+        return sql
+    return sql[:idx] + ")\n" + gp_options + ";" + sql[idx + 2 :]
