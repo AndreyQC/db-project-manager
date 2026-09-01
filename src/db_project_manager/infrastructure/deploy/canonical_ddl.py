@@ -26,12 +26,76 @@ from pathlib import Path
 from jinja2 import Environment, FileSystemLoader
 
 from db_project_manager.domain.deploy import canonical_normalize, script_checksum
-from db_project_manager.infrastructure.sql.autodoc import strip_autodoc
+from db_project_manager.infrastructure.sql.autodoc import ensure_header, strip_autodoc
 
 DEFAULT_SERVICE_SCHEMA = "__deploy"
 
 _TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates" / "deploy"
 _TABLES: tuple[str, ...] = ("schema_version", "script_history", "script_audit_log")
+
+
+def seed_deploy_files(
+    deploy_dir: Path,
+    service_schema: str,
+    db_name: str,
+    *,
+    overwrite: bool = False,
+) -> list[Path]:
+    """Write the canonical service-schema tree (schema + 3 tables) on disk.
+
+    Shared by reverse-engineer (Phase 10 S6) and ``yaml apply`` (Phase 13
+    feedback 01.09: a YAML-produced codebase must pass ``_validate_deploy_presence``
+    without going through RE). Each file is decorated with the ``immutable``
+    autodoc marker (CDF-10 — objects managed by db-pm).
+
+    Args:
+        deploy_dir: ``<codebase>/<service_schema>`` directory (created if needed).
+        service_schema: service schema name (configurable, default ``__deploy``).
+        db_name: database name for the autodoc ``object_catalog``.
+        overwrite: rewrite files even when present. RE passes True (seeding is
+            idempotent-by-canonical); yaml apply passes False so a re-apply into
+            an existing codebase never clobbers files already there.
+
+    Returns:
+        The list of files actually written.
+    """
+    written: list[Path] = []
+    deploy_dir.mkdir(parents=True, exist_ok=True)
+
+    schema_file = deploy_dir / f"schema {service_schema}.sql"
+    if overwrite or not schema_file.is_file():
+        schema_body = f'CREATE SCHEMA IF NOT EXISTS "{service_schema}";\n'
+        schema_file.write_text(
+            ensure_header(
+                schema_body,
+                object_catalog=db_name,
+                object_schema=service_schema,
+                object_type="schema",
+                object_name=service_schema,
+                immutable=True,
+            ),
+            encoding="utf-8",
+        )
+        written.append(schema_file)
+
+    tables_dir = deploy_dir / "tables"
+    tables_dir.mkdir(parents=True, exist_ok=True)
+    for table_name, body in canonical_deploy_ddl(service_schema).items():
+        table_file = tables_dir / f"{table_name}.sql"
+        if overwrite or not table_file.is_file():
+            table_file.write_text(
+                ensure_header(
+                    body,
+                    object_catalog=db_name,
+                    object_schema=service_schema,
+                    object_type="table",
+                    object_name=table_name,
+                    immutable=True,
+                ),
+                encoding="utf-8",
+            )
+            written.append(table_file)
+    return written
 
 
 @lru_cache(maxsize=1)
@@ -123,5 +187,6 @@ __all__ = [
     "canonical_deploy_checksums",
     "canonical_deploy_ddl",
     "canonical_normalize",
+    "seed_deploy_files",
     "validate_deploy_ddl",
 ]

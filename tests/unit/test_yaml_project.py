@@ -849,6 +849,68 @@ class TestApplyLayout:
         assert s.functions[0].definition.strip() == func_def
 
 
+class TestDeploySchemaSeeding:
+    """yaml apply seeds the __deploy service schema (feedback 01.09): the
+    produced codebase must pass deploy validate's _validate_deploy_presence
+    without going through reverse-engineer."""
+
+    def _project(self) -> YamlProject:
+        return YamlProject(
+            db_type="postgres",
+            database="d",
+            generated_at="2026-09-01T00:00:00+00:00",
+            schemas=[YamlSchema(
+                name="s",
+                tables=[YamlTable(name="t1", columns=[YamlColumn(name="c", type="text")])],
+            )],
+        )
+
+    def test_apply_seeds_deploy_files(self, tmp_path: Path):
+        YamlApplyService().run(self._project(), tmp_path, "postgres")
+
+        from db_project_manager.infrastructure.deploy.canonical_ddl import (
+            validate_deploy_ddl,
+        )
+        from db_project_manager.infrastructure.sql.autodoc import extract_header
+
+        schema_file = tmp_path / "__deploy" / "schema __deploy.sql"
+        assert schema_file.is_file()
+        for name in ("schema_version", "script_history", "script_audit_log"):
+            f = tmp_path / "__deploy" / "tables" / f"{name}.sql"
+            assert f.is_file(), f"missing {f}"
+            header = extract_header(f.read_text(encoding="utf-8"))
+            assert header is not None
+            assert header["project"].get("immutable") is True  # CDF-10 marker
+            assert header["object"]["object_schema"] == "__deploy"
+        # Canonical checksums match — deploy validate would emit zero warnings
+        assert validate_deploy_ddl(tmp_path) == []
+
+    def test_reapply_does_not_clobber_existing_deploy_files(self, tmp_path: Path):
+        YamlApplyService().run(self._project(), tmp_path, "postgres")
+        marker = tmp_path / "__deploy" / "tables" / "schema_version.sql"
+        original = marker.read_text(encoding="utf-8")
+        marker.write_text(original + "\n-- user note\n", encoding="utf-8")
+
+        YamlApplyService().run(self._project(), tmp_path, "postgres")
+
+        assert "-- user note" in marker.read_text(encoding="utf-8")  # preserved
+
+    def test_deploy_presence_naming_accepted(self, tmp_path: Path):
+        """The seeded unprefixed names are exactly what deploy validate's
+        _validate_deploy_presence looks for."""
+        YamlApplyService().run(self._project(), tmp_path, "postgres")
+        tables_dir = tmp_path / "__deploy" / "tables"
+        for name in ("schema_version.sql", "script_history.sql", "script_audit_log.sql"):
+            assert (tables_dir / name).is_file()
+
+    def test_generate_skips_deploy_schema(self, tmp_path: Path):
+        """yaml generate on an applied codebase must not pull __deploy objects
+        back into the portable YAML (generator _SKIP_DIRS)."""
+        YamlApplyService().run(self._project(), tmp_path, "postgres")
+        rt = generate_yaml_project(tmp_path, db_type="postgres")
+        assert "__deploy" not in {s.name for s in rt.schemas}
+
+
 class TestExternalTableTemplate:
     """Test that external table SQL is rendered correctly."""
 

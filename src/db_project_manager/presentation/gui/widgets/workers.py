@@ -321,11 +321,13 @@ class YamlApplyWorker(QRunnable):
         yaml_file: str | Path,
         target_db_type: str,
         output_dir: str | Path,
+        service_schema: str = "__deploy",
     ) -> None:
         super().__init__()
         self.yaml_file = Path(yaml_file)
         self.target_db_type = target_db_type
         self.output_dir = Path(output_dir)
+        self._service_schema = service_schema
         self.signals = WorkerSignals()
 
     def run(self) -> None:  # noqa: C901 (Qt entrypoint)
@@ -344,7 +346,7 @@ class YamlApplyWorker(QRunnable):
             self.signals.status.emit(
                 f"Применение YAML → {self.target_db_type}: {self.output_dir}"
             )
-            service = YamlApplyService()
+            service = YamlApplyService(service_schema=self._service_schema)
             result = service.run(project, self.output_dir, self.target_db_type)
             self.signals.status.emit(
                 f"YAML apply done: schemas={result.schemas_count}, "

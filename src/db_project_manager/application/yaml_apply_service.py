@@ -35,6 +35,10 @@ from db_project_manager.infrastructure.config.codebase_manifest import (
     CodebaseManifest,
     write_manifest,
 )
+from db_project_manager.infrastructure.deploy.canonical_ddl import (
+    DEFAULT_SERVICE_SCHEMA,
+    seed_deploy_files,
+)
 
 
 def _template_helpers() -> dict:
@@ -97,7 +101,7 @@ class YamlApplyError(Exception):
 class YamlApplyService:
     """Generate a codebase from a YamlProject and write it to disk."""
 
-    def __init__(self) -> None:
+    def __init__(self, service_schema: str = DEFAULT_SERVICE_SCHEMA) -> None:
         templates_dir = Path(__file__).resolve().parent.parent / "infrastructure" / "templates"
         self._env = Environment(
             loader=FileSystemLoader(str(templates_dir)),
@@ -107,6 +111,7 @@ class YamlApplyService:
         )
         self._env.globals.update(_template_helpers())
         self._graph_service = BuildGraphService()
+        self._service_schema = service_schema
 
     def run(
         self,
@@ -166,6 +171,21 @@ class YamlApplyService:
                     logger.warning(
                         f"Skipped {skipped_external} external table(s) for target_db_type=postgres"
                     )
+
+        # Seed the service schema (__deploy: schema + 3 bookkeeping tables) so
+        # the produced codebase is deployable as-is — deploy validate's
+        # _validate_deploy_presence requires these files (feedback 01.09).
+        # overwrite=False: a re-apply into an existing codebase never clobbers.
+        seeded = seed_deploy_files(
+            output_dir / self._service_schema,
+            self._service_schema,
+            project.database,
+        )
+        if seeded:
+            logger.info(
+                f"Служебная схема {self._service_schema}: создано {len(seeded)} "
+                f"canonical-файлов (schema + 3 таблицы)"
+            )
 
         # Write manifest.
         # source_version: if YAML has no calver, seed from generated_at date so the

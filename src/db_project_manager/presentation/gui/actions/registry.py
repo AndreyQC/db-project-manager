@@ -189,10 +189,13 @@ def _make_yaml_apply_worker(store, settings: YamlApplySettings):
     del store  # yaml apply does not use connections
     from db_project_manager.presentation.gui.widgets.workers import YamlApplyWorker
 
+    from db_project_manager.infrastructure.config.app_config import load_cfg
+
     return YamlApplyWorker(
         settings.yaml_file,
         settings.target_db_type,
         settings.output_dir,
+        service_schema=load_cfg(None).deploy.service_schema,
     )
 
 

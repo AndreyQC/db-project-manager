@@ -805,7 +805,8 @@ def yaml_apply(
         raise typer.Exit(code=1) from e
 
     try:
-        service = YamlApplyService()
+        cfg = load_cfg(None)
+        service = YamlApplyService(service_schema=cfg.deploy.service_schema)
         result = service.run(project, output, target_db_type)
     except YamlApplyError as e:
         typer.secho(f"Apply error: {e}", fg=typer.colors.RED, err=True)
