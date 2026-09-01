@@ -128,6 +128,18 @@ Depth-tracking parenthesis counter корректно обрабатывает:
 - Проверка: GP vs PG YAML — 193 объекта, 0 различий наборов колонок
   (2025 колонок в PG-стороне).
 
+### yaml apply: definition verbatim (01.09, коммит `afdeddd`)
+
+- View-файлы получали невалидный двойной CREATE: шаблон `view.sql.j2`
+  оборачивал definition в свой `CREATE OR REPLACE VIEW ... AS`, хотя
+  definition по контракту — полное тело стейтмента. Теперь view/function
+  writer'ы пишут definition дословно (autodoc + тело без обёрток); шаблоны
+  остаются для RE-пути.
+- Уточнение к roundtrip-инварианту выше: проверка 31.08 покрывала только
+  таблицы (скрипт сравнения потерял views/functions при рефакторинге —
+  LESSONS §58). Полное покрытие с assert'ом счётчиков по типам:
+  193 tables / 11 views / 67 functions — 0 расхождений по всем полям.
+
 ### Компоненты
 
 | Файл | Назначение |
