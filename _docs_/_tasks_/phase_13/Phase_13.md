@@ -140,6 +140,18 @@ Depth-tracking parenthesis counter корректно обрабатывает:
   LESSONS §58). Полное покрытие с assert'ом счётчиков по типам:
   193 tables / 11 views / 67 functions — 0 расхождений по всем полям.
 
+### yaml apply: сидинг __deploy (01.09, коммит `0e28fef`)
+
+- apply автоматически создаёт служебную схему `__deploy` (schema +
+  schema_version / script_history / script_audit_log из canonical-шаблонов,
+  immutable-маркер CDF-10) — кодовая база сразу проходит
+  `_validate_deploy_presence` деплоя без RE.
+- Общая функция `seed_deploy_files` в canonical_ddl (RE делегирует с
+  overwrite=True, apply сеет только отсутствующее — повторный apply не
+  затирает); имя схемы из `cfg.deploy.service_schema` (CLI + GUI).
+- Граф включает служебные объекты (281 вершина на корпусе: 277 + 4);
+  `yaml generate` по-прежнему скипает `__deploy` (SKIP_DIRS).
+
 ### Компоненты
 
 | Файл | Назначение |
