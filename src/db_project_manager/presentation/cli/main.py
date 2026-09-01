@@ -685,6 +685,24 @@ def yaml_generate(
         str,
         typer.Option("--source-version", help="Optional calver version string (e.g. 2026.08.27.01)."),
     ] = "",
+    require_autodoc: Annotated[
+        bool,
+        typer.Option(
+            "--require-autodoc",
+            help="Strict mode: fail (exit 1) when any .sql file lacks an autodoc header. "
+            "Without the flag such files are parsed via SQL fallback and reported in a warning.",
+        ),
+    ] = False,
+    fix_broken_autodoc: Annotated[
+        bool,
+        typer.Option(
+            "--fix-broken-autodoc",
+            help="Rewrite IN PLACE headers whose YAML does not parse: a fresh autodoc is "
+            "regenerated from the identity salvaged out of the broken block. "
+            "Extra sections (remarks etc.) are dropped and reported. "
+            "Without the flag generation is read-only.",
+        ),
+    ] = False,
 ) -> None:
     """Generate a portable YAML project from a directory of SQL files.
 
@@ -693,7 +711,7 @@ def yaml_generate(
     a ``.yaml`` file that can later be used to generate a full codebase via
     ``db-pm yaml apply``.
 
-    Exit codes: 0 — ok; 1 — generation error.
+    Exit codes: 0 — ok; 1 — generation error (including --require-autodoc violations); 2 — usage error.
     """
     if db_type not in _VALID_DB_TYPES:
         typer.secho(
@@ -715,7 +733,12 @@ def yaml_generate(
         raise typer.Exit(code=2) from e
 
     try:
-        project = generate_yaml_project(source, db_type, source_version=source_version)
+        project = generate_yaml_project(
+            source, db_type,
+            source_version=source_version,
+            require_autodoc=require_autodoc,
+            fix_broken_autodoc=fix_broken_autodoc,
+        )
         yaml_text = serialize_yaml_project(project)
         output.write_text(yaml_text, encoding="utf-8")
     except YamlGeneratorError as e:

@@ -37,6 +37,7 @@ from db_project_manager.infrastructure.yaml_project import (
 )
 from db_project_manager.infrastructure.yaml_project.autodoc_parser import (
     parse_autodoc_object,
+    parse_sql_object,
 )
 
 
@@ -287,6 +288,270 @@ ENCODING 'UTF8';
         assert list(raw["schemas"][0])[0] == "schema_name"
         assert list(raw["schemas"][0]["tables"][0])[0] == "table_name"
         assert list(raw["schemas"][0]["tables"][0]["columns"][0])[0] == "column_name"
+
+
+class TestParseSqlObject:
+    """Files WITHOUT an autodoc header go through the sqlglot tree path.
+
+    Regression (feedback 01.09): the dispatcher referenced non-existent
+    sqlglot 27 nodes (exp.View / exp.Materialized / exp.Procedure) and any
+    hand-written view/function crashed with AttributeError. The object schema
+    is derived from the qualified DDL name (was: always "public").
+    """
+
+    def test_table_without_autodoc(self):
+        parsed = parse_sql_object(
+            'CREATE TABLE s.t1 (id int NOT NULL, name text)', "postgres"
+        )
+        assert parsed is not None and parsed.schema == "s"
+        obj = parsed.obj
+        assert isinstance(obj, YamlTable)
+        assert obj.name == "t1"
+        cols = {c.name: c for c in obj.columns}
+        assert cols["id"].nullable is False
+        assert cols["name"].type == "text"
+
+    def test_bare_table_without_autodoc_has_no_schema(self):
+        parsed = parse_sql_object("CREATE TABLE t1 (id int)", "postgres")
+        assert parsed is not None
+        assert parsed.schema is None
+        assert parsed.obj.name == "t1"
+
+    def test_view_without_autodoc(self):
+        parsed = parse_sql_object(
+            "CREATE VIEW s.v1 AS SELECT id FROM s.t1", "postgres"
+        )
+        assert parsed is not None and parsed.schema == "s"
+        obj = parsed.obj
+        assert isinstance(obj, YamlView)
+        assert obj.name == "v1"
+        assert obj.is_materialized is False
+        assert "SELECT id" in obj.definition
+
+    def test_materialized_view_without_autodoc(self):
+        parsed = parse_sql_object(
+            "CREATE MATERIALIZED VIEW s.mv1 AS SELECT 1", "postgres"
+        )
+        assert parsed is not None
+        obj = parsed.obj
+        assert isinstance(obj, YamlView)
+        assert obj.name == "mv1"
+        assert obj.is_materialized is True
+
+    def test_function_without_autodoc(self):
+        sql = (
+            "CREATE FUNCTION s.f1(x int, y text) RETURNS int "
+            "LANGUAGE plpgsql SECURITY DEFINER AS $$ SELECT x $$"
+        )
+        parsed = parse_sql_object(sql, "postgres")
+        assert parsed is not None and parsed.schema == "s"
+        obj = parsed.obj
+        assert isinstance(obj, YamlFunction)
+        assert obj.name == "f1"
+        assert obj.arguments == [{"name": "x", "type": "int"}, {"name": "y", "type": "text"}]
+        assert obj.returns == "int"
+        assert obj.language == "plpgsql"
+        assert obj.security_definer is True
+        assert "SELECT x" in obj.definition
+
+    def test_gp_table_via_regex_fallback_keeps_schema(self):
+        """GP DDL (WITH/DISTRIBUTED BY) is not sqlglot-native -> Command ->
+        regex fallback; the schema must survive there too."""
+        sql = """CREATE TABLE mysch.t1 (
+    id INT NOT NULL
+    ,location_guid TEXT NULL
+)
+WITH (APPENDOPTIMIZED = TRUE)
+DISTRIBUTED BY (id);
+"""
+        parsed = parse_sql_object(sql, "greenplum")
+        assert parsed is not None
+        assert parsed.schema == "mysch"
+        assert isinstance(parsed.obj, YamlTable)
+        assert parsed.obj.name == "t1"
+        assert parsed.obj.distributed_by == ["id"]
+        assert parsed.obj.with_options == {"appendoptimized": "TRUE"}
+
+    def test_gp_external_table_via_regex_fallback_keeps_schema(self):
+        sql = """CREATE WRITABLE EXTERNAL TABLE mysch.ext1 (
+    x TEXT
+)
+LOCATION ('pxf://t?PROFILE=JDBC')
+FORMAT 'CUSTOM' (FORMATTER='pxfwritable_export')
+ENCODING 'UTF8';
+"""
+        parsed = parse_sql_object(sql, "greenplum")
+        assert parsed is not None
+        assert parsed.schema == "mysch"
+        assert isinstance(parsed.obj, YamlExternalTable)
+        assert parsed.obj.name == "ext1"
+        assert parsed.obj.location == "pxf://t?PROFILE=JDBC"
+
+
+class TestNoAutodocReporting:
+    """Files without an autodoc header: warned by default, error in strict mode."""
+
+    def _make_dir(self, tmp_path: Path) -> Path:
+        """Codebase with one autodoc table (schema s1) and one hand-written
+        function without autodoc (schema s2 via qualified DDL name)."""
+        src = tmp_path / "src"
+        (src / "s1" / "tables").mkdir(parents=True)
+        (src / "s1" / "tables" / "table users.sql").write_text(
+            """/*====================================================================================
+[<[autodoc-yaml]]
+object:
+  object_catalog: testdb
+  object_key: pg_database/testdb/schema/s1/type/table/name/users
+  object_name: users
+  object_schema: s1
+  object_type: table
+project:
+  build: true
+[[autodoc-yaml]>]
+=====================================================================================*/
+
+CREATE TABLE s1.users (
+    id INT NOT NULL
+);
+""",
+            encoding="utf-8",
+        )
+        (src / "s2" / "functions").mkdir(parents=True)
+        (src / "s2" / "functions" / "function get_count.sql").write_text(
+            "CREATE FUNCTION s2.get_count() RETURNS int LANGUAGE plpgsql AS $$ SELECT 1 $$",
+            encoding="utf-8",
+        )
+        return src
+
+    def test_schema_from_qualified_ddl_name(self, tmp_path: Path):
+        project = generate_yaml_project(self._make_dir(tmp_path), db_type="postgres")
+        schemas = {s.name: s for s in project.schemas}
+        assert "s1" in schemas and "s2" in schemas  # was: s2 forced into "public"
+        assert schemas["s2"].functions[0].name == "get_count"
+        assert project.database == "testdb"  # db name still from autodoc header
+
+    def test_warn_lists_no_autodoc_files(self, tmp_path: Path):
+        from loguru import logger
+
+        messages: list[str] = []
+        sink_id = logger.add(messages.append, level="WARNING")
+        try:
+            generate_yaml_project(self._make_dir(tmp_path), db_type="postgres")
+        finally:
+            logger.remove(sink_id)
+        assert any("function get_count.sql" in m for m in messages)
+        assert any("1 файл(ов) без autodoc-заголовка" in m for m in messages)
+
+    def test_require_autodoc_raises_with_file_list(self, tmp_path: Path):
+        from db_project_manager.infrastructure.yaml_project import YamlGeneratorError
+
+        with pytest.raises(YamlGeneratorError, match="function get_count.sql"):
+            generate_yaml_project(self._make_dir(tmp_path), db_type="postgres", require_autodoc=True)
+
+    def test_require_autodoc_passes_when_all_have_headers(self, tmp_path: Path):
+        src = self._make_dir(tmp_path)
+        (src / "s2" / "functions" / "function get_count.sql").unlink()
+        project = generate_yaml_project(src, db_type="postgres", require_autodoc=True)
+        assert [s.name for s in project.schemas] == ["s1"]
+
+    def test_broken_autodoc_header_reported_separately(self, tmp_path: Path):
+        """Marker present but invalid YAML (unquoted value with ': ') — identity
+        is salvaged line-wise, a fresh autodoc is regenerated in-memory; the file
+        on disk is NOT touched by default."""
+        from loguru import logger
+
+        src = self._make_dir(tmp_path)
+        (src / "s1" / "tables" / "table bad.sql").write_text(
+            """/*====================================================================================
+[<[autodoc-yaml]]
+object:
+  object_catalog: testdb
+  object_schema: s1
+  object_type: table
+  object_name: bad
+notes: converted bad.sql: DROP -> DROP, LOCATION removed
+[[autodoc-yaml]>]
+=====================================================================================*/
+
+CREATE TABLE s1.bad (id INT);
+""",
+            encoding="utf-8",
+        )
+        messages: list[str] = []
+        sink_id = logger.add(messages.append, level="WARNING")
+        try:
+            project = generate_yaml_project(src, db_type="postgres")
+        finally:
+            logger.remove(sink_id)
+
+        assert any("невалидным YAML в autodoc" in m for m in messages)
+        assert any("файлы НЕ изменялись" in m for m in messages)
+        # Identity salvaged: object landed in the header-declared schema
+        s1 = {s.name: s for s in project.schemas}["s1"]
+        assert "bad" in {t.name for t in s1.tables}
+        # Read-only by default
+        content = (src / "s1" / "tables" / "table bad.sql").read_text(encoding="utf-8")
+        assert "notes: converted bad.sql:" in content  # untouched
+
+    def test_fix_broken_autodoc_rewrites_header_in_place(self, tmp_path: Path):
+        """--fix-broken-autodoc: the broken block is replaced by a fresh valid
+        autodoc (identity preserved, invalid extras dropped); SQL body kept."""
+        src = self._make_dir(tmp_path)
+        bad = src / "s1" / "tables" / "table bad.sql"
+        bad.write_text(
+            """/*====================================================================================
+[<[autodoc-yaml]]
+object:
+  object_catalog: testdb
+  object_schema: s1
+  object_type: table
+  object_name: bad
+notes: converted bad.sql: DROP -> DROP
+[[autodoc-yaml]>]
+=====================================================================================*/
+
+CREATE TABLE s1.bad (id INT);
+""",
+            encoding="utf-8",
+        )
+
+        project = generate_yaml_project(src, db_type="postgres", fix_broken_autodoc=True)
+
+        # Object still parsed correctly
+        s1 = {s.name: s for s in project.schemas}["s1"]
+        assert "bad" in {t.name for t in s1.tables}
+        # Header on disk is now VALID YAML and carries the salvaged identity
+        from db_project_manager.infrastructure.sql.autodoc import extract_header
+
+        fixed = bad.read_text(encoding="utf-8")
+        header = extract_header(fixed)
+        assert header is not None
+        assert header["object"]["object_schema"] == "s1"
+        assert header["object"]["object_name"] == "bad"
+        assert header["object"]["object_type"] == "table"
+        # SQL body preserved
+        assert "CREATE TABLE s1.bad (id INT);" in fixed
+        # The invalid section is gone
+        assert "notes: converted" not in fixed
+
+    def test_require_autodoc_fails_on_broken_header(self, tmp_path: Path):
+        from db_project_manager.infrastructure.yaml_project import YamlGeneratorError
+
+        src = self._make_dir(tmp_path)
+        (src / "s1" / "tables" / "table bad.sql").write_text(
+            """[<[autodoc-yaml]]
+object:
+  object_type: table
+  object_name: bad
+broken: value: with colon
+[[autodoc-yaml]>]
+
+CREATE TABLE s1.bad (id INT);
+""",
+            encoding="utf-8",
+        )
+        with pytest.raises(YamlGeneratorError, match="невалидный YAML"):
+            generate_yaml_project(src, db_type="postgres", require_autodoc=True)
 
 
 class TestGenerateYamlProject:

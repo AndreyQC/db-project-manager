@@ -31,6 +31,7 @@ Known limitations (documented in Phase 13):
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from typing import Any
 
 import sqlglot
@@ -48,6 +49,19 @@ from db_project_manager.infrastructure.diff.normalize_sql import DEFAULT_DIALECT
 from db_project_manager.infrastructure.yaml_project.column_parsers import parse_columns
 
 # ------------------------------------------------------------- public API
+
+
+@dataclass(frozen=True)
+class ParsedSqlObject:
+    """A domain object parsed from a file WITHOUT an autodoc header.
+
+    Unlike the autodoc path (schema comes from the header), the schema here is
+    derived from the qualified name in the DDL (``CREATE TABLE s.t`` → schema
+    ``s``). ``schema`` is ``None`` when the DDL uses a bare name.
+    """
+
+    schema: str | None
+    obj: YamlTable | YamlView | YamlFunction | YamlExternalTable
 
 
 def parse_autodoc_object(
@@ -98,12 +112,13 @@ def parse_autodoc_object(
 def parse_sql_object(
     sql_body: str,
     db_type: str,
-) -> YamlTable | YamlView | YamlFunction | YamlExternalTable | None:
+) -> ParsedSqlObject | None:
     """Parse a SQL file without an autodoc header into a Yaml domain object.
 
     Used as a fallback for hand-written files. Tries sqlglot first; if it returns
     a ``Command`` (GP-specific DDL that sqlglot does not support), falls back to
-    regex-based extraction.
+    regex-based extraction. The object's schema is derived from the qualified
+    name in the DDL (``None`` for bare names).
     """
     try:
         tree = sqlglot.parse_one(sql_body, read=DEFAULT_DIALECT)
@@ -158,15 +173,22 @@ def _parse_table_from_autodoc(
     )
 
 
-def _parse_table_from_tree(tree: exp.Create, sql_body: str, db_type: str) -> YamlTable | None:
-    """Parse a CREATE TABLE / CREATE EXTERNAL TABLE from a sqlglot tree."""
+def _parse_table_from_tree(tree: exp.Create, sql_body: str, db_type: str) -> ParsedSqlObject | None:
+    """Parse a CREATE TABLE from a sqlglot tree.
+
+    sqlglot 27 shape: ``Create(kind="TABLE", this=Schema(this=Table))`` — the
+    schema comes from ``Table.db`` and the bare name from ``Table.name``
+    (``Schema.name`` returns '' — the old code produced empty object names).
+    """
     schema_node = tree.this
     if not isinstance(schema_node, exp.Schema):
         return None
+    table_node = schema_node.this
+    if not isinstance(table_node, exp.Table):
+        return None
 
-    name = schema_node.name  # may be "schema.name" or bare "name"
-    if "." in name:
-        _, name = name.rsplit(".", 1)
+    schema = table_node.db or None
+    name = table_node.name
 
     # Check if it's an external table
     if _is_external_table_create(tree):
@@ -187,11 +209,14 @@ def _parse_table_from_tree(tree: exp.Create, sql_body: str, db_type: str) -> Yam
         ))
 
     distributed_by, with_options = _parse_gp_table_options(sql_body)
-    return YamlTable(
-        name=name,
-        columns=columns,
-        distributed_by=distributed_by,
-        with_options=with_options,
+    return ParsedSqlObject(
+        schema=schema,
+        obj=YamlTable(
+            name=name,
+            columns=columns,
+            distributed_by=distributed_by,
+            with_options=with_options,
+        ),
     )
 
 
@@ -225,34 +250,49 @@ def _parse_view_from_autodoc(
 
 
 def _parse_create_from_tree(tree: exp.Create, sql_body: str, db_type: str):
-    """Dispatch a CREATE that is not a table/external-table to the right handler."""
-    if isinstance(tree.this, exp.View):
+    """Dispatch a CREATE that is not a table to the right handler.
+
+    Dispatch is by ``Create.kind`` — sqlglot 27 has NO ``exp.View`` /
+    ``exp.Procedure`` nodes: views are ``Create(kind="VIEW", this=Table)``
+    and functions are ``Create(kind="FUNCTION", this=UserDefinedFunction)``
+    (LESSONS §44: verify AST node names on the installed version, the old
+    code crashed with AttributeError on the first non-autodoc view/function).
+    """
+    kind = (tree.kind or "").upper()
+    if kind == "VIEW":
         return _parse_view_from_tree(tree, sql_body)
-    if isinstance(tree.this, (exp.Func, exp.Procedure)):
+    if kind in ("FUNCTION", "PROCEDURE"):
         return _parse_function_from_tree(tree, sql_body)
     return None
 
 
-def _parse_view_from_tree(tree: exp.Create, sql_body: str) -> YamlView | None:
-    """Parse a CREATE VIEW / CREATE MATERIALIZED VIEW from a sqlglot tree."""
+def _parse_view_from_tree(tree: exp.Create, sql_body: str) -> ParsedSqlObject | None:
+    """Parse a CREATE VIEW / CREATE MATERIALIZED VIEW from a sqlglot tree.
+
+    Both parse as ``Create(kind="VIEW")``; a materialized view carries a
+    ``MaterializedProperty`` in ``properties``. The schema comes from
+    ``Table.db`` of ``Create.this``.
+    """
     view_node = tree.this
-    if not isinstance(view_node, (exp.View, exp.Materialized)):
+    if not isinstance(view_node, exp.Table):
         return None
-    if isinstance(view_node, exp.Materialized):
-        name = view_node.name
-        is_materialized = True
-    else:
-        name = view_node.name
-        is_materialized = False
+    schema = view_node.db or None
+    name = view_node.name
 
-    if "." in name:
-        _, name = name.rsplit(".", 1)
+    props = tree.args.get("properties")
+    is_materialized = any(
+        isinstance(p, exp.MaterializedProperty)
+        for p in (props.expressions if props else [])
+    )
 
-    return YamlView(
-        name=name,
-        columns=[],  # columns extracted separately if needed
-        definition=sql_body.strip(),
-        is_materialized=is_materialized,
+    return ParsedSqlObject(
+        schema=schema,
+        obj=YamlView(
+            name=name,
+            columns=[],  # columns extracted separately if needed
+            definition=sql_body.strip(),
+            is_materialized=is_materialized,
+        ),
     )
 
 
@@ -282,40 +322,54 @@ def _parse_function_from_autodoc(
     )
 
 
-def _parse_function_from_tree(tree: exp.Create, sql_body: str) -> YamlFunction | None:
-    """Parse a CREATE FUNCTION / CREATE PROCEDURE from a sqlglot tree."""
-    func_node = tree.this
-    if not isinstance(func_node, (exp.Func, exp.Procedure)):
+def _parse_function_from_tree(tree: exp.Create, sql_body: str) -> ParsedSqlObject | None:
+    """Parse a CREATE FUNCTION / CREATE PROCEDURE from a sqlglot tree.
+
+    sqlglot 27 shape: ``Create(kind="FUNCTION", this=UserDefinedFunction)`` —
+    the UDF carries the name as a ``Table`` (schema in ``Table.db``) and the
+    arguments as ``ColumnDef`` expressions; RETURNS / LANGUAGE / SECURITY live
+    in ``properties`` (``ReturnsProperty`` / ``LanguageProperty`` /
+    ``SecurityProperty``), NOT as Create args.
+    """
+    udf = tree.this
+    if not isinstance(udf, exp.UserDefinedFunction):
         return None
 
-    name = func_node.name
-    if "." in name:
-        _, name = name.rsplit(".", 1)
+    name_node = udf.this  # Table
+    schema = name_node.db or None
+    name = name_node.name
 
-    arguments = []
-    for arg in (func_node.args.get("args") or []):
+    arguments: list[dict[str, str]] = []
+    for arg in (udf.args.get("expressions") or []):
         if isinstance(arg, exp.ColumnDef):
             arguments.append({
                 "name": arg.name or "",
                 "type": arg.kind.sql(dialect=DEFAULT_DIALECT).lower() if arg.kind else "any",
             })
 
-    returns_node = func_node.args.get("returns")
-    returns = returns_node.sql(dialect=DEFAULT_DIALECT).lower() if returns_node else ""
+    returns = ""
+    language = "plpgsql"
+    security_definer = False
+    props = tree.args.get("properties")
+    for prop in (props.expressions if props else []):
+        if isinstance(prop, exp.ReturnsProperty) and prop.this is not None:
+            returns = prop.this.sql(dialect=DEFAULT_DIALECT).lower()
+        elif isinstance(prop, exp.LanguageProperty) and prop.this is not None:
+            language = prop.this.name.lower()
+        elif isinstance(prop, exp.SecurityProperty):
+            security_definer = str(prop.this).upper() == "DEFINER"
 
-    lang_node = func_node.args.get("language")
-    language = lang_node.sql(dialect=DEFAULT_DIALECT).lower() if lang_node else "plpgsql"
-
-    security_definer = bool(func_node.args.get("security_definer"))
-
-    return YamlFunction(
-        name=name,
-        arguments=arguments,
-        returns=returns,
-        definition=sql_body.strip(),
-        language=language,
-        security_definer=security_definer,
-        is_trigger=False,
+    return ParsedSqlObject(
+        schema=schema,
+        obj=YamlFunction(
+            name=name,
+            arguments=arguments,
+            returns=returns,
+            definition=sql_body.strip(),
+            language=language,
+            security_definer=security_definer,
+            is_trigger=False,
+        ),
     )
 
 
@@ -402,7 +456,7 @@ def _parse_external_table_from_tree(tree: exp.Create, sql_body: str) -> YamlExte
 def _parse_command_fallback(
     sql_body: str,
     db_type: str,
-) -> YamlTable | YamlExternalTable | None:
+) -> ParsedSqlObject | None:
     """Fallback for SQL that sqlglot cannot parse (GP-specific DDL).
 
     Tries to classify by keyword pattern in the raw SQL text.
@@ -417,31 +471,32 @@ def _parse_command_fallback(
     return None
 
 
-def _parse_table_from_raw_sql(sql_body: str) -> YamlTable | None:
+def _parse_table_from_raw_sql(sql_body: str) -> ParsedSqlObject | None:
     """Parse a CREATE TABLE using regex when sqlglot returned Command."""
-    match = _RE_CREATE_TABLE.match(sql_body)
-    if not match:
+    if not _RE_CREATE_TABLE.search(sql_body):
         return None
     columns = parse_columns(sql_body, "greenplum")
     distributed_by, with_options = _parse_gp_table_options(sql_body)
-    name_match = re.search(r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:[\w.]+\.)?(\w+)", sql_body, re.IGNORECASE)
-    name = name_match.group(1) if name_match else "unknown"
-    return YamlTable(
-        name=name,
-        columns=columns,
-        distributed_by=distributed_by,
-        with_options=with_options,
+    schema, name = _extract_qualified_name(
+        r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?", sql_body
+    )
+    return ParsedSqlObject(
+        schema=schema,
+        obj=YamlTable(
+            name=name,
+            columns=columns,
+            distributed_by=distributed_by,
+            with_options=with_options,
+        ),
     )
 
 
-def _parse_external_table_from_raw_sql(sql_body: str) -> YamlExternalTable | None:
+def _parse_external_table_from_raw_sql(sql_body: str) -> ParsedSqlObject | None:
     """Parse a CREATE EXTERNAL TABLE using regex when sqlglot returned Command."""
-    name_match = re.search(
-        r"CREATE\s+(?:WRITABLE\s+)?EXTERNAL\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:[\w.]+\.)?(\w+)",
+    schema, name = _extract_qualified_name(
+        r"CREATE\s+(?:WRITABLE\s+)?EXTERNAL\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?",
         sql_body,
-        re.IGNORECASE,
     )
-    name = name_match.group(1) if name_match else "unknown"
     # External table columns are always nullable in GP
     columns = [
         YamlColumn(name=c.name, type=c.type, nullable=True, default=None)
@@ -449,14 +504,28 @@ def _parse_external_table_from_raw_sql(sql_body: str) -> YamlExternalTable | Non
     ]
     location, format_type, format_options = _parse_external_location_and_format(sql_body)
     encoding = _parse_encoding(sql_body)
-    return YamlExternalTable(
-        name=name,
-        columns=columns,
-        location=location,
-        format_type=format_type,
-        format_options=format_options,
-        encoding=encoding,
+    return ParsedSqlObject(
+        schema=schema,
+        obj=YamlExternalTable(
+            name=name,
+            columns=columns,
+            location=location,
+            format_type=format_type,
+            format_options=format_options,
+            encoding=encoding,
+        ),
     )
+
+
+def _extract_qualified_name(create_prefix_re: str, sql_body: str) -> tuple[str | None, str]:
+    """Extract (schema, name) from the qualified object name after a CREATE prefix.
+
+    Returns ``(None, fallback)`` when no name matches at all.
+    """
+    m = re.search(create_prefix_re + r'("?(?P<schema>[\w$]+)"?\s*\.\s*)?"?(?P<name>[\w$]+)"?', sql_body, re.IGNORECASE)
+    if not m:
+        return None, "unknown"
+    return m.group("schema"), m.group("name")
 
 
 _RE_CREATE_TABLE = re.compile(r"^\s*CREATE\s+TABLE", re.IGNORECASE | re.MULTILINE)
