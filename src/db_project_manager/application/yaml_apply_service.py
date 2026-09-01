@@ -341,7 +341,14 @@ CREATE SCHEMA IF NOT EXISTS {self._qi(schema.name)};
         output_dir: Path,
         project: YamlProject,
     ) -> int:
-        """Write a view SQL file. Returns 1."""
+        """Write a view SQL file. Returns 1.
+
+        ``definition`` is the FULL statement body (``CREATE [OR REPLACE] VIEW
+        ... AS ...``) — it is emitted VERBATIM. The old code wrapped it in the
+        view template's own ``CREATE OR REPLACE VIEW ... AS``, producing an
+        invalid double-CREATE (feedback 01.09); the template is only used by
+        the RE path, where ``definition`` is a bare SELECT.
+        """
         obj_key = (
             f"pg_database/{project.database}/schema/{schema.name}/"
             f"type/{'materialized_view' if view.is_materialized else 'view'}/name/{view.name}"
@@ -353,23 +360,12 @@ CREATE SCHEMA IF NOT EXISTS {self._qi(schema.name)};
             object_name=view.name,
             object_key=obj_key,
         )
-        template = self._env.get_template(
-            "materialized_view.sql.j2" if view.is_materialized else "view.sql.j2"
-        )
-        ctx = {
-            "schema": schema.name,
-            "name": view.name,
-            "definition": "\n" + view.definition.strip(),
-            "columns": [],
-            "comment": None,
-        }
-        sql_body = template.render(**ctx)
         sql = f"""\
 /*====================================================================================
 [<[autodoc-yaml]]\n{autodoc}[[autodoc-yaml]>]
 =====================================================================================*/
 
-{sql_body}
+{view.definition.strip()}
 """
         # Layout follows the RE convention (<schema>/<kind>/<object_type> <name>.sql):
         # views -> views/, materialized views -> materialized_views/ (separate kind dir).
@@ -391,7 +387,12 @@ CREATE SCHEMA IF NOT EXISTS {self._qi(schema.name)};
         output_dir: Path,
         project: YamlProject,
     ) -> int:
-        """Write a function/procedure SQL file. Returns 1."""
+        """Write a function/procedure SQL file. Returns 1.
+
+        ``definition`` is the full statement body — emitted VERBATIM (no
+        wrapping comment line, no appended ``;``) so that a generate roundtrip
+        reproduces the definition exactly.
+        """
         obj_type = "function"
         obj_key = (
             f"pg_database/{project.database}/schema/{schema.name}/"
@@ -404,31 +405,12 @@ CREATE SCHEMA IF NOT EXISTS {self._qi(schema.name)};
             object_name=function.name,
             object_key=obj_key,
         )
-
-        # Build argument_types string (like "param1:text, param2:integer")
-        arg_types_parts = []
-        for arg in function.arguments:
-            if arg.get("name"):
-                arg_types_parts.append(f"{arg['name']}:{arg['type']}")
-            else:
-                arg_types_parts.append(arg["type"])
-        argument_types_str = ", ".join(arg_types_parts)
-
-        template = self._env.get_template("function.sql.j2")
-        ctx = {
-            "schema": schema.name,
-            "name": function.name,
-            "definition": "\n" + function.definition.strip(),
-            "argument_types": argument_types_str,
-            "comment": None,
-        }
-        sql_body = template.render(**ctx)
         sql = f"""\
 /*====================================================================================
 [<[autodoc-yaml]]\n{autodoc}[[autodoc-yaml]>]
 =====================================================================================*/
 
-{sql_body}
+{function.definition.strip()}
 """
         funcs_dir = output_dir / schema.name / "functions"
         funcs_dir.mkdir(parents=True, exist_ok=True)

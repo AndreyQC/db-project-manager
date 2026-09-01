@@ -813,6 +813,41 @@ class TestApplyLayout:
         t2 = (tmp_path / "s" / "tables" / "table t2.sql").read_text(encoding="utf-8")
         assert ")\nWITH (orientation=COLUMN);" in t2
 
+    def test_view_and_function_written_verbatim(self, tmp_path: Path):
+        """definition is a FULL statement body — it must be emitted verbatim.
+        Regression (feedback 01.09): the view template wrapped it in its own
+        CREATE OR REPLACE VIEW ... AS -> invalid double CREATE."""
+        view_def = (
+            "CREATE OR REPLACE VIEW s.v1 (\n    a\n    ,b\n) AS\nSELECT 1;"
+        )
+        func_def = "CREATE FUNCTION s.f1() RETURNS int LANGUAGE plpgsql AS $$ SELECT 1 $$;"
+        project = YamlProject(
+            db_type="postgres",
+            database="d",
+            generated_at="2026-09-01T00:00:00+00:00",
+            schemas=[YamlSchema(
+                name="s",
+                views=[YamlView(name="v1", definition=view_def)],
+                functions=[YamlFunction(name="f1", definition=func_def)],
+            )],
+        )
+        YamlApplyService().run(project, tmp_path, "postgres")
+
+        v = (tmp_path / "s" / "views" / "view v1.sql").read_text(encoding="utf-8")
+        assert v.count("CREATE OR REPLACE VIEW") == 1
+        assert view_def in v  # verbatim, including the column list
+
+        f = (tmp_path / "s" / "functions" / "function f1.sql").read_text(encoding="utf-8")
+        assert f.count("CREATE FUNCTION") == 1
+        assert func_def in f
+        assert not f.rstrip().endswith(";;")  # no duplicated semicolon
+
+        # Roundtrip: generate on the applied dir reproduces the definitions exactly
+        rt = generate_yaml_project(tmp_path, db_type="postgres")
+        s = {x.name: x for x in rt.schemas}["s"]
+        assert s.views[0].definition.strip() == view_def
+        assert s.functions[0].definition.strip() == func_def
+
 
 class TestExternalTableTemplate:
     """Test that external table SQL is rendered correctly."""
