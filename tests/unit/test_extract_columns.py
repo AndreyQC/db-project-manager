@@ -47,6 +47,28 @@ def test_extract_from_canonical_re_ddl() -> None:
     assert all(c.default is None for c in cols)
 
 
+def test_extract_from_drop_plus_create_body() -> None:
+    """Regression (feedback 01.09): RE-style files start with
+    ``DROP TABLE IF EXISTS ... CASCADE;`` — parse_one returned the Drop and the
+    whole file degraded to "columns unavailable" (0 columns in yaml generate).
+    The CREATE must be found among ALL statements."""
+    body = """DROP TABLE IF EXISTS s.t CASCADE;
+
+CREATE TABLE s.t (
+    id INT NOT NULL,
+    name TEXT,
+    amount NUMERIC (38, 0) DEFAULT 0
+);
+
+COMMENT ON TABLE s.t IS 'x';"""
+    cols = _extract(body)
+    assert cols is not None
+    by_name = {c.name: c for c in cols}
+    assert by_name["id"].nullable is False
+    assert by_name["amount"].type == "decimal(38,0)"
+    assert by_name["amount"].default == "0"
+
+
 def test_extract_default_expression() -> None:
     """Sequence default: rendered expression text (sqlglot-normalized, symmetric)."""
     body = _read_sql_body(CODEBASE_SAMPLE, "bookings/tables/table tickets.sql")

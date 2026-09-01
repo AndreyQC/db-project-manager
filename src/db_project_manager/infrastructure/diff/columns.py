@@ -5,9 +5,12 @@ autodoc, so the code-first workflow (hand-edited ``CREATE TABLE``) can never dri
 the metadata. Both comparison sides go through this same extractor — the DIR side reads
 the codebase files, the DB side reads the reverse-engineer's canonical DDL output.
 
-``extract_columns`` parses the first statement of the body (a table file is
-``CREATE TABLE ...;`` followed by optional ``COMMENT ON`` statements, which are not
-columns) and maps each ``ColumnDef`` to a normalized
+``extract_columns`` parses the statements of the body and picks the ``CREATE``
+one. A real table file is ``DROP TABLE IF EXISTS ...;`` followed by
+``CREATE TABLE ...;`` and optional ``COMMENT ON`` statements — the CREATE is
+not necessarily the FIRST statement, so single-statement ``parse_one`` is not
+enough (it returned the Drop and made every RE-style file "columns
+unavailable"). Each ``ColumnDef`` maps to a normalized
 :class:`~db_project_manager.domain.delta.ColumnSnapshot`:
 
 - ``type`` — sqlglot-rendered canonical type string. sqlglot collapses most PostgreSQL
@@ -67,10 +70,11 @@ def extract_columns(body: str, *, dialect: str = DEFAULT_DIALECT) -> list[Column
     if not body or not body.strip():
         return None
     try:
-        tree = sqlglot.parse_one(body, read=dialect)
+        statements = sqlglot.parse(body, read=dialect)
     except Exception:  # noqa: BLE001 — sqlglot raises various error subclasses
         return None
-    if not isinstance(tree, exp.Create):
+    tree = next((s for s in statements if isinstance(s, exp.Create)), None)
+    if tree is None:
         return None
     schema = tree.this if isinstance(tree.this, exp.Schema) else None
     if schema is None:
