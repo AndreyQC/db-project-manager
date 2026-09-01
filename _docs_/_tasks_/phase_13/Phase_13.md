@@ -102,6 +102,22 @@ Depth-tracking parenthesis counter корректно обрабатывает:
 - Инвариант: roundtrip `generate -> apply -> generate` на cis_zup даёт
   0 расхождений по всем полям всех 277 объектов. Урок — LESSONS §55.
 
+### Feedback-фиксы yaml generate (01.09, коммит `89b6a7a`)
+
+- Краш `exp.View` (sqlglot 27): tree-парсеры view/function переписаны по
+  фактическому AST (Create.kind + MaterializedProperty/ReturnsProperty/
+  LanguageProperty/SecurityProperty) — продолжение урока §44.
+- Схема объектов из файлов без autodoc берётся из qualified имени DDL
+  (`ParsedSqlObject.schema`; sqlglot `Table.db` + GP regex-захват); было —
+  всегда `public`.
+- Три класса входа с разными сообщениями: без autodoc (fallback + совет),
+  сломанный autodoc (identity salvage построчно, пересборка in-memory),
+  валидный. Флаги: `--require-autodoc` (strict/CI), `--fix-broken-autodoc`
+  (перезапись сломанных заголовков на диск; remarks-секции удаляются с
+  отчётом). Уроки — LESSONS §56.
+- Корпус cis_zup (PG): 277 сломанных заголовков (миграционный скрипт писал
+  `': '` без кавычек) восстановлены salvage; объекты сходятся с GP-стороной.
+
 ### Компоненты
 
 | Файл | Назначение |
