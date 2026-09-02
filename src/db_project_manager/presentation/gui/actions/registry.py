@@ -21,6 +21,8 @@ from db_project_manager.infrastructure.config.connection_store import Connection
 from db_project_manager.presentation.gui.actions.cli import (
     build_cli_compare,
     build_cli_deploy_analyze,
+    build_cli_deploy_apply,
+    build_cli_deploy_plan,
     build_cli_deploy_validate,
     build_cli_graph_prepare,
     build_cli_reverse_engineer,
@@ -30,6 +32,7 @@ from db_project_manager.presentation.gui.actions.cli import (
 from db_project_manager.presentation.gui.actions.models import (
     CompareSettings,
     DeployAnalyzeSettings,
+    DeployApplySettings,
     DeployValidateSettings,
     GraphPrepareSettings,
     ReverseEngineerSettings,
@@ -199,6 +202,22 @@ def _make_yaml_apply_worker(store, settings: YamlApplySettings):
     )
 
 
+def _make_deploy_plan_dialog(store, settings, parent):
+    raise NotImplementedError("phase 15 S2")
+
+
+def _make_deploy_apply_dialog(store, settings, parent):
+    raise NotImplementedError("phase 15 S2")
+
+
+def _make_deploy_plan_worker(store, settings: DeployApplySettings):
+    raise NotImplementedError("phase 15 S2")
+
+
+def _make_deploy_apply_worker(store, settings: DeployApplySettings):
+    raise NotImplementedError("phase 15 S2")
+
+
 ACTIONS: list[ActionSpec] = [
     ActionSpec(
         action_id="reverse_engineer",
@@ -262,6 +281,24 @@ ACTIONS: list[ActionSpec] = [
         make_worker=_make_yaml_apply_worker,
         build_cli=build_cli_yaml_apply,
         required_fields=("yaml_file", "output_dir"),
+    ),
+    ActionSpec(
+        action_id="deploy_plan",
+        title="Сформировать план деплоя на существующую БД (dry-run)",
+        settings_model=DeployApplySettings,
+        make_dialog=_make_deploy_plan_dialog,
+        make_worker=_make_deploy_plan_worker,
+        build_cli=build_cli_deploy_plan,
+        required_fields=("codebase_dir", "target_connection", "output_dir"),
+    ),
+    ActionSpec(
+        action_id="deploy_apply",
+        title="Применить деплой к существующей БД (мутирует данные)",
+        settings_model=DeployApplySettings,
+        make_dialog=_make_deploy_apply_dialog,
+        make_worker=_make_deploy_apply_worker,
+        build_cli=build_cli_deploy_apply,
+        required_fields=("codebase_dir", "target_connection", "output_dir"),
     ),
 ]
 

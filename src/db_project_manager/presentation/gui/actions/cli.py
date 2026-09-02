@@ -13,6 +13,7 @@ from db_project_manager.presentation.gui.actions.models import (
     FORMAT_NONE,
     CompareSettings,
     DeployAnalyzeSettings,
+    DeployApplySettings,
     DeployValidateSettings,
     GraphPrepareSettings,
     ReverseEngineerSettings,
@@ -121,3 +122,45 @@ def build_cli_yaml_apply(settings: YamlApplySettings, store: ConnectionStore) ->
         f"--target-db-type {settings.target_db_type} "
         f"--output {_quote(settings.output_dir)}"
     )
+
+
+def build_cli_deploy_plan(settings: DeployApplySettings, store: ConnectionStore) -> str:
+    """Build ``db-pm deploy plan ...`` from GUI settings.
+
+    Mirrors ``presentation/cli/main.py:deploy_plan`` (CLI flags: --include-drops).
+    ``confirm_understands_risk`` is intentionally omitted (GUI-side gate, not a
+    CLI contract).
+    """
+    conn_file = store.path_for(settings.target_connection)
+    parts = [
+        "db-pm deploy plan",
+        f"--dir {_quote(settings.codebase_dir)}",
+        f"--target-connection-file {_quote(str(conn_file))}",
+        f"--output-dir {_quote(settings.output_dir)}",
+    ]
+    if settings.include_drops:
+        parts.append("--include-drops")
+    return " ".join(parts)
+
+
+def build_cli_deploy_apply(settings: DeployApplySettings, store: ConnectionStore) -> str:
+    """Build ``db-pm deploy apply ...`` from GUI settings.
+
+    Mirrors ``presentation/cli/main.py:deploy_apply`` (CLI flags: --include-drops,
+    --no-rehearsal, --keep-rehearsal-db). ``confirm_understands_risk`` is intentionally
+    omitted (GUI-side gate, not a CLI contract).
+    """
+    conn_file = store.path_for(settings.target_connection)
+    parts = [
+        "db-pm deploy apply",
+        f"--dir {_quote(settings.codebase_dir)}",
+        f"--target-connection-file {_quote(str(conn_file))}",
+        f"--output-dir {_quote(settings.output_dir)}",
+    ]
+    if settings.include_drops:
+        parts.append("--include-drops")
+    if settings.no_rehearsal:
+        parts.append("--no-rehearsal")
+    if settings.keep_rehearsal_db:
+        parts.append("--keep-rehearsal-db")
+    return " ".join(parts)

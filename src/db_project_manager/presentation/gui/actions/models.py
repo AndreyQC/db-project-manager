@@ -106,3 +106,26 @@ class YamlApplySettings(BaseModel):
     yaml_file: str = ""
     target_db_type: str = "postgres"  # greenplum | postgres
     output_dir: str = ""
+
+
+class DeployApplySettings(BaseModel):
+    """Settings for the deploy plan/apply actions (Phase 15 / GUI action).
+
+    Shared between two actions (``deploy_plan`` is dry-run; ``deploy_apply``
+    mutates an EXISTING target DB). Field named ``target_connection`` to avoid
+    colliding with BaseModel (LESSONS §40) and to stress "existing target".
+
+    ``confirm_understands_risk`` is a GUI-side gate (LESSONS §43 + preflight
+    pattern): the OK button is disabled until the user checks the box. The
+    CLI builder ignores this flag — it is not part of the CLI contract.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    codebase_dir: str = ""
+    target_connection: str = ""
+    output_dir: str = ""
+    include_drops: bool = False
+    no_rehearsal: bool = False  # CLI applies this only to deploy apply
+    keep_rehearsal_db: bool = False  # CLI applies this only to deploy apply
+    confirm_understands_risk: bool = False  # GUI gate, never sent to CLI
