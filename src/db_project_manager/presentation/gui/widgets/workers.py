@@ -523,3 +523,36 @@ class LoadDiffReportWorker(QRunnable):
         except Exception as e:  # noqa: BLE001
             self.signals.error.emit(f"Непредвиденная ошибка: {e}")
             self.signals.finished.emit(None)
+
+
+class LoadPlanReportWorker(QRunnable):
+    """Load + parse a ``plan.json`` off the UI thread (Phase 15).
+
+    Mirrors :class:`LoadDiffReportWorker` (Phase 14) — keeps large-file parsing
+    off the UI thread for :class:`~db_project_manager.presentation.gui.widgets.plan_viewer.PlanViewerWindow`.
+    Emits the parsed :class:`~db_project_manager.domain.delta.DeltaPlan` on success,
+    or ``None`` + an error message on failure (missing/invalid file).
+    """
+
+    def __init__(self, path: str | Path) -> None:
+        super().__init__()
+        self.path = Path(path)
+        self.signals = WorkerSignals()
+
+    def run(self) -> None:  # noqa: C901 (Qt entrypoint)
+        from db_project_manager.infrastructure.deploy.plan_report import load_plan_report
+        from pydantic import ValidationError
+
+        try:
+            plan = load_plan_report(self.path)
+            self.signals.status.emit(f"План загружен: {self.path.name}")
+            self.signals.finished.emit(plan)
+        except (ValidationError, ValueError) as e:
+            self.signals.error.emit(f"Не удалось разобрать план: {e}")
+            self.signals.finished.emit(None)
+        except OSError as e:
+            self.signals.error.emit(f"Не удалось прочитать файл: {e}")
+            self.signals.finished.emit(None)
+        except Exception as e:  # noqa: BLE001
+            self.signals.error.emit(f"Непредвиденная ошибка: {e}")
+            self.signals.finished.emit(None)

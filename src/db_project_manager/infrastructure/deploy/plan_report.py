@@ -107,3 +107,15 @@ def write_plan_report(plan: DeltaPlan, output_dir: Path) -> list[Path]:
     json_path.write_text(plan.model_dump_json(indent=2), encoding="utf-8")
     md_path.write_text(render_plan_markdown(plan), encoding="utf-8")
     return [md_path, json_path]
+
+
+def load_plan_report(path: str | Path) -> DeltaPlan:
+    """Parse a ``plan.json`` produced by :func:`write_plan_report` back into a ``DeltaPlan``.
+
+    Symmetric to the ``DiffReport.model_validate_json(...)`` pattern in
+    ``presentation/gui/widgets/delta_viewer.py``. Raises ``pydantic.ValidationError``
+    or ``FileNotFoundError`` on bad input — callers (e.g. ``LoadPlanReportWorker``)
+    surface the message via the GUI error signal.
+    """
+    text = Path(path).read_text(encoding="utf-8")
+    return DeltaPlan.model_validate_json(text)
