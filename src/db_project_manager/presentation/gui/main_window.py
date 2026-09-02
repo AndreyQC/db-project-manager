@@ -9,6 +9,7 @@ services; this class only wires UI to signals.
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 from pydantic import BaseModel
 from PySide6.QtCore import QThreadPool
@@ -113,12 +114,17 @@ class MainWindow(QMainWindow):
         root.addWidget(viewer_group, stretch=1)
 
     def _init_menu(self) -> None:
-        """Build the menu bar (Phase 14: View -> Delta Viewer)."""
+        """Build the menu bar (Phase 14: View -> Delta Viewer; Phase 15: View -> Plan Viewer)."""
         view_menu = self.menuBar().addMenu("Вид")
         self._delta_viewer_action = QAction("Delta Viewer…", self)
         self._delta_viewer_action.setToolTip("Открыть отчёт сравнения для просмотра")
         self._delta_viewer_action.triggered.connect(self._on_open_delta_viewer)
         view_menu.addAction(self._delta_viewer_action)
+
+        self._plan_viewer_action = QAction("Plan Viewer…", self)
+        self._plan_viewer_action.setToolTip("Открыть план деплоя (plan.json) для просмотра")
+        self._plan_viewer_action.triggered.connect(self._on_open_plan_viewer)
+        view_menu.addAction(self._plan_viewer_action)
 
     # --- Delta Viewer (Phase 14) ---
 
@@ -149,6 +155,49 @@ class MainWindow(QMainWindow):
         if not path:
             return
         self.open_delta_viewer(path)
+
+    # --- Plan Viewer (Phase 15) ---
+
+    def open_plan_viewer(
+        self,
+        report_path: str | None = None,
+        *,
+        target_connection: str = "",
+        codebase_dir: str = "",
+        output_dir: str = "",
+    ) -> None:
+        """Open the Plan Viewer window, optionally pre-filled (Phase 15, PRE-1).
+
+        When ``target_connection``/``codebase_dir``/``output_dir`` are supplied
+        (e.g. after a successful ``deploy plan`` or ``deploy apply``), the
+        viewer's «Применить» toolbar action is enabled — it can launch a
+        :class:`DeployApplyDialog` with these defaults (PRE-3).
+        """
+        from db_project_manager.presentation.gui.widgets.plan_viewer import PlanViewerWindow
+
+        window = PlanViewerWindow(
+            connection_store=self.store,
+            target_connection=target_connection,
+            codebase_dir=codebase_dir,
+            output_dir=output_dir,
+            parent=self,
+        )
+        window.destroyed.connect(lambda _obj=None: self._on_child_window_closed(window))
+        self._child_windows.append(window)
+        if report_path is not None:
+            window.load_from_path(report_path)
+        window.show()
+
+    def _on_open_plan_viewer(self) -> None:
+        """Menu handler: ask for a plan.json, then open the Plan Viewer on it."""
+        from PySide6.QtWidgets import QFileDialog
+
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Открыть plan.json", "", "JSON (*.json)"
+        )
+        if not path:
+            return
+        self.open_plan_viewer(path)
 
     def _on_child_window_closed(self, window) -> None:
         try:
@@ -240,6 +289,12 @@ class MainWindow(QMainWindow):
         elif action_id == "deploy_analyze":
             # result is a SafetyGateVerdict (read-only dry-run, SG-7).
             self._report_analyze_result(result, settings)
+        elif action_id == "deploy_plan":
+            # result is a DeltaPlan (dry-run, read-only). Offer to open Plan Viewer.
+            self._report_plan_result(result, settings)
+        elif action_id == "deploy_apply":
+            # result is an ApplyResult (mutates target). Offer to open Plan Viewer.
+            self._report_apply_result(result, settings)
         elif action_id == "compare":
             # result is the report dir (Path). Open it in the viewer and show a summary.
             self._viewer.set_root(str(result))
@@ -326,6 +381,77 @@ class MainWindow(QMainWindow):
             self._append_status(f"Деплой с ошибками: база {db_name}, объектов {done}/{total}")
             QMessageBox.warning(
                 self, "Deploy", f"Деплой завершился с ошибками ({len(errors)}).\nБаза: {db_name}"
+            )
+
+    # --- Phase 15: deploy plan / apply result reporting ---
+
+    def _plan_json_path(self, output_dir: str | Path) -> Path:
+        return Path(output_dir) / "plan.json"
+
+    def _report_plan_result(self, plan, settings) -> None:
+        """Show plan counters + offer to open the Plan Viewer (Phase 15, PRE-3)."""
+        plan_path = self._plan_json_path(settings.output_dir)
+        ops = len(getattr(plan, "operations", []) or [])
+        safe = len(getattr(plan, "safe_ops", []) or [])
+        needs_pre = len(getattr(plan, "needs_pre_ops", []) or [])
+        blocked = len(getattr(plan, "violations", []) or [])
+        self._append_status(
+            f"✓ Plan готов: операций {ops} (safe: {safe}, needs-pre: {needs_pre}, "
+            f"blocked: {blocked}). Отчёт: {plan_path}"
+        )
+        body = (
+            f"План сформирован: операций {ops}.\n"
+            f"safe: {safe}; needs-pre: {needs_pre}; blocked: {blocked}.\n\n"
+            f"Открыть план в Plan Viewer?\n\n"
+            f"Файл: {plan_path}"
+        )
+        reply = QMessageBox.question(
+            self,
+            "Deploy plan",
+            body,
+            QMessageBox.StandardButton.Open | QMessageBox.StandardButton.Close,
+            QMessageBox.StandardButton.Open,
+        )
+        if reply == QMessageBox.StandardButton.Open and plan_path.exists():
+            self.open_plan_viewer(
+                str(plan_path),
+                target_connection=getattr(settings, "target_connection", "") or "",
+                codebase_dir=getattr(settings, "codebase_dir", "") or "",
+                output_dir=getattr(settings, "output_dir", "") or "",
+            )
+
+    def _report_apply_result(self, result, settings) -> None:
+        """Show apply counters + offer to open the Plan Viewer (Phase 15, PRE-3)."""
+        plan_path = self._plan_json_path(settings.output_dir)
+        applied = getattr(result, "applied", "?")
+        planned = getattr(result, "planned", "?")
+        applied_version = getattr(result, "applied_version", None) or "—"
+        rehearsal_db = getattr(result, "rehearsal_db", None) or "(без репетиции)"
+        self._append_status(
+            f"✓ Apply завершён: {applied}/{planned} операций, версия {applied_version}, "
+            f"репетиция: {rehearsal_db}. Артефакты: {plan_path.parent}"
+        )
+        body = (
+            f"✓ Apply завершён.\n\n"
+            f"Применено: {applied}/{planned} операций.\n"
+            f"Версия схемы: {applied_version}.\n"
+            f"Репетиция: {rehearsal_db}.\n\n"
+            f"Открыть план в Plan Viewer?\n\n"
+            f"Файл: {plan_path}"
+        )
+        reply = QMessageBox.question(
+            self,
+            "Deploy apply",
+            body,
+            QMessageBox.StandardButton.Open | QMessageBox.StandardButton.Close,
+            QMessageBox.StandardButton.Open,
+        )
+        if reply == QMessageBox.StandardButton.Open and plan_path.exists():
+            self.open_plan_viewer(
+                str(plan_path),
+                target_connection=getattr(settings, "target_connection", "") or "",
+                codebase_dir=getattr(settings, "codebase_dir", "") or "",
+                output_dir=getattr(settings, "output_dir", "") or "",
             )
 
     # --- shared worker plumbing ---
