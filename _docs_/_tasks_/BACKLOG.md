@@ -405,6 +405,35 @@ analyze → plan → apply через prefill в Plan Viewer. Все три CLI-
 
 ---
 
+## P3. validate_deploy_ddl не проверяет наличие schema __deploy.sql
+
+**Контекст (Phase 15.5, cis_zup feedback 2026-09-02):** при диагностике
+`InvalidSchemaName` для таблиц `__deploy` обнаружено, что
+`infrastructure/deploy/canonical_ddl.py::validate_deploy_ddl` (вызывается в
+`DeployValidateService.run` и `DeployApplyService._run_pipeline` перед apply)
+проверяет только3 таблицы (`schema_version`/`script_history`/`script_audit_log`).
+Наличие **`schema __deploy.sql`** НЕ проверяется.
+
+**Действие:** добавить проверку наличия файла
+`<codebase>/__deploy/schema __deploy.sql`. Если отсутствует — warning
+(как сейчас для таблиц), без блокировки apply (CDF-10 approach b).
+Compare с содержимым canonical: пустая схема `CREATE SCHEMA IF NOT
+EXISTS "__deploy";` + autodoc. SHA-256 нормализованного тела должен
+совпадать с `script_checksum(strip_autodoc("CREATE SCHEMA IF NOT
+EXISTS \"__deploy\";\n"))`.
+
+**Триггер:** первое ручное удаление schema __deploy.sql из codebase +
+последующий deploy apply.
+
+**Связано:** Phase 15.5 fix `DIFFED_TYPES + schema` (commit `606cd3d`)
+восстанавливает CREATE SCHEMA в плане для **пустой** target-БД, но не
+предотвращает silent drop schema.sql из codebase. Это второй шаг
+гигиены `__deploy`.
+
+**Не блокирует.** Реальный cis_zup имеет schema __deploy.sql на месте.
+
+---
+
 ## P3. Авто-генератор seed «одной записи на таблицу» (ALT-8b)
 
 **Контекст (Phase 12, ALT-8):** seed репетиции — пользовательские скрипты
