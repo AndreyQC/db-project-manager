@@ -107,10 +107,10 @@ def test_dir_vs_dir_identical_produces_all_unchanged(tmp_path):
     assert (out / TARGET_FILENAME).is_file()
     report_text = (out / DIFF_REPORT_FILENAME).read_text(encoding="utf-8")
     # Identical fixtures → everything unchanged, nothing added/removed/changed.
-    # 15 diffed objects (fixture has 18 vertices minus extension & database_setting
-    # minus __deploy schema = 15; the three __deploy tables are diffed, the
-    # __deploy schema object isn't — Phase 10 added the service schema).
-    assert '"unchanged": 15' in report_text
+    # Phase 15.5 (cis_zup feedback 2026-09-02): ``schema`` was added to
+    # DIFFED_TYPES, so schemas are now diffed too. The fixture has 20 vertices:
+    # -1 extension -1 database_setting = 18 diffed (15 non-schema + 3 schemas).
+    assert '"unchanged": 18' in report_text
     assert '"added": 0' in report_text
 
 

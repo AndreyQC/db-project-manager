@@ -854,3 +854,48 @@
   контракт теста — это «фильтр учитывает `_filter_dict`», а не «signal
   доходит до handler'а». Для последнего — `action.triggered.emit(...)`
   достаточно.
+
+### 61. `DIFFED_TYPES` без `schema` → deploy apply ломается на пустой БД
+- **Симптом (cis_zup feedback 2026-09-02):**
+  `db-pm deploy apply --dir cis_zup --target-connection-file ...`
+  на абсолютно пустую target-БД падает с
+  `psycopg2.errors.InvalidSchemaName: schema "cis_dmt_zup" does not exist`
+  на первой таблице `lu_zup_accountgroups`.
+- **Корневая причина:** в `infrastructure/diff/snapshot.py:30-33` `DIFFED_TYPES`
+  содержал только `{table, view, materialized_view, function, procedure, sequence}`.
+  Схемы в snapshot **никогда не попадали**, поэтому `CompareService` для пустой
+  target-БД видел 3 таблицы `__deploy`, для source- — 274 (без 7 схем). В
+  `diff_report.json` не было schema-entries, в `plan.json` не было schema-операций.
+  Delta-артефакты для схем **не создавались**, при apply таблицы пытались
+  создаться в несуществующих схемах. **Топосорт ни при чём** — схем вообще не
+  было в графе выполнения.
+- **Видимая часть проблемы:** пользователь видел `InvalidSchemaName`, но
+  истинная причина была в snapshot-слое (не deploy-сервисе, не топосорте).
+  Сообщение «объекты должны деплоиться в топологическом порядке» —
+  **пользовательское описание** проблемы, не реальный stacktrace.
+- **Фикс:** добавить `"schema"` в `DIFFED_TYPES` (1 строка). `ObjectSnapshot`
+  для схем строится стандартно: `sql_normalized` = `CREATE SCHEMA IF NOT
+  EXISTS "x"` через `normalize_sql`, `sql_hash` стабильный. План теперь
+  содержит 281 операцию (было 274), схемы идут первыми (`type_priority=0`
+  против `table=2`), таблицы — после.
+- **Регрессия:** `test_snapshot_includes_schema_vertices` в
+  `tests/unit/test_snapshot.py` — assert `"schema" in DIFFED_TYPES` плюс
+  проверка, что fixture содержит ≥2 схемы с непустым `sql_hash`. Тест
+  поймает любую попытку «оптимизировать» snapshot-список.
+- **Урок #1:** при добавлении нового типа объекта в **граф** (Phase 5: extensions,
+  database_setting; Phase 5: schema, sequence) проверяй все downstream-фильтры:
+  `DIFFED_TYPES`, `TYPE_PRIORITIES`, `_CREATE_KEYWORD_TO_TYPE`, `EARLY_DDL_TYPES`,
+  `_SUPPORTED_OBJECT_TYPES`, `supportable_object_types`, autodoc-роутинг. **Любой
+  список, который явно фильтрует типы — потенциальный источник тихой потери.**
+- **Урок #2:** «схема не отличается по содержимому между env» — неверная аксиома.
+  Schema-level drift (ALTER SCHEMA OWNER, GRANT USAGE, default privileges)
+  реально бывает. Исключение схем из diff ломает deploy на пустых БД — цена
+  > пользы от подавления шума.
+- **Урок #3:** пользовательские сообщения об ошибках («объекты должны
+  деплоиться в топологическом порядке») — это **гипотезы**, не реальный
+  stacktrace. Диагностика: смотри `output_dir/{source,target,diff_report,plan}.json`,
+  ищи отсутствие ожидаемых типов, потом — фильтр, который их мог отрезать.
+- **Урок #4:** для сравнения «source vs target» где target = empty,
+  количество entries в `diff_report.json` должно быть ≥ количества
+  schema+user vertices в графе. Если меньше — DIFFED_TYPES или фильтр
+  потерял типы.

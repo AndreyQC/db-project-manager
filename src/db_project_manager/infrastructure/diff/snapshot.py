@@ -27,7 +27,14 @@ from db_project_manager.infrastructure.sql.autodoc import MARKER_CLOSE
 #: Object types that participate in the structural diff.
 #: Extensions and database settings are excluded (draft §2, decision 2): they
 #: vary between environments and would produce noisy diffs.
+#:
+#: ``schema`` is included so that ``deploy apply`` on an empty target DB writes
+#: ``CREATE SCHEMA`` artifacts before the tables that depend on them. Without
+#: this, a schema-less snapshot would silently drop every schema vertex and the
+#: resulting DeltaPlan would try to ``CREATE TABLE "schema"."t"`` in a schema
+#: that does not yet exist (bugfix after cis_zup feedback 2026-09-02).
 DIFFED_TYPES = frozenset({
+    "schema",
     "table", "view", "materialized_view",
     "function", "procedure", "sequence",
 })
