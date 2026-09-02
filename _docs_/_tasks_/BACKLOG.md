@@ -374,25 +374,14 @@ Deploy затем падает: `psycopg2.ProgrammingError: can't execute an emp
 
 ## P3. GUI-действия deploy plan/apply + рендер плана деплоя
 
-**Контекст (Phase 12, USER_INPUT ALT-7):** `deploy plan` / `deploy apply` в Phase 12 —
-CLI-only (apply — первая мутирующая живую БД команда; GUI имеет смысл после обкатки).
-Delta Viewer (Phase 14) уже показывает `diff_report.json`; план деплоя (`plan.json` /
-`plan.md` + артефакты `delta/NNN_*.sql`) — естественное расширение его сценариев.
-
-**Действие:**
-- GUI-действия run-only по образцу Phase 11 `deploy_analyze` (реестр Phase 7, диалоги,
-  worker с strong-refs — уроки §40-§43): `deploy_plan` и `deploy_apply` (apply — с явным
-  подтверждением «изменяет целевую БД»).
-- Вкладка/режим в Delta Viewer: дерево операций плана с классификацией
-  safe/needs-pre/blocked цветом, просмотр SQL-артефактов, счётчики presence/покрытия.
-
-**Триггер:** после обкатки CLI `deploy apply` на живых БД (минимум один реальный цикл
-планирования/применения).
-
-**Связано:** `_tasks_/phase_12/Phase_12_vision_draft.md` §4 ALT-7, §7; Phase 14
-(`presentation/gui/widgets/delta_viewer.py`).
-
-**Не блокирует Phase 12.**
+**Статус: ЗАКРЫТ** — реализован в Phase 15 (`_docs_/_phases_/Phase_15.md`):
+GUI-обёртки `deploy_plan`/`deploy_apply` с preflight-warning
+(`DeployApplyDialog`, чекбокс гейтит OK), `PlanViewerWindow` для просмотра
+`plan.json` (дерево, фильтры safe/needs-pre/blocked, DDL-таб), chain
+analyze → plan → apply через prefill в Plan Viewer. Все три CLI-флага
+(`--include-drops`/`--no-rehearsal`/`--keep-rehearsal-db`) доступны из GUI.
+Тесты: 20 новых unit-тестов (8 contract CLI, 4 offscreen-smoke диалогов,
+8 plan_viewer). Lessons §59-§60.
 
 ---
 
