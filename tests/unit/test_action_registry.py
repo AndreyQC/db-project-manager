@@ -20,6 +20,7 @@ def test_expected_actions_present():
     assert ids == {
         "reverse_engineer", "deploy_validate", "deploy_analyze",
         "graph_prepare", "compare", "yaml_generate", "yaml_apply",
+        "deploy_plan", "deploy_apply",  # Phase 15
     }
 
 

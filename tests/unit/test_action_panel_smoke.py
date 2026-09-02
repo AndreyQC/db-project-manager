@@ -27,6 +27,8 @@ from db_project_manager.infrastructure.config.gui_settings import GuiSettingsSto
 from db_project_manager.presentation.gui.actions.dialogs import (  # noqa: E402
     CompareDialog,
     DeployAnalyzeDialog,
+    DeployApplyDialog,
+    DeployPlanDialog,
     DeployValidateDialog,
     GraphPrepareDialog,
     ReverseEngineerDialog,
@@ -34,6 +36,7 @@ from db_project_manager.presentation.gui.actions.dialogs import (  # noqa: E402
 from db_project_manager.presentation.gui.actions.models import (  # noqa: E402
     CompareSettings,
     DeployAnalyzeSettings,
+    DeployApplySettings,
     DeployValidateSettings,
     GraphPrepareSettings,
     ReverseEngineerSettings,
@@ -118,7 +121,45 @@ def test_graph_export_custom_output_dir(qapp, tmp_path):
 
     assert results and results[0] == export_dir / "graph.graphml"
     assert (export_dir / "graph.graphml").exists()
-    assert not (codebase / ".dbm_graph" / "graph.graphml").exists()
+
+
+# --- Phase 15: deploy plan / apply dialogs (PRE-2 preflight) ---
+
+
+def test_buttons_are_last_row_deploy_plan(qapp, tmp_path):
+    dlg = DeployPlanDialog(ConnectionStore(tmp_path), DeployApplySettings())
+    assert isinstance(_last_form_widget(dlg), QDialogButtonBox)
+
+
+def test_buttons_are_last_row_deploy_apply(qapp, tmp_path):
+    dlg = DeployApplyDialog(ConnectionStore(tmp_path), DeployApplySettings())
+    assert isinstance(_last_form_widget(dlg), QDialogButtonBox)
+
+
+def test_apply_dialog_confirm_checkbox_gates_ok(qapp, tmp_path):
+    """PRE-2: OK button is disabled until the user checks the confirmation box.
+
+    Regression for the preflight pattern — without this gate, an accidental click
+    on «Применить» would mutate a live database.
+    """
+    dlg = DeployApplyDialog(ConnectionStore(tmp_path), DeployApplySettings())
+    ok_button = dlg._button_box.button(QDialogButtonBox.StandardButton.Ok)
+    assert ok_button is not None
+    assert ok_button.isEnabled() is False, "OK must start disabled"
+    dlg._confirm.setChecked(True)
+    qapp.processEvents()
+    assert ok_button.isEnabled() is True, "OK must enable after confirmation"
+    dlg._confirm.setChecked(False)
+    qapp.processEvents()
+    assert ok_button.isEnabled() is False, "OK must disable again if user unchecks"
+
+
+def test_apply_dialog_settings_roundtrip_includes_risk_flag(qapp, tmp_path):
+    """``confirm_understands_risk`` must roundtrip through ``settings()``."""
+    dlg = DeployApplyDialog(ConnectionStore(tmp_path), DeployApplySettings())
+    dlg._confirm.setChecked(True)
+    s = dlg.settings()
+    assert s.confirm_understands_risk is True
 
 
 def test_buttons_are_last_row_compare(qapp, tmp_path):

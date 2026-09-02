@@ -8,6 +8,7 @@ fails here (guard against GUI<->CLI drift).
 from __future__ import annotations
 
 import shlex
+from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -18,6 +19,8 @@ from db_project_manager.presentation.cli import main as cli_main
 from db_project_manager.presentation.gui.actions.cli import (
     build_cli_compare,
     build_cli_deploy_analyze,
+    build_cli_deploy_apply,
+    build_cli_deploy_plan,
     build_cli_deploy_validate,
     build_cli_graph_prepare,
     build_cli_reverse_engineer,
@@ -25,6 +28,7 @@ from db_project_manager.presentation.gui.actions.cli import (
 from db_project_manager.presentation.gui.actions.models import (
     CompareSettings,
     DeployAnalyzeSettings,
+    DeployApplySettings,
     DeployValidateSettings,
     GraphPrepareSettings,
     ReverseEngineerSettings,
@@ -347,3 +351,176 @@ def test_contract_deploy_analyze(tmp_path, monkeypatch):
     result = runner.invoke(cli_main.app, _argv(cmd))
     assert result.exit_code == 0, result.output
     assert "CLEAN" in result.output
+
+
+# --- Phase 15: deploy plan / deploy apply ---
+
+
+@dataclass
+class _FakeDeltaPlan:
+    db_type: str = "postgres"
+    source_version: str | None = None
+    target_version: str | None = None
+    operations: list = ()
+    include_drops: bool = False
+
+    @property
+    def safe_ops(self):
+        return [o for o in self.operations if getattr(o, "classification", None) == "safe"]
+
+    @property
+    def needs_pre_ops(self):
+        return [o for o in self.operations if getattr(o, "classification", None) == "needs_pre"]
+
+    @property
+    def violations(self):
+        return [o for o in self.operations if getattr(o, "classification", None) == "blocked"]
+
+
+@dataclass
+class _FakeApplyResult:
+    planned: int = 1
+    applied: int = 1
+    applied_version: str | None = "v1"
+    rehearsal_db: str | None = "dbpm_rehearsal_xxx"
+    output_dir: Path | None = None
+
+
+def test_deploy_plan_cli_string_basic(tmp_path):
+    """build_cli_deploy_plan: only ``--include-drops`` is optional; other flags required."""
+    store = _store(tmp_path)
+    s = DeployApplySettings(
+        codebase_dir=str(tmp_path / "code"),
+        target_connection="prod",
+        output_dir=str(tmp_path / "out"),
+    )
+    cmd = build_cli_deploy_plan(s, store)
+    assert cmd == (
+        f"db-pm deploy plan --dir {tmp_path / 'code'} "
+        f"--target-connection-file {store.path_for('prod')} "
+        f"--output-dir {tmp_path / 'out'}"
+    )
+    assert "--include-drops" not in cmd
+    assert "--no-rehearsal" not in cmd  # plan-only flag
+
+
+def test_deploy_plan_cli_string_with_include_drops(tmp_path):
+    store = _store(tmp_path)
+    s = DeployApplySettings(
+        codebase_dir=str(tmp_path / "code"),
+        target_connection="prod",
+        output_dir=str(tmp_path / "out"),
+        include_drops=True,
+    )
+    cmd = build_cli_deploy_plan(s, store)
+    assert "--include-drops" in cmd
+
+
+def test_deploy_apply_cli_string_all_three_flags(tmp_path):
+    """build_cli_deploy_apply: --include-drops, --no-rehearsal, --keep-rehearsal-db."""
+    store = _store(tmp_path)
+    s = DeployApplySettings(
+        codebase_dir=str(tmp_path / "code"),
+        target_connection="prod",
+        output_dir=str(tmp_path / "out"),
+        include_drops=True,
+        no_rehearsal=True,
+        keep_rehearsal_db=True,
+        confirm_understands_risk=True,  # GUI-side gate; must NOT appear in CLI
+    )
+    cmd = build_cli_deploy_apply(s, store)
+    assert "--include-drops" in cmd
+    assert "--no-rehearsal" in cmd
+    assert "--keep-rehearsal-db" in cmd
+    # GUI gate must not leak into the CLI string (PRE-2 contract).
+    assert "confirm_understands_risk" not in cmd
+
+
+def test_deploy_apply_cli_string_flags_off_omitted(tmp_path):
+    store = _store(tmp_path)
+    s = DeployApplySettings(
+        codebase_dir=str(tmp_path / "code"),
+        target_connection="prod",
+        output_dir=str(tmp_path / "out"),
+    )
+    cmd = build_cli_deploy_apply(s, store)
+    assert "--include-drops" not in cmd
+    assert "--no-rehearsal" not in cmd
+    assert "--keep-rehearsal-db" not in cmd
+
+
+def test_deploy_apply_settings_extra_ignored():
+    """``DeployApplySettings`` must accept unknown keys (extra='ignore') — same contract
+    as the rest of the GUI settings models (gui_settings.json forward-compat)."""
+    s = DeployApplySettings.model_validate({"unknown_field": "ignored"})
+    assert s.codebase_dir == ""
+    assert s.confirm_understands_risk is False
+
+
+def test_contract_deploy_plan(tmp_path, monkeypatch):
+    """GUI-built ``deploy plan`` command parses through the real typer CLI."""
+    from db_project_manager.domain.delta import DeltaPlan
+
+    _patch_common(monkeypatch)
+    monkeypatch.setattr(
+        cli_main, "load_cfg",
+        lambda *a, **k: SimpleNamespace(
+            deploy=SimpleNamespace(service_schema="__deploy"),
+            logging=SimpleNamespace(level="INFO"),
+            paths=SimpleNamespace(logs_dir=None),
+        ),
+    )
+    fake_plan = DeltaPlan(db_type="postgres", operations=[])
+    fake_service = SimpleNamespace(plan=lambda *a, **k: fake_plan)
+    monkeypatch.setattr(cli_main, "DeployApplyService", lambda **kwargs: fake_service)
+
+    store = _store(tmp_path)
+    cmd = build_cli_deploy_plan(
+        DeployApplySettings(
+            codebase_dir=str(tmp_path / "code"),
+            target_connection="prod",
+            output_dir=str(tmp_path / "out"),
+        ),
+        store,
+    )
+    result = runner.invoke(cli_main.app, _argv(cmd))
+    assert result.exit_code == 0, result.output
+    assert "План готов" in result.output
+
+
+def test_contract_deploy_apply(tmp_path, monkeypatch):
+    """GUI-built ``deploy apply`` command parses through the real typer CLI."""
+    from db_project_manager.application.deploy_apply_service import ApplyResult
+
+    _patch_common(monkeypatch)
+    monkeypatch.setattr(
+        cli_main, "load_cfg",
+        lambda *a, **k: SimpleNamespace(
+            deploy=SimpleNamespace(service_schema="__deploy"),
+            logging=SimpleNamespace(level="INFO"),
+            paths=SimpleNamespace(logs_dir=None),
+        ),
+    )
+    fake_result = ApplyResult(
+        planned=1,
+        applied=1,
+        applied_version="v1",
+        rehearsal_db="dbpm_rehearsal_x",
+        output_dir=tmp_path / "out",
+    )
+    fake_service = SimpleNamespace(apply=lambda *a, **k: fake_result)
+    monkeypatch.setattr(cli_main, "DeployApplyService", lambda **kwargs: fake_service)
+
+    store = _store(tmp_path)
+    cmd = build_cli_deploy_apply(
+        DeployApplySettings(
+            codebase_dir=str(tmp_path / "code"),
+            target_connection="prod",
+            output_dir=str(tmp_path / "out"),
+            no_rehearsal=True,
+        ),
+        store,
+    )
+    result = runner.invoke(cli_main.app, _argv(cmd))
+    assert result.exit_code == 0, result.output
+    assert "Apply завершён" in result.output
