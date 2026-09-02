@@ -804,3 +804,53 @@
 - **Урок #2:** при рефакторинге проверочного скрипта дифф «было/стало»
   смотри не только на результат, но и на охват: сузившийся охват при
   сохранившемся зелёном результате — главный признак потерянной проверки.
+
+---
+
+## Phase 15 — GUI deploy plan/apply + Plan Viewer
+
+### 59. Preflight-чекбокс для мутирующих действий: GUI-side gate, не CLI
+- **Симптом (Phase 15, PRE-2):** `deploy apply` — первая команда в проекте,
+  мутирующая существующую БД. Без явного подтверждения пользователь может
+  случайно нажать «Выполнить» на проде.
+- **Причина (что отвергнуто):**
+  - Только красный заголовок («⚠ Изменяет существующую БД») — невидимо при
+    проматывании взглядом.
+  - `QMessageBox.question` после нажатия («Вы уверены?») — двухшаговое,
+    размывает внимание, плохо тестируется.
+  - Чекбокс в settings без гейта на OK — настройка ≠ подтверждение.
+- **Решение:** в `DeployApplyDialog` — красный `QLabel` + `QCheckBox
+  («Я понимаю последствия и хочу применить»)`. Кнопка `OK` задизейблена
+  пока чекбокс не отмечен; связь через `stateChanged → setEnabled`. Поле
+  `confirm_understands_risk: bool` хранится в settings (round-trip через
+  `settings()`), но `build_cli_deploy_apply` его игнорирует — это
+  GUI-side gate, не часть CLI-контракта.
+- **Регрессия:** `test_apply_dialog_confirm_checkbox_gates_ok` —
+  `ok_button.isEnabled()` стартует False, становится True после `setChecked(True)`,
+  возвращается False после `setChecked(False)`.
+- **Урок #1:** любое GUI-действие, мутирующее внешний ресурс (БД, фс,
+  сеть), заслуживает явного preflight-гейта. Чекбокс лучше QMessageBox:
+  один шаг, тестируется атрибутом `isEnabled()`, виден пользователю до клика.
+- **Урок #2:** поле preflight-подтверждения в settings должно быть
+  задокументировано как «GUI-side, не часть CLI-контракта» — иначе при
+  расширении CLI-builder'а оно протечёт в `--confirm-understands-risk`,
+  что нарушит идиому «настройка ↔ контракт» (LESSONS §39, contract-тесты
+  через CliRunner).
+
+### 60. QAction.setChecked без клика не вызывает triggered сигнал
+- **Симптом (Phase 15, тест `test_filters_hide_by_classification`):**
+  offscreen-тест фильтра Plan Viewer `setChecked(False)` на QAction не
+  обновлял `_class_filter` и не прятал листья — ассерт падал.
+- **Причина:** `QAction.setChecked(False)` НЕ вызывает сигнал `triggered`
+  сам по себе. В реальном QToolBar клик пользователя вызывает и `toggle`,
+  и сигнал; в offscreen-тесте клика нет — `trigger()` для чек-экшена
+  переключает и эмитит сигнал, но `isChecked()` не меняется без явного
+  `setChecked` (в нашем случае он уже False).
+- **Решение:** в тесте вызвать handler напрямую: `setChecked(False)` →
+  `_on_filter_changed()`. Задокументировано в тесте как «offscreen bypass
+  click».
+- **Урок:** offscreen-тесты GUI-фильтров на базе `QAction` требуют
+  прямого вызова handler'а (`_on_filter_changed`/`_apply_filters`), если
+  контракт теста — это «фильтр учитывает `_filter_dict`», а не «signal
+  доходит до handler'а». Для последнего — `action.triggered.emit(...)`
+  достаточно.
