@@ -203,19 +203,39 @@ def _make_yaml_apply_worker(store, settings: YamlApplySettings):
 
 
 def _make_deploy_plan_dialog(store, settings, parent):
-    raise NotImplementedError("phase 15 S2")
+    from db_project_manager.presentation.gui.actions.dialogs import DeployPlanDialog
+
+    return DeployPlanDialog(store, settings, parent)
 
 
 def _make_deploy_apply_dialog(store, settings, parent):
-    raise NotImplementedError("phase 15 S2")
+    from db_project_manager.presentation.gui.actions.dialogs import DeployApplyDialog
+
+    return DeployApplyDialog(store, settings, parent)
 
 
 def _make_deploy_plan_worker(store, settings: DeployApplySettings):
-    raise NotImplementedError("phase 15 S2")
+    from db_project_manager.presentation.gui.widgets.workers import DeployPlanWorker
+
+    return DeployPlanWorker(
+        store.load_by_name(settings.target_connection),
+        settings.codebase_dir,
+        settings.output_dir,
+        include_drops=settings.include_drops,
+    )
 
 
 def _make_deploy_apply_worker(store, settings: DeployApplySettings):
-    raise NotImplementedError("phase 15 S2")
+    from db_project_manager.presentation.gui.widgets.workers import DeployApplyWorker
+
+    return DeployApplyWorker(
+        store.load_by_name(settings.target_connection),
+        settings.codebase_dir,
+        settings.output_dir,
+        include_drops=settings.include_drops,
+        no_rehearsal=settings.no_rehearsal,
+        keep_rehearsal_db=settings.keep_rehearsal_db,
+    )
 
 
 ACTIONS: list[ActionSpec] = [

@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFormLayout,
     QHBoxLayout,
+    QLabel,
     QLineEdit,
     QPushButton,
     QWidget,
@@ -29,6 +30,7 @@ from db_project_manager.presentation.gui.actions.models import (
     FORMAT_NONE,
     CompareSettings,
     DeployAnalyzeSettings,
+    DeployApplySettings,
     DeployValidateSettings,
     GraphPrepareSettings,
     ReverseEngineerSettings,
@@ -380,4 +382,135 @@ class YamlApplyDialog(BaseActionDialog):
             yaml_file=self._yaml_file.text().strip(),
             target_db_type=self._target_db_type.currentData(),
             output_dir=self._output_dir.text().strip(),
+        )
+
+
+class DeployPlanDialog(BaseActionDialog):
+    """Settings for 'Сформировать план деплоя на существующую БД' (Phase 15).
+
+    Dry-run: writes ``plan.json`` / ``plan.md`` / ``delta/NNN_*.sql`` artifacts,
+    but does NOT mutate the target. ``--include-drops`` is the only optional flag.
+    """
+
+    def __init__(
+        self,
+        store: ConnectionStore,
+        settings: DeployApplySettings,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__("Deploy plan — настройки", parent)
+        self._codebase_dir = self._dir_row(settings.codebase_dir, "Каталог кодовой базы:")
+        self._target_connection = self._connections_combo(store, settings.target_connection)
+        self._form.addRow("Целевая БД (существует):", self._target_connection)
+        self._output_dir = self._dir_row(
+            settings.output_dir,
+            "Каталог для артефактов:",
+            placeholder="plan.json / plan.md / delta/NNN_*.sql",
+        )
+        self._include_drops = QCheckBox(
+            "Включить DROP-артефакты для удалённых объектов (пустые/не-табличные)"
+        )
+        self._include_drops.setChecked(settings.include_drops)
+        self._form.addRow(self._include_drops)
+        self._add_buttons()  # LESSONS §43 — last row of the form
+
+    def settings(self) -> DeployApplySettings:
+        return DeployApplySettings(
+            codebase_dir=self._codebase_dir.text().strip(),
+            target_connection=self._target_connection.currentText(),
+            output_dir=self._output_dir.text().strip(),
+            include_drops=self._include_drops.isChecked(),
+        )
+
+
+class DeployApplyDialog(BaseActionDialog):
+    """Settings for 'Применить деплой к существующей БД' (Phase 15, PRE-2).
+
+    This dialog MUTATES an existing database. Preflight-warning:
+    - Red, bold label at the top of the form: «⚠ Изменяет существующую БД.
+      Репетиция обязательна (кроме CI).»
+    - Confirmation checkbox «Я понимаю последствия и хочу применить»;
+      the OK button is disabled until checked (LESSONS §43 + preflight pattern).
+    ``confirm_understands_risk`` is stored back into the settings but the
+    CLI builder ignores it (GUI-side gate, not part of the CLI contract).
+    """
+
+    def __init__(
+        self,
+        store: ConnectionStore,
+        settings: DeployApplySettings,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__("Deploy apply — настройки ⚠", parent)
+        # Preflight warning — first row of the form, red and bold.
+        warning = QLabel(
+            "⚠ Изменяет существующую БД. Репетиция обязательна (кроме CI)."
+        )
+        warning.setStyleSheet("color: red; font-weight: bold")
+        warning.setWordWrap(True)
+        self._form.addRow(warning)
+
+        self._codebase_dir = self._dir_row(settings.codebase_dir, "Каталог кодовой базы:")
+        self._target_connection = self._connections_combo(store, settings.target_connection)
+        self._form.addRow("Целевая БД (существует):", self._target_connection)
+        self._output_dir = self._dir_row(
+            settings.output_dir,
+            "Каталог для артефактов:",
+            placeholder="plan.json / plan.md / delta/ / rehearsal/",
+        )
+        self._include_drops = QCheckBox(
+            "Включить DROP-артефакты для удалённых объектов (пустые/не-табличные)"
+        )
+        self._include_drops.setChecked(settings.include_drops)
+        self._form.addRow(self._include_drops)
+        self._no_rehearsal = QCheckBox(
+            "Пропустить репетицию (только CI / throwaway-таргеты)"
+        )
+        self._no_rehearsal.setChecked(settings.no_rehearsal)
+        self._form.addRow(self._no_rehearsal)
+        self._keep_rehearsal_db = QCheckBox(
+            "Оставить rehearsal-БД после прогона (для отладки)"
+        )
+        self._keep_rehearsal_db.setChecked(settings.keep_rehearsal_db)
+        self._form.addRow(self._keep_rehearsal_db)
+
+        # Confirmation gate — must be checked to enable OK.
+        self._confirm = QCheckBox("Я понимаю последствия и хочу применить")
+        self._confirm.setChecked(settings.confirm_understands_risk)
+        self._form.addRow(self._confirm)
+
+        # _add_buttons() must come last (LESSONS §43) — but the OK button needs
+        # to be wired to the confirmation checkbox BEFORE it is added.
+        # We therefore reach into the button box after _add_buttons() returns.
+        self._add_buttons()
+        ok_button = self._button_box.button(QDialogButtonBox.StandardButton.Ok)
+        if ok_button is not None:
+            ok_button.setEnabled(self._confirm.isChecked())
+            self._confirm.stateChanged.connect(
+                lambda _state: ok_button.setEnabled(self._confirm.isChecked())
+            )
+
+    def _add_buttons(self) -> None:
+        """Override base _add_buttons() to keep a reference to the box.
+
+        The confirmation gate (see class docstring) needs to access the OK button
+        after construction, so we save it on ``self._button_box``.
+        """
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        self._form.addRow(buttons)
+        self._button_box = buttons
+
+    def settings(self) -> DeployApplySettings:
+        return DeployApplySettings(
+            codebase_dir=self._codebase_dir.text().strip(),
+            target_connection=self._target_connection.currentText(),
+            output_dir=self._output_dir.text().strip(),
+            include_drops=self._include_drops.isChecked(),
+            no_rehearsal=self._no_rehearsal.isChecked(),
+            keep_rehearsal_db=self._keep_rehearsal_db.isChecked(),
+            confirm_understands_risk=self._confirm.isChecked(),
         )

@@ -215,6 +215,136 @@ class DeployAnalyzeWorker(QRunnable):
             self.signals.finished.emit(None)
 
 
+class DeployPlanWorker(QRunnable):
+    """Run ``db-pm deploy plan`` (dry-run delta) off the UI thread (Phase 15, PRE-3).
+
+    Mirrors ``DeployAnalyzeWorker``: ``DeployApplyService.plan()`` is read-only
+    (no mutation of the target DB). Emits a ``DeltaPlan`` through ``finished``;
+    ``DeployApplyRejected`` and ``DeployApplyError`` go via ``signals.error`` with
+    ``finished(None)``.
+    """
+
+    def __init__(
+        self,
+        conn_cfg: ConnectionConfig,
+        codebase_dir: str | Path,
+        output_dir: str | Path,
+        *,
+        include_drops: bool = False,
+    ) -> None:
+        super().__init__()
+        self.conn_cfg = conn_cfg
+        self.codebase_dir = Path(codebase_dir)
+        self.output_dir = Path(output_dir)
+        self.include_drops = include_drops
+        self.signals = WorkerSignals()
+
+    def run(self) -> None:
+        from db_project_manager.application.deploy_apply_service import (
+            DeployApplyError,
+            DeployApplyRejected,
+            DeployApplyService,
+        )
+
+        service = DeployApplyService()
+
+        def progress(message: str, current: int, total: int) -> None:
+            self.signals.progress.emit(message, current, total)
+            self.signals.status.emit(message)
+
+        try:
+            plan = service.plan(
+                self.codebase_dir,
+                self.conn_cfg,
+                self.output_dir,
+                include_drops=self.include_drops,
+                progress=progress,
+            )
+            self.signals.status.emit(
+                f"План готов: операций {len(plan.operations)} "
+                f"(safe: {len(plan.safe_ops)}, needs-pre: {len(plan.needs_pre_ops)}, "
+                f"blocked: {len(plan.violations)})"
+            )
+            self.signals.finished.emit(plan)
+        except DeployApplyRejected as e:
+            self.signals.error.emit(f"Safety gate отклонил план: {e}")
+            self.signals.finished.emit(None)
+        except DeployApplyError as e:
+            self.signals.error.emit(f"Plan: {e}")
+            self.signals.finished.emit(None)
+        except Exception as e:  # noqa: BLE001
+            self.signals.error.emit(f"Непредвиденная ошибка: {e}")
+            self.signals.finished.emit(None)
+
+
+class DeployApplyWorker(QRunnable):
+    """Run ``db-pm deploy apply`` (mutates an EXISTING target DB) off the UI thread.
+
+    This is the FIRST worker that mutates a live database — see the preflight
+    ``confirm_understands_risk`` gate in ``DeployApplyDialog``. Mirrors
+    ``DeployAnalyzeWorker`` for error handling: ``DeployApplyRejected`` and
+    ``DeployApplyError`` go via ``signals.error`` with ``finished(None)``;
+    success emits an ``ApplyResult`` through ``finished``.
+    """
+
+    def __init__(
+        self,
+        conn_cfg: ConnectionConfig,
+        codebase_dir: str | Path,
+        output_dir: str | Path,
+        *,
+        include_drops: bool = False,
+        no_rehearsal: bool = False,
+        keep_rehearsal_db: bool = False,
+    ) -> None:
+        super().__init__()
+        self.conn_cfg = conn_cfg
+        self.codebase_dir = Path(codebase_dir)
+        self.output_dir = Path(output_dir)
+        self.include_drops = include_drops
+        self.no_rehearsal = no_rehearsal
+        self.keep_rehearsal_db = keep_rehearsal_db
+        self.signals = WorkerSignals()
+
+    def run(self) -> None:
+        from db_project_manager.application.deploy_apply_service import (
+            DeployApplyError,
+            DeployApplyRejected,
+            DeployApplyService,
+        )
+
+        service = DeployApplyService()
+
+        def progress(message: str, current: int, total: int) -> None:
+            self.signals.progress.emit(message, current, total)
+            self.signals.status.emit(message)
+
+        try:
+            result = service.apply(
+                self.codebase_dir,
+                self.conn_cfg,
+                self.output_dir,
+                include_drops=self.include_drops,
+                rehearsal=not self.no_rehearsal,
+                keep_rehearsal_db=self.keep_rehearsal_db,
+                progress=progress,
+            )
+            self.signals.status.emit(
+                f"✓ Apply завершён: {result.applied}/{result.planned} операций, "
+                f"версия {result.applied_version}"
+            )
+            self.signals.finished.emit(result)
+        except DeployApplyRejected as e:
+            self.signals.error.emit(f"Apply отклонён safety gate: {e}")
+            self.signals.finished.emit(None)
+        except DeployApplyError as e:
+            self.signals.error.emit(f"Apply: {e}")
+            self.signals.finished.emit(None)
+        except Exception as e:  # noqa: BLE001
+            self.signals.error.emit(f"Непредвиденная ошибка: {e}")
+            self.signals.finished.emit(None)
+
+
 class CompareWorker(QRunnable):
     """Run a DB/codebase comparison off the UI thread.
 
