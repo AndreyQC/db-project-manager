@@ -2,7 +2,7 @@
 
 Инструмент для работы со структурой баз данных (PostgreSQL/Greenplum; Snowflake/MSSQL/MySQL — в планах): чтение метаданных каталога, генерация дерева SQL-файлов (по одному на объект), построение графа зависимостей, валидация деплоя на пустую временную БД, и (в будущих фазах) миграции.
 
-> Статус: Phase 12 — ALTER + Delta готов: reverse-engineering, граф зависимостей, validation deploy, compare, safety gate (deploy analyze) и controlled apply к существующей БД с репетицией (CLI). Post-deploy отчёты — Phase 13.
+> Статус: Phase 15 — GUI deploy plan/apply + Plan Viewer готов: CLI-команды `deploy plan`/`deploy apply` (Phase 12) теперь доступны из GUI с preflight-warning, Plan Viewer для просмотра `plan.json` и цепочкой analyze → plan → apply.
 
 ## Возможности
 
@@ -115,6 +115,17 @@ db-pm-gui
 ```
 
 Добавьте подключение → выберите папку вывода → «Сгенерировать скрипты объектов БД». Файлы появятся в дереве слева; кликните любой `.sql`, чтобы увидеть содержимое с подсветкой. Кнопка «Deploy validate…» запускает валидационный деплой с диалогом опций (префикс, чекбокс «оставить БД», continue-on-error). Действие «Safety gate…» (Phase 11) — dry-run анализ деплоя на существующую БД: вердикт CLEAN/VIOLATIONS + ссылка на отчёт.
+
+**Phase 15 — полный флоу analyze → plan → apply из GUI:**
+- «Сформировать план деплоя на существующую БД (dry-run)» — запуск `deploy plan`,
+  просмотр `plan.json` в Plan Viewer (дерево операций, фильтры safe/needs-pre/blocked,
+  рендер DDL из `delta/NNN_*.sql` с подсветкой).
+- «Применить деплой к существующей БД» — запуск `deploy apply` с обязательным
+  preflight-чекбоксом «Я понимаю последствия и хочу применить» (красный заголовок
+  + гейт на OK). После успешного apply/plan в диалоге — кнопка «Открыть план»,
+  Plan Viewer получает prefill (`target_connection`/`codebase_dir`/`output_dir`)
+  и кнопка «Применить…» в тулбаре.
+- Меню «Вид → Plan Viewer…» — открыть любой `plan.json` отдельно.
 
 ## Разработка
 
