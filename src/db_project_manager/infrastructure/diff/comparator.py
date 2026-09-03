@@ -92,26 +92,39 @@ def compare(source: StateSnapshot, target: StateSnapshot) -> DiffReport:
     for key in sorted(common_keys):
         src_obj = source.objects[src_keys[key]]
         tgt_obj = target.objects[tgt_keys[key]]
-        if src_obj.sql_hash == tgt_obj.sql_hash:
+        # Phase 15.5.5 (cis_zup feedback 2026-09-04): sql_hash is a coarse signal
+        # that does NOT see Phase 15.5.4's column-level compensation (serial/int
+        # canonicalisation, nextval default-equivalence). When the hash differs
+        # but the column diffs are empty (after Phase 15.5.4 normalisation),
+        # the two sides are structurally equal — declare UNCHANGED so the
+        # safety gate / delta-plan don't get false-positive CHANGED.
+        column_diffs: list = []
+        columns_unavailable = False
+        if src_obj.object_type == "table":
+            if src_obj.columns is None or tgt_obj.columns is None:
+                columns_unavailable = True
+            else:
+                column_diffs = diff_columns(src_obj.columns, tgt_obj.columns)
+
+        hash_agrees = src_obj.sql_hash == tgt_obj.sql_hash
+        columns_match = (
+            src_obj.object_type == "table"
+            and not columns_unavailable
+            and not column_diffs
+        )
+
+        if hash_agrees or columns_match:
             unchanged += 1
             entries.append(DiffEntry(
                 object_key=src_keys[key],
                 status=DiffStatus.UNCHANGED,
                 source_snapshot=src_obj,
                 target_snapshot=tgt_obj,
+                column_diffs=[],
+                columns_unavailable=False,
             ))
         else:
             changed += 1
-            # Phase 12 (CD-ALT-1): a CHANGED table carries its column-level diff when
-            # both sides have extracted columns; if either side is unavailable (None),
-            # mark it so the classifier can fall back to the fail-safe path (ALT-2).
-            column_diffs: list = []
-            columns_unavailable = False
-            if src_obj.object_type == "table":
-                if src_obj.columns is None or tgt_obj.columns is None:
-                    columns_unavailable = True
-                else:
-                    column_diffs = diff_columns(src_obj.columns, tgt_obj.columns)
             entries.append(DiffEntry(
                 object_key=src_keys[key],
                 status=DiffStatus.CHANGED,

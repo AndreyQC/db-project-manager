@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from db_project_manager.domain.delta import ColumnSnapshot
 from db_project_manager.domain.diff import (
     DiffStatus,
     EdgeSnapshot,
@@ -220,3 +221,108 @@ def test_compare_catalog_insensitive_added_removed():
     statuses = {e.object_key.rsplit("/", 1)[-1]: e.status for e in report.entries}
     assert statuses["new_t"] is DiffStatus.ADDED
     assert statuses["old_t"] is DiffStatus.REMOVED
+
+
+# --- Phase 15.5.5: sql_hash differs but column-diffs are empty -> UNCHANGED ---
+
+
+def test_hash_differs_but_columns_canonicalize_equal_is_unchanged():
+    """Phase 15.5.5 (cis_zup feedback 2026-09-04): sql_hash is computed by
+    normalize_sql which preserves the lexical form of types (serial4 vs
+    int4 are distinct text). Phase 15.5.4 collapses them inside
+    ColumnSnapshot.type and via the nextval default-equivalence rule. The
+    comparator must therefore trust the column-level signal: when
+    diff_columns() yields no diffs, declare UNCHANGED.
+
+    Without 15.5.5 the gate would still see CHANGED even though the column
+    diff is empty, because sql_hash kept the serial4 vs int4 difference.
+    """
+    from db_project_manager.infrastructure.diff.columns import diff_columns
+
+    src_obj = _obj(
+        "k1",
+        sql_hash="hash_from_source_with_serial4",
+        columns=[
+            ColumnSnapshot(name="id", type="int", nullable=False, default=None),
+            ColumnSnapshot(name="n", type="text", nullable=True, default=None),
+        ],
+    )
+    tgt_obj = _obj(
+        "k1",
+        sql_hash="different_hash_with_int4_and_nextval",
+        columns=[
+            ColumnSnapshot(name="id", type="int", nullable=False, default="NEXTVAL(CAST('s.id_seq' AS REGCLASS))"),
+            ColumnSnapshot(name="n", type="text", nullable=True, default=None),
+        ],
+    )
+    src = _state({"k1": src_obj})
+    tgt = _state({"k1": tgt_obj})
+
+    # Sanity: Phase 15.5.4 makes column diffs empty.
+    assert diff_columns(src_obj.columns, tgt_obj.columns) == []
+
+    report = compare(src, tgt)
+    statuses = {e.object_key: e.status for e in report.entries}
+    assert statuses["k1"] is DiffStatus.UNCHANGED, (
+        f"serial4↔int+nextval must be UNCHANGED via column-level compensation; "
+        f"got {statuses!r}, report.summary={report.summary}"
+    )
+    # No spurious CHANGED in summary either.
+    assert report.summary["changed"] == 0
+    assert report.summary["unchanged"] == 1
+
+
+def test_hash_differs_and_columns_really_differ_is_changed():
+    """The opposite: when column diffs are non-empty (a real schema change),
+    CHANGED status stays — even after 15.5.5 compensation, real changes
+    remain visible."""
+    src_obj = _obj(
+        "k1",
+        sql_hash="hash_src",
+        columns=[
+            ColumnSnapshot(name="a", type="int", nullable=False, default=None),
+        ],
+    )
+    tgt_obj = _obj(
+        "k1",
+        sql_hash="hash_tgt_different",
+        columns=[
+            # Default value differs — a real semantic change, not serial/int round-trip.
+            ColumnSnapshot(name="a", type="int", nullable=False, default="42"),
+        ],
+    )
+    src = _state({"k1": src_obj})
+    tgt = _state({"k1": tgt_obj})
+
+    report = compare(src, tgt)
+    statuses = {e.object_key: e.status for e in report.entries}
+    assert statuses["k1"] is DiffStatus.CHANGED
+    assert report.summary["changed"] == 1
+
+
+def test_hash_agrees_is_unchanged_even_with_fake_columns():
+    """Regression of the simpler path: identical hash always wins, regardless
+    of column content (the underlying objects are still equal).
+    """
+    src_obj = _obj("k1", sql_hash="same", columns=None)
+    tgt_obj = _obj("k1", sql_hash="same", columns=None)
+    src = _state({"k1": src_obj})
+    tgt = _state({"k1": tgt_obj})
+    report = compare(src, tgt)
+    assert report.summary["unchanged"] == 1
+
+
+def test_columns_unavailable_keeps_changed_even_with_compensation():
+    """If either side has columns=None (parse failure), we cannot rely on
+    column compensation — keep the legacy CHANGED-on-sql-hash-diff behaviour.
+    """
+    src_obj = _obj("k1", sql_hash="hash_src", columns=None)
+    tgt_obj = _obj("k1", sql_hash="hash_tgt_different", columns=None)
+    src = _state({"k1": src_obj})
+    tgt = _state({"k1": tgt_obj})
+    report = compare(src, tgt)
+    statuses = {e.object_key: e.status for e in report.entries}
+    assert statuses["k1"] is DiffStatus.CHANGED, (
+        "without column diffs available, sql_hash is the only signal — keep "
+        "the conservative CHANGED to satisfy fail-safe contracts"
+    )
