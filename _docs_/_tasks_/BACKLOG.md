@@ -434,6 +434,64 @@ EXISTS \"__deploy\";\n"))`.
 
 ---
 
+## P3. RE snapshot для target-БД seed'ит phantom `__deploy` в temp_root
+
+**Статус: ЗАКРЫТ через Phase 15.5.2** (commit `160cdd7`).
+Альтернативное решение — отдельная утилита `db-pm deploy
+init-service-schema` для явного bootstrap на пустой target-БД.
+
+**Оригинальный контекст:** при cis_zup feedback 2026-09-02 (повторный прогон
+на пустой target-БД `local-PG-18_DB__cis_zup_dev_U_postgres`) deploy apply
+не создавал `__deploy` schema +3 таблицы. Root cause: target-side RE
+в `CompareService._build_db_side` вызывает
+`ReverseEngineerService.run(...)`, который через `_seed_or_sync_deploy`
+**всегда** записывает canonical `__deploy/schema __deploy.sql` +
+3 таблицы в temp_root (даже если `__deploy` реально нет в БД).
+Compare видит их как UNCHANGED; DeltaPlan action=skip; apply ничего
+не выполняет для `__deploy`.
+
+**Закрытие:** вместо глобального рефакторинга RE (флаг `seed_deploy`
+в конструкторе / параметр `.run()`, поведение RE-сервиса в compare vs
+codebase-write) сделана отдельная команда
+`db-pm deploy init-service-schema --target-connection-file ...` —
+вызывает `ServiceSchemaInitializer`, который через
+`adapter.get_database_structure()` проверяет реальное состояние БД
+(НЕ temp_snapshot) и идемпотентно создаёт `__deploy` через
+`CREATE SCHEMA IF NOT EXISTS` + `CREATE TABLE IF NOT EXISTS`. На повторное
+выполнение — no-op.
+
+**Урок (LESSONS §62):** RE-write-to-codebase и RE-snapshot-for-compare
+выглядят одинаково в коде (`ReverseEngineerService.run`),
+но имеют разные инварианты. SEEDирование `__deploy` в codebase-write —
+правильно (rebuild); SEEDирование в temp_snapshot — **маскирует
+отсутствие `__deploy` в реальной БД** при compare с пустым target.
+Чистое исправление требует разделения этих путей (доп. параметр в
+RE-сервисе или две разные RE-функции). Для MVP — отдельная утилита
+достаточна; глобальный рефакторинг RE остаётся техдолгом на случай,
+если пользователи предпочтут одну кнопку.
+
+---
+
+## P3. (бывший) Долгая цепочка verify-then-bootstrap при каждом deploy apply
+
+**Контекст:** Phase 15.5.2 ввёл `deploy init-service-schema` как отдельный
+шаг. Сейчас пользователь должен явно запускать его перед
+`deploy apply` на свежей БД. Можно автоматизировать: в
+`DeployApplyService._run_pipeline` перед `manifest = read_manifest(...)`
+проверить, существует ли `__deploy` schema в target-БД (через `get_schema_version`
+или `adapter.execute_script("SELECT 1 FROM pg_namespace WHERE nspname='__deploy'")`).
+Если нет + `manifest.source_version` есть — вызвать `ServiceSchemaInitializer`
+и продолжить. Альтернатива: падать с понятным сообщением «run
+db-pm deploy init-service-schema first».
+
+**Действие:** держать поведение explicit-init (так безопаснее — пользователь
+видит отдельный шаг). Если CI-сценарии потребуют авто-init — добавить
+`--init-service-schema` флаг в `deploy apply`.
+
+**Не блокирует.**
+
+---
+
 ## P3. Авто-генератор seed «одной записи на таблицу» (ALT-8b)
 
 **Контекст (Phase 12, ALT-8):** seed репетиции — пользовательские скрипты

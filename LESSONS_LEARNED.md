@@ -899,3 +899,65 @@
   количество entries в `diff_report.json` должно быть ≥ количества
   schema+user vertices в графе. Если меньше — DIFFED_TYPES или фильтр
   потерял типы.
+
+### 62. RE-write и RE-snapshot-for-compare — разные инварианты в одном коде
+- **Симптом (cis_zup feedback 2026-09-02, повторно, commit `160cdd7`):**
+  после фикса `DIFFED_TYPES + schema` `deploy apply` перестал падать с
+  `InvalidSchemaName` для таблиц пользователя, но **не создавал `__deploy`**
+  на пустой target-БД. `del ta/001_schema___deploy___deploy.sql` отсутствовал;
+  в `plan.json` `__deploy.__deploy` имел `action=skip script_file=''`.
+  Все 4 объекта `__deploy` (1 schema + 3 tables) были UNCHANGED
+  → apply их пропускал.
+- **Корневая причина:** `ReverseEngineerService.run` используется в двух
+  разных контекстах:
+  1. CLI RE — пишет SQL-файлы в output_dir (главная цель — заполнить
+     codebase для будущего deploy).
+  2. `CompareService._build_db_side` — RE делает «временный» snapshot
+     целевой БД для compare (через `temp_root`).
+  В обоих случаях `_seed_or_sync_deploy` запускается и **всегда создаёт
+  canonical `__deploy` файлы** в temp_root, если в `structure` (то что
+  вернул `adapter.get_database_structure()`) нет `__deploy` schema. Это
+  правильно для RE-to-codebase (нужен rebuild), но **маскирует реальное
+  отсутствие `__deploy`** в БД при compare с пустым target. Compare
+  видит их как UNCHANGED → apply пропускает.
+- **Тонкая ловушка:** RE для target-БД ни разу не пишет в БД — только
+  читает (`adapter.get_database_structure()`). Поэтому скрипты в temp_root
+  имеют «правильный» DDL с точки зрения RE, но **не выполняются на target**.
+  Compare показывает UNCHANGED → plan показывает skip → apply ничего не делает.
+  Цикл: RE seed'ит phantom → compare подтверждает UNCHANGED → apply пропускает →
+  в реальной БД `__deploy` остаётся НЕСУЩЕСТВУЮЩЕЙ.
+- **Решение (Phase 15.5.2):** отдельная утилита
+  `db-pm deploy init-service-schema --target-connection-file ...` —
+  вызывает `ServiceSchemaInitializer`, который через
+  `adapter.get_database_structure()` **читает реальное состояние БД**
+  (а не temp_snapshot), проверяет наличие `__deploy` schema + 3 таблиц и
+  идемпотентно создаёт через `CREATE SCHEMA IF NOT EXISTS` +
+  `CREATE TABLE IF NOT EXISTS` из `canonical_deploy_ddl()`. На повторное
+  выполнение — no-op (`changed=False`).
+- **Полное (правильное) исправление:** разделить RE на две функции —
+  `run_write_to_codebase` (с `_seed_or_sync_deploy`) и
+  `run_snapshot_for_compare` (без seed), плюс флаг `seed_deploy` в
+  конструкторе `ReverseEngineerService`. Техдолг; для MVP — отдельная
+  утилита достаточна.
+- **Урок #1:** когда один сервис вызывается из двух контекстов с разными
+  инвариантами, и эти контексты обращаются к одному и тому же «нормальному»
+  поведению (например, RE seed'ит `__deploy`) — этот шаг **может быть
+  правильным в одном контексте и вредить в другом**. Безопасный путь —
+  параметризовать (флаг) или расщепить (две функции), а не «просто завести
+  отдельную утилиту в обход».
+- **Урок #2:** для проверки наличия объектов в БД **никогда не полагайся
+  на snapshot из compare** (он пропускает через `_seed_*`, фильтры
+  DIFFED_TYPES, autodoc routing — всё это искажает реальную картину).
+  Для проверок идём напрямую: `adapter.get_database_structure()` +
+  `adapter.connect()`/`adapter.disconnect()` на target-БД.
+- **Урок #3:** когда `deploy apply` мутирует БД, любые предположения о
+  pre-existing state схем и таблиц должны быть **обязательно** явно либо
+  проверяемы (через init-команду), либо документированы (какие именно
+  объекты ожидаются). Не полагаться на «RE за нас seed'ит в темпе» —
+  иначе на пустой БД получим skip в plan.json.
+- **Урок #4:** индикатор бага — когда в `plan.json` для object_type=schema
+  видишь `script_file=''` (поле должно быть заполнено для всех CREATE-операций).
+  Это значит, что артефакт не был записан `write_artifacts()` →
+  `executable = [op for op in plan.operations if op.script_file and op.classification is SAFE]`
+  отфильтрует его, apply не выполнит. Контракт: каждый CREATE-объект в plan
+  должен иметь `script_file` непустой.
