@@ -116,6 +116,74 @@ uv run pytest -m integration                  # baseline 24 — integration e2e 
 - **GUI не валидирует `target_connection` против `cfg.deploy.service_schema`** —
   CLI-уровень (Phase 12 `DeployApplyError`).
 
+## 7. Phase 15.5 — PG round-trip false-positive fixes (cis_zup feedback 2026-09-03/04)
+
+После закрытия Phase 15 на реальной cis_zup (272 таблицы) в `safety_gate`
+появилась **серия false-positive CHANGED**: PG хранит семантически
+одинаковые DDL в разных лексических формах. Закрыто тремя последовательными
+фиксами:
+
+### 15.5.3 — normalize_sql: `CAST('x' AS TEXT)` ↔ `'x'` (commit `e379cb0`)
+- **Файл:** `src/db_project_manager/infrastructure/diff/normalize_sql.py`
+- **Fix:** post-AST regex `_canonicalize_text_casts` срабатывает после
+  sqlglot-нормализации. Сводит `CAST('utc' AS TEXT)`/`'utc'::text` к `'utc'`.
+- **Coverage:** `DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'literal')`,
+  любые DEFAULT-выражения с AT TIME ZONE.
+- **Limitation:** только string literal (`CAST(<quoted-string> AS TEXT)` /
+  `'<str>'::text`). numeric/identifier cast **не** трогаются.
+
+### 15.5.4 — columns.py: type aliases + nextval compensation (commit `cff8634`)
+- **Файл:** `src/db_project_manager/infrastructure/diff/columns.py`
+- **Fix:**
+  1. `_TYPE_ALIASES` расширен: `serial4/int4 → int`, `serial8/int8 → bigint`,
+     `serial2/int2 → smallint`, `float4 → real`, `float8 → double precision`.
+  2. `diff_columns` теперь скрывает default-difference, если одна сторона
+     `default=None` (serialN неявно), а другая — `default=NEXTVAL(...)`
+     (RE-БД round-trip): PG хранит одинаково.
+- **Limitation:** обе стороны default-less (`serial4 NOT NULL` vs `int NOT NULL`)
+  дают diff=[]. На практике не возникает (RE всегда читает DEFAULT).
+
+### 15.5.5 — comparator: dual-signal (commit `e63e209`)
+- **Файл:** `src/db_project_manager/infrastructure/diff/comparator.py`
+- **Проблема:** comparator использовал только `sql_hash` для UNCHANGED/CHANGED,
+  не видел column-level compensation из 15.5.3/15.5.4.
+- **Fix:** dual-signal решение — `hash_agrees OR columns_match → UNCHANGED`,
+  columns_unavailable=True сохраняет fail-safe (только hash).
+
+### Итог Phase 15.5
+- **Tests:** 901 → 939 unit passed (38 новых).
+- **Кейс cis_zup:** violations 272+ → ожидаемо 0 после `git pull` + rerun.
+- **LESSONS §63, §64:** подробные уроки.
+- **BACKLOG (Phase 15.5.6, приоритет 1):**
+  `keep-target-dir` для отладки — сейчас RE-target snapshot удаляется
+  из tempdir после compare, невозможно посмотреть, что RE прочитал из БД.
+  Это **первый** приоритет на следующую сессию (BACKLOG `db900be`,
+  пользователь предложил).
+- **BACKLOG (Phase 15.5.6, приоритет 2):** YAML-diff source vs target —
+  архитектурное переосмысление, hash слишком хрупкий.
+- **Другие PG-эквивалентности** (Phase 15.5.6++, приоритет 3) — см.
+  LESSONS §64 урок 4 (VARCHAR vs TEXT, TIMESTAMP vs TIMESTAMP WITHOUT TIME ZONE,
+  autogen constraint names и т.д.).
+
+### **To resolve in next session**
+
+**Перед любой новой работой прочитать `_checkpoints_/20260904_001_checkpoint.md`!**
+
+В частности:
+
+1. **Запустить** `db-pm deploy analyze` после `git pull` — должно быть
+   `safety_gate.violations=0` или minor (если есть **реальные** отличия).
+2. **Если есть остаточные violations** — прислать
+   `safety_gate_report.json` в чат. В `_docs_/_tasks_/BACKLOG.md` есть
+   раздел «PG-различие serialN vs int+DEFAULT NEXTVAL(...) в extract_columns»
+   с детальным описанием известного ограничения.
+3. **Phase 15.5.6 — первый приоритет:**
+   Реализовать `keep-target-dir` для `db-pm compare run` и
+   `db-pm deploy analyze` (BACKLOG `db900be`). Это ~1 час работы и резко
+   ускоряет диагностику следующих false-positive.
+4. **Phase 16+ (post-deploy отчёты, ROADMAP §2 шаг 5+)** — может
+   стартовать независимо после Phase 15.5.6.
+
 ## 6. Где читать дальше
 
 - `_tasks_/phase_15/Phase_15_vision_final.md` — нормативный дизайн (PRE-1..PRE-3 закрыты).
