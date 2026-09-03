@@ -33,6 +33,10 @@ from db_project_manager.application.safety_gate_service import (
     SafetyGateError,
     SafetyGateService,
 )
+from db_project_manager.application.service_schema_initializer import (
+    ServiceSchemaInitializer,
+    ServiceSchemaInitializerError,
+)
 from db_project_manager.application.reverse_engineer import (
     ReverseEngineerError,
     build_default_service,
@@ -502,6 +506,78 @@ def deploy_analyze(
             err=True,
         )
     raise typer.Exit(code=1)
+
+
+@deploy_app.command("init-service-schema")
+def deploy_init_service_schema(
+    target_connection_file: Annotated[
+        Path,
+        typer.Option(
+            "--target-connection-file",
+            help="Connection YAML of the EXISTING target DB "
+            "(typically empty / freshly CREATE DATABASE'd).",
+        ),
+    ],
+    config: Annotated[Optional[Path], typer.Option("--config", help="Path to config.yaml.")] = None,
+) -> None:
+    """Bootstrap the ``__deploy`` service schema on the target DB (idempotent).
+
+    Phase 15.5.2 (cis_zup feedback 2026-09-02): on a freshly-created target DB,
+    ``deploy apply`` does NOT create ``__deploy`` because the target-side
+    ReverseEngineer in ``CompareService`` seeds canonical ``__deploy`` files
+    into its temp snapshot — comparator sees them as UNCHANGED and the
+    DeltaPlan marks them as ``skip``. This command provides an explicit,
+    idempotent opt-in path: ``CREATE SCHEMA IF NOT EXISTS __deploy`` plus the
+    three bookkeeping tables (``schema_version``, ``script_history``,
+    ``script_audit_log``) from the same canonical DDL templates that RE
+    / yaml apply use. Idempotent: re-running on a fully initialized target
+    exits with a no-op summary.
+
+    Safe to run before or after a deploy; never touches user schemas or data.
+    """
+    cfg = load_cfg(config if config is not None else None)
+    configure_logging(level=cfg.logging.level, console=True, logs_dir=cfg.paths.logs_dir)
+    conn_cfg = _load_connection(target_connection_file)
+
+    initializer = ServiceSchemaInitializer(service_schema=cfg.deploy.service_schema)
+
+    def progress(message: str, current: int, total: int) -> None:
+        if total:
+            typer.echo(f"[{current}/{total}] {message}")
+        else:
+            typer.echo(message)
+
+    try:
+        result = initializer.run(conn_cfg, progress=progress)
+    except ServiceSchemaInitializerError as e:
+        typer.secho(
+            f"✗ Init-service-schema: {e}",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=2) from e
+
+    if not result.changed:
+        typer.secho(
+            f"✓ Init-service-schema: {result.service_schema} + "
+            f"{len(result.tables_present)} таблиц уже существуют "
+            "(идемпотентный no-op).",
+            fg=typer.colors.GREEN,
+        )
+        return
+
+    parts = [f"схема {result.service_schema}"]
+    if result.created_schema:
+        parts.append("создана")
+    if result.created_tables:
+        parts.append(
+            f"таблицы: {', '.join(result.created_tables)}"
+        )
+    typer.secho(
+        f"✓ Init-service-schema: {', '.join(parts)}. Можно повторно запускать "
+        "`db-pm deploy analyze` / `db-pm deploy apply` против этой БД.",
+        fg=typer.colors.GREEN,
+    )
 
 
 @deploy_app.command("plan")
