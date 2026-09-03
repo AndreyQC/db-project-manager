@@ -594,6 +594,51 @@ Phase 16+.
 
 ---
 
+## P3. Сохранение target-RESULT в `output_dir/target/` для отладки Phase 15.5.6
+
+**Контекст (cis_zup feedback 2026-09-04, пользователь):** при `compare`
+или `safety_gate.analyze` (Phase 11) target-БД-сторона snapshot строится
+через `ReverseEngineerService.run(...)` в **tempdir** (например
+`C:\Users\ANDREY~1.POT\AppData\Local\Temp\dbpm_compare_target_*\`), который
+**удаляется** после compare (`if not keep_model_dir: shutil.rmtree(...)`).
+Из-за этого невозможно:
+
+1. Сравнить target-side snapshot с source-side вручную.
+2. Увидеть, какие именно column_diffs/sql_normalized RE прочитал из БД.
+3. Диагностировать ложные CHANGED в safety gate (cis_zup feedback) —
+   пришлось подключаться к БД напрямую через самописные diagnostic-скрипты.
+
+**Действие:** добавить опцию `--keep-target-dir` (или reuse
+`--keep-model-dir` из Phase 9) для команд `compare run` и
+`deploy analyze`, чтобы target-сторона **не** удалялась, а копировалась
+в `<output_dir>/target/` (для DIR-стороны — `<output_dir>/source/`,
+для DB-стороны — `<output_dir>/target/`). Это не требует рефакторинга
+RE-сервиса — только перенос в `compare_service._build_db_side` и
+`safety_gate_service` (которые используют RE).
+
+После фикса пользователь сможет:
+- Получить `output_dir/target/cis_zup_dev_local/cis_dmt_zup/.../*.sql` —
+  реальный SQL, который RE прочитал из БД.
+- Сравнить с `output_dir/source/cis_zup_dev_local/cis_dmt_zup/.../*.sql`
+  (когда DEPLOY-цепочка применит deploy validate в temp, для отдельной
+  верификации).
+- Не гадать — сразу видеть формат (CAST/serial4/int4) и поправить
+  canonicaliser при необходимости (Phase 15.5.3/15.5.4/15.5.5).
+
+**Триггер:** любой false-positive в safety gate / compare, который
+требует анализа target-side snapshot. В cis_zup мы потратили 1 час на
+диагностику потому что temp-каталог был удалён.
+
+**Связано:** Phase 9 (`compare run --keep-model-dir` уже есть, но
+относится к source-стороне, не DB-target), Phase 11 (`deploy analyze`).
+
+**Не блокирует.** Помогает при диагностике следующего false-positive
+класса (после Phase 15.5.5).
+
+---
+
+---
+
 ## P3. (бывший) Phase 15.5.4 type-aliases canonicalization
 
 **Статус: ЗАКРЫТ (commit планируется вместе с этим шагом).**
