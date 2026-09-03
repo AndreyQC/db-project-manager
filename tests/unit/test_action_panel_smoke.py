@@ -28,6 +28,7 @@ from db_project_manager.presentation.gui.actions.dialogs import (  # noqa: E402
     CompareDialog,
     DeployAnalyzeDialog,
     DeployApplyDialog,
+    DeployInitServiceSchemaDialog,
     DeployPlanDialog,
     DeployValidateDialog,
     GraphPrepareDialog,
@@ -37,6 +38,7 @@ from db_project_manager.presentation.gui.actions.models import (  # noqa: E402
     CompareSettings,
     DeployAnalyzeSettings,
     DeployApplySettings,
+    DeployInitServiceSchemaSettings,
     DeployValidateSettings,
     GraphPrepareSettings,
     ReverseEngineerSettings,
@@ -317,3 +319,26 @@ def test_compare_worker_reports_error_on_missing_side(qapp, tmp_path):
     assert errors, "worker must emit an error on missing manifest"
     assert "не содержит" in errors[0] or "manifest" in errors[0].lower()
     assert finishes == [None]
+
+
+# --- Phase 15.5.2: deploy init-service-schema dialog ---
+
+
+def test_buttons_are_last_row_deploy_init_service_schema(qapp, tmp_path):
+    """Pre-flight regression for LESSONS §43: ok/cancel must stay at form bottom."""
+    dlg = DeployInitServiceSchemaDialog(
+        ConnectionStore(tmp_path), DeployInitServiceSchemaSettings()
+    )
+    assert isinstance(_last_form_widget(dlg), QDialogButtonBox)
+
+
+def test_init_service_schema_dialog_roundtrip_target_connection(qapp, tmp_path):
+    """target_connection round-trips through ``settings()`` unchanged."""
+    dlg = DeployInitServiceSchemaDialog(
+        ConnectionStore(tmp_path), DeployInitServiceSchemaSettings()
+    )
+    # Default combo is empty when no connections stored.
+    s = dlg.settings()
+    assert s.target_connection == ""
+    # Verify the field exists in the model (contract guard).
+    assert "target_connection" in DeployInitServiceSchemaSettings.model_fields

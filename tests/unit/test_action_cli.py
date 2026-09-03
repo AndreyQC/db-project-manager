@@ -20,6 +20,7 @@ from db_project_manager.presentation.gui.actions.cli import (
     build_cli_compare,
     build_cli_deploy_analyze,
     build_cli_deploy_apply,
+    build_cli_deploy_init_service_schema,
     build_cli_deploy_plan,
     build_cli_deploy_validate,
     build_cli_graph_prepare,
@@ -29,6 +30,7 @@ from db_project_manager.presentation.gui.actions.models import (
     CompareSettings,
     DeployAnalyzeSettings,
     DeployApplySettings,
+    DeployInitServiceSchemaSettings,
     DeployValidateSettings,
     GraphPrepareSettings,
     ReverseEngineerSettings,
@@ -524,3 +526,76 @@ def test_contract_deploy_apply(tmp_path, monkeypatch):
     result = runner.invoke(cli_main.app, _argv(cmd))
     assert result.exit_code == 0, result.output
     assert "Apply завершён" in result.output
+
+
+# --- Phase 15.5.2: deploy init-service-schema ---
+
+
+def test_deploy_init_service_schema_cli_string_basic(tmp_path):
+    """build_cli_deploy_init_service_schema: only ``--target-connection-file``.
+
+    Service_schema name is taken from cfg.deploy.service_schema, not from
+    GUI settings — there is only one required field.
+    """
+    store = _store(tmp_path)
+    s = DeployInitServiceSchemaSettings(target_connection="prod")
+    cmd = build_cli_deploy_init_service_schema(s, store)
+    assert cmd == (
+        f"db-pm deploy init-service-schema "
+        f"--target-connection-file {store.path_for('prod')}"
+    )
+
+
+def test_deploy_init_service_schema_settings_extra_ignored():
+    """Forward-compat: extra keys must be ignored (extra='ignore').
+
+    Phase 7 contract — old gui_settings.json with extra keys shouldn't break
+    new code (LESSONS §44).
+    """
+    s = DeployInitServiceSchemaSettings.model_validate({"unknown_field": "ignored"})
+    assert s.target_connection == ""
+
+
+def test_contract_deploy_init_service_schema(tmp_path, monkeypatch):
+    """GUI-built ``deploy init-service-schema`` command parses through the real typer CLI.
+
+    Phases 15.5.2 — ServiceSchemaInitializer is patched with a stub that returns
+    a no-op result so the real CLI exit path (success message) is exercised.
+    """
+    from db_project_manager.application.service_schema_initializer import (
+        ServiceSchemaInitializerResult,
+    )
+
+    _patch_common(monkeypatch)
+    monkeypatch.setattr(
+        cli_main, "load_cfg",
+        lambda *a, **k: SimpleNamespace(
+            deploy=SimpleNamespace(service_schema="__deploy"),
+            logging=SimpleNamespace(level="INFO"),
+            paths=SimpleNamespace(logs_dir=None),
+        ),
+    )
+
+    no_op_result = ServiceSchemaInitializerResult(
+        service_schema="__deploy",
+        schema_present=True,
+        tables_present=["schema_version", "script_history", "script_audit_log"],
+        tables_missing=[],
+        created_schema=False,
+        created_tables=[],
+        schema_version="v1",
+    )
+    fake_service = SimpleNamespace(run=lambda *a, **k: no_op_result)
+    monkeypatch.setattr(
+        cli_main, "ServiceSchemaInitializer",
+        lambda service_schema: fake_service,
+    )
+
+    store = _store(tmp_path)
+    cmd = build_cli_deploy_init_service_schema(
+        DeployInitServiceSchemaSettings(target_connection="prod"),
+        store,
+    )
+    result = runner.invoke(cli_main.app, _argv(cmd))
+    assert result.exit_code == 0, result.output
+    assert "идемпотентный no-op" in result.output

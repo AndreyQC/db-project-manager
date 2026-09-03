@@ -31,6 +31,7 @@ from db_project_manager.presentation.gui.actions.models import (
     CompareSettings,
     DeployAnalyzeSettings,
     DeployApplySettings,
+    DeployInitServiceSchemaSettings,
     DeployValidateSettings,
     GraphPrepareSettings,
     ReverseEngineerSettings,
@@ -206,6 +207,32 @@ class DeployAnalyzeDialog(BaseActionDialog):
             codebase_dir=self._codebase_dir.text().strip(),
             target_connection=self._target_connection.currentText(),
             output_dir=self._output_dir.text().strip(),
+        )
+
+
+class DeployInitServiceSchemaDialog(BaseActionDialog):
+    """Settings for 'Инициализировать __deploy на целевой БД' (Phase 15.5.2).
+
+    Minimal dialog — single target_connection field. Use this BEFORE the
+    first ``deploy apply`` on a freshly created target DB to bootstrap the
+    service schema (``__deploy`` schema + 3 bookkeeping tables).
+    Idempotent: re-running on an already-initialized target is a no-op.
+    """
+
+    def __init__(
+        self,
+        store: ConnectionStore,
+        settings: DeployInitServiceSchemaSettings,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__("Init __deploy — настройки", parent)
+        self._target_connection = self._connections_combo(store, settings.target_connection)
+        self._form.addRow("Целевая БД (пустая или нет __deploy):", self._target_connection)
+        self._add_buttons()  # LESSONS §43 — last row of the form
+
+    def settings(self) -> DeployInitServiceSchemaSettings:
+        return DeployInitServiceSchemaSettings(
+            target_connection=self._target_connection.currentText(),
         )
 
 

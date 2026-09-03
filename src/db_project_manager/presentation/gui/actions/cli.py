@@ -14,6 +14,7 @@ from db_project_manager.presentation.gui.actions.models import (
     CompareSettings,
     DeployAnalyzeSettings,
     DeployApplySettings,
+    DeployInitServiceSchemaSettings,
     DeployValidateSettings,
     GraphPrepareSettings,
     ReverseEngineerSettings,
@@ -164,3 +165,19 @@ def build_cli_deploy_apply(settings: DeployApplySettings, store: ConnectionStore
     if settings.keep_rehearsal_db:
         parts.append("--keep-rehearsal-db")
     return " ".join(parts)
+
+
+def build_cli_deploy_init_service_schema(
+    settings: DeployInitServiceSchemaSettings, store: ConnectionStore
+) -> str:
+    """Build ``db-pm deploy init-service-schema ...`` from GUI settings.
+
+    Mirrors ``presentation/cli/main.py:deploy_init_service_schema`` (Phase 15.5.2).
+    Single required option: --target-connection-file. Idempotent bootstrap of the
+    ``__deploy`` service schema (schema + 3 bookkeeping tables) on a target DB.
+    """
+    conn_file = store.path_for(settings.target_connection)
+    return (
+        f"db-pm deploy init-service-schema "
+        f"--target-connection-file {_quote(str(conn_file))}"
+    )

@@ -22,6 +22,7 @@ from db_project_manager.presentation.gui.actions.cli import (
     build_cli_compare,
     build_cli_deploy_analyze,
     build_cli_deploy_apply,
+    build_cli_deploy_init_service_schema,
     build_cli_deploy_plan,
     build_cli_deploy_validate,
     build_cli_graph_prepare,
@@ -33,6 +34,7 @@ from db_project_manager.presentation.gui.actions.models import (
     CompareSettings,
     DeployAnalyzeSettings,
     DeployApplySettings,
+    DeployInitServiceSchemaSettings,
     DeployValidateSettings,
     GraphPrepareSettings,
     ReverseEngineerSettings,
@@ -238,6 +240,24 @@ def _make_deploy_apply_worker(store, settings: DeployApplySettings):
     )
 
 
+def _make_deploy_init_service_schema_dialog(store, settings, parent):
+    from db_project_manager.presentation.gui.actions.dialogs import (
+        DeployInitServiceSchemaDialog,
+    )
+
+    return DeployInitServiceSchemaDialog(store, settings, parent)
+
+
+def _make_deploy_init_service_schema_worker(store, settings: DeployInitServiceSchemaSettings):
+    from db_project_manager.presentation.gui.widgets.workers import (
+        DeployInitServiceSchemaWorker,
+    )
+
+    return DeployInitServiceSchemaWorker(
+        store.load_by_name(settings.target_connection),
+    )
+
+
 ACTIONS: list[ActionSpec] = [
     ActionSpec(
         action_id="reverse_engineer",
@@ -319,6 +339,15 @@ ACTIONS: list[ActionSpec] = [
         make_worker=_make_deploy_apply_worker,
         build_cli=build_cli_deploy_apply,
         required_fields=("codebase_dir", "target_connection", "output_dir"),
+    ),
+    ActionSpec(
+        action_id="deploy_init_service_schema",
+        title="Инициализировать __deploy на целевой БД (idempotent bootstrap)",
+        settings_model=DeployInitServiceSchemaSettings,
+        make_dialog=_make_deploy_init_service_schema_dialog,
+        make_worker=_make_deploy_init_service_schema_worker,
+        build_cli=build_cli_deploy_init_service_schema,
+        required_fields=("target_connection",),
     ),
 ]
 

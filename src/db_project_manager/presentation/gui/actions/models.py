@@ -129,3 +129,17 @@ class DeployApplySettings(BaseModel):
     no_rehearsal: bool = False  # CLI applies this only to deploy apply
     keep_rehearsal_db: bool = False  # CLI applies this only to deploy apply
     confirm_understands_risk: bool = False  # GUI gate, never sent to CLI
+
+
+class DeployInitServiceSchemaSettings(BaseModel):
+    """Settings for ``db-pm deploy init-service-schema`` (Phase 15.5.2 / GUI action).
+
+    Idempotent bootstrap of the ``__deploy`` service schema on a target DB.
+    Run this BEFORE the first ``deploy apply`` against a freshly created
+    target database — otherwise apply silently skips ``__deploy`` (which
+    CompareService flags UNCHANGED via RE seeding into a temp snapshot).
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    target_connection: str = ""

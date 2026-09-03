@@ -16,6 +16,7 @@ from db_project_manager.application.reverse_engineer import (
     build_default_service,
 )
 from db_project_manager.domain.connection import ConnectionConfig
+from db_project_manager.infrastructure.deploy.canonical_ddl import DEFAULT_SERVICE_SCHEMA
 
 
 class WorkerSignals(QObject):
@@ -556,3 +557,74 @@ class LoadPlanReportWorker(QRunnable):
         except Exception as e:  # noqa: BLE001
             self.signals.error.emit(f"Непредвиденная ошибка: {e}")
             self.signals.finished.emit(None)
+
+
+class DeployInitServiceSchemaWorker(QRunnable):
+    """Run ``db-pm deploy init-service-schema`` (idempotent __deploy bootstrap) off the UI thread.
+
+    Phase 15.5.2 (cis_zup feedback 2026-09-02): on a freshly created target DB
+    this MUST be run BEFORE the first ``deploy apply``, because apply silently
+    skips ``__deploy`` (CompareService flags it UNCHANGED via RE seeding into
+    a temp snapshot). Emits ``ServiceSchemaInitializerResult`` through
+    ``finished`` on success; ``ServiceSchemaInitializerError`` and unexpected
+    exceptions go via ``signals.error`` with ``finished(None)``.
+    """
+
+    def __init__(
+        self,
+        conn_cfg: ConnectionConfig,
+        *,
+        service_schema: str = DEFAULT_SERVICE_SCHEMA,
+    ) -> None:
+        super().__init__()
+        self.conn_cfg = conn_cfg
+        self.service_schema = service_schema
+        self.signals = WorkerSignals()
+
+    def run(self) -> None:
+        from db_project_manager.application.service_schema_initializer import (
+            ServiceSchemaInitializer,
+            ServiceSchemaInitializerError,
+        )
+        from db_project_manager.infrastructure.config.app_config import load_cfg
+
+        if self.service_schema == DEFAULT_SERVICE_SCHEMA:
+            # Pull cfg.deploy.service_schema only when caller didn't pass an
+            # explicit value; otherwise honour what the dialog wired through.
+            self.service_schema = load_cfg(None).deploy.service_schema
+
+        initializer = ServiceSchemaInitializer(service_schema=self.service_schema)
+
+        def progress(message: str, current: int, total: int) -> None:
+            if total:
+                self.signals.progress.emit(message, current, total)
+            else:
+                self.signals.status.emit(message)
+
+        try:
+            result = initializer.run(self.conn_cfg, progress=progress)
+        except ServiceSchemaInitializerError as e:
+            self.signals.error.emit(str(e))
+            self.signals.finished.emit(None)
+            return
+        except Exception as e:  # noqa: BLE001
+            self.signals.error.emit(f"Непредвиденная ошибка: {e}")
+            self.signals.finished.emit(None)
+            return
+
+        # Phase 15.5.2 UX: explicit summary message that distinguishes
+        # 'created' from 'no-op' for the GUI result dialog.
+        if result.changed:
+            summary = (
+                f"✓ Init-service-schema: схема {result.service_schema} "
+                f"{'создана' if result.created_schema else 'уже была'}, "
+                f"таблицы созданы: {', '.join(result.created_tables) or '—'}"
+            )
+        else:
+            summary = (
+                f"✓ Init-service-schema: {result.service_schema} + "
+                f"{len(result.tables_present)} таблиц уже существуют "
+                "(идемпотентный no-op)."
+            )
+        self.signals.status.emit(summary)
+        self.signals.finished.emit(result)
