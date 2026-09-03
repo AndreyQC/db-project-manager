@@ -557,6 +557,61 @@ codebase-vs-codebase, например при проверке integrity).
 
 ---
 
+## P3. PG-различие ``serialN`` vs ``int + DEFAULT NEXTVAL(...)`` в extract_columns
+
+**Контекст (cis_zup feedback 2026-09-04, partially closed Phase 15.5.4):**
+`extract_columns` для codebase-стороны даёт `serial4 NOT NULL` (default=None);
+для target-БД-стороны через RE — `int NOT NULL DEFAULT NEXTVAL(...)`
+(после pg_attrdef round-trip). Это **семантически эквивалентные колонки**
+(`serial4` в PG это syntactic sugar для `int + implicit DEFAULT nextval` +
+auto-created sequence), но `diff_columns` показывал ложные
+`TYPE_CHANGED` + `DEFAULT_CHANGED`.
+
+**Phase 15.5.4 fix (closed частично):** добавил в `infrastructure/diff/columns.py`:
+- `_TYPE_ALIASES` расширен: `serial4/int4 → int`,
+  `serial8/int8 → bigint`, `serial2/int2 → smallint`,
+  `float4 → real`, `float8 → double precision`.
+- В `diff_columns` добавлена компенсация: если один тип — `serial*N`-family
+  (default=None), а другой — `int*N` + `DEFAULT nextval(...)`, default-difference
+  подавляется как false-positive.
+
+**Известное ограничение (Phase 15.5.4):** когда **обе** стороны default-less
+(`serial4 NOT NULL` vs `int NOT NULL`), компенсация НЕ срабатывает —
+мы не можем отличить «serial без явного DEFAULT» от «int без DEFAULT».
+Регрессия `test_serial_vs_int_without_nextval_produces_no_diff` фиксирует
+этот контракт. Round-trip через реальную БД в этом кейсе всё равно даст
+`int + DEFAULT NEXTVAL(...)` (RE об этом знает через pg_attrdef), так что
+проблема **не возникает на реальных данных**. Но теоретически — это пробел.
+
+**Связано:** Phase 12 LESSONS §3 (RE особенности),
+Phase 15.5.3 LESSONS §63 (PG-round-trips с форматами),
+Phase 15.5.4 LESSONS §64 (PG serial/int семейство).
+
+**Не блокирует.** Полное исправление потребует различать raw vs canonical
+type в `ColumnSnapshot` — добавить поле `raw_type` (до канонизации) и
+компенсировать по нему. Это архитектурное расширение схемы snapshot'а —
+Phase 16+.
+
+---
+
+## P3. (бывший) Phase 15.5.4 type-aliases canonicalization
+
+**Статус: ЗАКРЫТ (commit планируется вместе с этим шагом).**
+В рамках Phase 15.5.4 (`infrastructure/diff/columns.py`) добавлен полный
+словарь PG-синонимов типов в `_TYPE_ALIASES`. Это закрывает шум от:
+- serial4/int4 ↔ int
+- serial8/int8 ↔ bigint
+- serial2/int2 ↔ smallint
+- float4 ↔ real, float8 ↔ double precision
+
+Regression: `test_type_synonyms_collapse` (5 старых пар) +
+8 новых параметризованных кейсов в `tests/unit/test_extract_columns.py`.
+Всего 935 unit passed.
+
+Если вскроются ещё синонимы — добавлять в `_TYPE_ALIASES` (Phase 16+).
+
+---
+
 ## P3. Авто-генератор seed «одной записи на таблицу» (ALT-8b)
 
 **Контекст (Phase 12, ALT-8):** seed репетиции — пользовательские скрипты

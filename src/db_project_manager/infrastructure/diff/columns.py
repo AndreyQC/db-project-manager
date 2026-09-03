@@ -16,10 +16,11 @@ unavailable"). Each ``ColumnDef`` maps to a normalized
 - ``type`` — sqlglot-rendered canonical type string. sqlglot collapses most PostgreSQL
   synonyms by itself (``integer``/``int``/``int4`` → ``INT``,
   ``character varying`` → ``VARCHAR``, ``timestamp with time zone`` → ``TIMESTAMPTZ``);
-  the few it does not (``BPCHAR`` vs ``CHAR``) are handled by :data:`_TYPE_ALIASES`.
+  the few it does not are handled by :data:`_TYPE_ALIASES` (BPCHAR vs CHAR,
+  serial4 vs int, etc. — Phase 15.5.4).
 - ``nullable`` — ``False`` iff an inline ``NOT NULL`` column constraint is present
   (table-level constraints don't affect this).
-- ``default`` — rendered default expression text (e.g. ``nextval('app.t_id_seq'::REGCLASS)``),
+- ``default`` — rendered default expression text (e.g. ``nextval('app.t_id_seq'::REGCLASS)`),
   ``None`` when absent.
 
 Any parse failure, non-``Create`` statement, or a ``Create`` without a column list
@@ -32,6 +33,8 @@ Phase 12): this module does its own ``parse_one``.
 
 from __future__ import annotations
 
+import re
+
 import sqlglot
 from sqlglot import exp
 
@@ -40,9 +43,41 @@ from db_project_manager.infrastructure.diff.normalize_sql import DEFAULT_DIALECT
 
 #: Type synonyms sqlglot does NOT collapse on its own (base name, before modifiers).
 #: Keys and values are lower-case rendered base names; modifiers are preserved as-is.
+#:
+#: Phase 15.5.4 (cis_zup feedback 2026-09-04): added full PG alias table to absorb the
+#: remaining type-mismatch false-positives after the Phase 15.5.3 fix on DEFAULTs.
+#: PG stores ``serial4``/``int4`` as the same 4-byte integer; sqlglot preserves
+#: the spelling, so without this map codebase (writes ``serial4``) vs DB (after RE
+#: shows ``int`` + ``nextval(...)``) would compare as type_changed (LESSONS §64).
 _TYPE_ALIASES = {
-    "bpchar": "char",   # RE writes udt_name bpchar; hand-written DDL says char
+    "bpchar": "char",          # RE writes udt_name bpchar; hand-written DDL says char
+    # Phase 15.5.4: serial/int families
+    "serial4": "int",
+    "int4": "int",
+    "serial8": "bigint",
+    "int8": "bigint",
+    "serial2": "smallint",
+    "int2": "smallint",
+    # Float families (sqlglot already collapses numeric → numeric, but map aliases)
+    "float4": "real",
+    "float8": "double precision",
+    # Boolean (sqlglot keeps bool — no canonical change)
+    # Character (sqlglot already collapses char_n → char_n; bpchar → char handled above)
+    # Time (sqlglot already collapses timestamptz, etc.)
+    # Misc
+    "int4range": "int4range",
 }
+
+#: Regex pattern for ``NEXTVAL(...)`` as a default expression. Used to collapse the
+#: ``serial4`` (no default in source) vs ``int + nextval(...)`` (DB round-trip) case:
+#: PG itself does this transparently when a column is declared ``serial4`` — at write
+#: time it adds the implicit sequence + DEFAULT NEXTVAL, at read time the catalog
+#: returns ``int`` + an explicit nextval. They're functionally identical.
+#: Phase 15.5.4 (cis_zup feedback 2026-09-04).
+_NEXTVAL_RE = re.compile(
+    r"^\s*nextval\s*\(",
+    re.IGNORECASE,
+)
 
 
 def canonical_type(dtype: exp.DataType, *, dialect: str = DEFAULT_DIALECT) -> str:
@@ -158,6 +193,20 @@ def _canonical_default(default: str | None) -> str | None:
     return "".join(out)
 
 
+def _is_serial_like_default(default: str | None) -> bool:
+    """True if the default expression starts with ``NEXTVAL(...)``.
+
+    Used by :func:`diff_columns` to absorb the case where one side declares
+    ``serial4`` (and PG implicitly attaches a nextval default) while the other
+    side shows ``int + DEFAULT NEXTVAL(...)`` (which is what RE reads back from
+    ``pg_attrdef``). Both are functionally identical serial columns; we hide
+    the difference so the column diff stays empty for serial columns.
+    """
+    if not default:
+        return False
+    return bool(_NEXTVAL_RE.match(default))
+
+
 def diff_columns(
     source: list[ColumnSnapshot], target: list[ColumnSnapshot]
 ) -> list[ColumnDiff]:
@@ -167,6 +216,16 @@ def diff_columns(
     DROPPED = in target only. A column present on both sides may yield several diffs
     (e.g. TYPE_CHANGED + NULLABILITY_CHANGED). Column renames are NOT detected — a
     rename manifests as DROPPED + ADDED (ALT-3, deliberate: guessing is unsafe).
+
+    Phase 15.5.4: ``serialN`` columns are recognised as semantically equivalent to
+    ``intN`` + ``DEFAULT nextval(...)`` (PG stores them identically inside the
+    catalog; sqlglot preserves the lexical form). Without this, cis_zup's
+    ``process_log_id serial4`` (codebase) vs RE-roundtripped
+    ``int NOT NULL DEFAULT nextval('cis_dmt_zup.zup_process_log_process_log_id_seq'::REGCLASS)``
+    falsely produced both TYPE_CHANGED + DEFAULT_CHANGED. The two effects compound:
+    type canonicalisation (:data:`_TYPE_ALIASES`) collapses ``serialN`` to the
+    underlying ``intN``; the explicit nextval default on one side is hidden when
+    the other side has none (because at write-time PG fills it in).
 
     The result is sorted by column name, then by kind value, for determinism.
     """
@@ -190,6 +249,25 @@ def diff_columns(
                 source_column=src_col, target_column=None,
             ))
             continue
+
+        # --- Phase 15.5.4: serial / int equivalence (cis_zup feedback 2026-09-04).
+        # PG stores ``serialN`` internally as ``intN + implicit DEFAULT NEXTVAL(...)``.
+        # When sqlglot parses the codebase file (``serial4 NOT NULL``) it produces
+        # type=serial4, default=None; after canonicalisation (Phase 15.5.4) the
+        # type becomes ``int``. When RE reads the catalog back it produces
+        # type=int + default=NEXTVAL(...). Both reflect the same column. We
+        # therefore suppress the default-difference diff when one side has no
+        # default AND the other carries a nextval-like default — they're
+        # functionally identical for serial columns.
+        src_default_canon = _canonical_default(src_col.default)
+        tgt_default_canon = _canonical_default(tgt_col.default)
+        if src_default_canon != tgt_default_canon and (
+            (src_default_canon is None and _is_serial_like_default(tgt_default_canon))
+            or (tgt_default_canon is None and _is_serial_like_default(src_default_canon))
+        ):
+            # Both sides describe the same serial column; suppress the default diff.
+            src_default_canon = tgt_default_canon
+
         if src_col.type != tgt_col.type:
             diffs.append(ColumnDiff(
                 column=name, kind=ColumnChangeKind.TYPE_CHANGED,
@@ -200,7 +278,7 @@ def diff_columns(
                 column=name, kind=ColumnChangeKind.NULLABILITY_CHANGED,
                 source_column=src_col, target_column=tgt_col,
             ))
-        if _canonical_default(src_col.default) != _canonical_default(tgt_col.default):
+        if src_default_canon != tgt_default_canon:
             diffs.append(ColumnDiff(
                 column=name, kind=ColumnChangeKind.DEFAULT_CHANGED,
                 source_column=src_col, target_column=tgt_col,

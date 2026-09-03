@@ -14,7 +14,10 @@ import pytest
 
 from db_project_manager.domain.diff import SnapshotSourceKind
 from db_project_manager.infrastructure.diff.columns import (
+    ColumnChangeKind,
+    ColumnSnapshot,
     canonical_type,
+    diff_columns,
     extract_columns,
 )
 from db_project_manager.infrastructure.diff.normalize_sql import normalize_sql, sql_hash
@@ -250,3 +253,95 @@ def test_sql_hash_unchanged_by_column_extraction(rel_path: str, expected_hash: s
     # extraction itself must not influence the hashing input
     _extract(body)
     assert sql_hash(normalize_sql(body)) == expected_hash
+
+
+# --- Phase 15.5.4: serial/int family aliases (cis_zup feedback 2026-09-04) ---
+
+
+@pytest.mark.parametrize(
+    ("alias_a", "alias_b"),
+    [
+        ("serial4", "int4"),
+        ("serial4", "int"),
+        ("serial8", "int8"),
+        ("serial8", "bigint"),
+        ("serial2", "int2"),
+        ("serial2", "smallint"),
+        ("float4", "real"),
+        ("float8", "double precision"),
+    ],
+)
+def test_pg_type_aliases_collapse_in_column_extraction(alias_a: str, alias_b: str) -> None:
+    """PG synonym tables that sqlglot does NOT collapse must be unified
+    by ``_TYPE_ALIASES`` (Phase 15.5.4).
+    """
+    a_cols = _extract(f"CREATE TABLE t (c {alias_a} NOT NULL)")
+    b_cols = _extract(f"CREATE TABLE t (c {alias_b} NOT NULL)")
+    assert a_cols is not None and b_cols is not None
+    assert a_cols[0].type == b_cols[0].type, (
+        f"PG synonyms {alias_a!r} vs {alias_b!r} should compare equal but got "
+        f"{a_cols[0].type!r} vs {b_cols[0].type!r}"
+    )
+
+
+# --- Phase 15.5.4: serial vs int+nextval default equivalence ---
+
+
+def _snap(ddl: str) -> list[ColumnSnapshot]:
+    cols = _extract(ddl)
+    assert cols is not None
+    return cols
+
+
+def test_serial_vs_int_plus_nextval_yields_no_column_diff():
+    """cis_zup regression: ``process_log_id serial4`` (codebase) vs
+    ``int + DEFAULT NEXTVAL(...)`` (DB round-trip) must NOT produce
+    TYPE_CHANGED + DEFAULT_CHANGED — they're the same serial column.
+    """
+    src = _snap("CREATE TABLE t (id serial4 NOT NULL)")
+    tgt = _snap(
+        "CREATE TABLE t (id int NOT NULL DEFAULT nextval('public.t_id_seq'::REGCLASS))"
+    )
+    diffs = diff_columns(src, tgt)
+    assert diffs == [], f"expected no diffs for serial vs int+nextval, got {diffs!r}"
+
+
+def test_serial_vs_int_without_nextval_produces_no_diff():
+    """serial4 NOT NULL vs int NOT NULL — both default-less. The serial
+    implicit nextval vs int empty default is indistinguishable from our
+    extract_columns output (both yield ``default=None`` after sqlglot). The
+    Phase 15.5.4 compensation only fires when one side HAS an explicit
+    nextval and the other doesn't — here BOTH lack explicit default, so no
+    diff is emitted. Documented limitation in LESSONS §64.
+    """
+    src = _snap("CREATE TABLE t (id serial4 NOT NULL)")
+    tgt = _snap("CREATE TABLE t (id int NOT NULL)")  # no DEFAULT nextval
+    diffs = diff_columns(src, tgt)
+    assert diffs == [], (
+        "both default-less columns canonicalise equal; "
+        f"expected no diffs, got {diffs!r}"
+    )
+
+
+def test_real_serial_hand_written_differs_from_int_with_unrelated_default():
+    """Negative control: int column with a non-nextval default truly differs
+    from serial (no diagnostic false-negative).
+    """
+    src = _snap("CREATE TABLE t (id serial4 NOT NULL)")
+    tgt = _snap("CREATE TABLE t (id int NOT NULL DEFAULT 42)")
+    diffs = diff_columns(src, tgt)
+    # 42 is not a NEXTVAL — diff must NOT be hidden.
+    assert any(d.kind in (ColumnChangeKind.TYPE_CHANGED, ColumnChangeKind.DEFAULT_CHANGED) for d in diffs)
+
+
+def test_default_compensation_only_for_serial_type_match():
+    """Default-compensation should not hide real differences when types are
+    genuinely different (e.g. serial4 vs text).
+    """
+    src = _snap("CREATE TABLE t (id serial4 NOT NULL)")
+    tgt = _snap("CREATE TABLE t (id text NOT NULL DEFAULT nextval('public.t_id_seq'::REGCLASS))")
+    diffs = diff_columns(src, tgt)
+    # type_changed + nullability stays as-is. The nextval-compensation is
+    # gated on type being a serial/int pair, not a generic nextval.
+    types_differ = any(d.kind is ColumnChangeKind.TYPE_CHANGED for d in diffs)
+    assert types_differ, "serial4 vs text must remain TYPE_CHANGED"

@@ -1011,3 +1011,71 @@
 - **Урок #4 (forward-looking):** hash-сравнение — хрупкий фундамент.
   Phase 16+ BACKLOG предлагает YAML-сравнение source vs target как
   архитектурное решение (структурный diff вместо hash-diff).
+
+### 64. PG ``serialN`` ↔ ``int + DEFAULT NEXTVAL(...)``: один и тот же столбец, разный sqlglot-output
+- **Симптом (cis_zup feedback 2026-09-04):** после фикса Phase 15.5.3
+  оставались **две** таблицы с CHANGED (zup_process_log, zup_api_sourcedata_load_log).
+  Column-diff показывал:
+   - `process_log_id`: `kind=type_changed` `serial4 ↔ int`
+   - `process_log_id`: `kind=default_changed` `None ↔ NEXTVAL(CAST('cis_dmt_zup.zup_process_log_process_log_id_seq' AS REGCLASS))`
+- **Корневая причина:** PostgreSQL **две формы записи одной и той же колонки**:
+   - Source (hand-written code): ``process_log_id serial4 NOT NULL``
+     — PG неявно создаёт sequence ``process_log_id_seq`` + DEFAULT nextval().
+   - Target (RE round-trip): ``int NOT NULL DEFAULT nextval('..._id_seq'::REGCLASS)``
+     — после `get_database_structure()` PG возвращает explicit DEFAULT, потому что
+     `pg_attrdef` хранит его в виде AST-выражения.
+   - Семантически — одна и та же колонка. ``sqlglot`` сохраняет lexical-форму
+     типов (``serial4`` vs ``int``), не нормализует PG alias-таблицу.
+- **Фикс (Phase 15.5.4, `infrastructure/diff/columns.py`):**
+   1. **Type aliases (`_TYPE_ALIASES`)** расширены: ``serial4/int4 → int``,
+      ``serial8/int8 → bigint``, ``serial2/int2 → smallint``,
+      ``float4 → real``, ``float8 → double precision``. Это перекрывает
+      базовые PG type synonyms, которые sqlglot не схлопывает.
+   2. **Default compensation** в `diff_columns`: если один из default'ов
+      — ``nextval(...)``, а другой — ``None``, и типы после type-alias
+      канонизации совпадают, default-difference скрывается как false-positive.
+- **Regression-тесты** (`tests/unit/test_extract_columns.py`):
+   - `test_pg_type_aliases_collapse_in_column_extraction` —
+     параметризованный, 8 пар.
+   - `test_serial_vs_int_plus_nextval_yields_no_column_diff` — главный
+     cis_zup-кейс: теперь diffs=[].
+   - `test_serial_vs_int_without_nextval_produces_no_diff` —
+     документированное ограничение: когда обе стороны default-less,
+     компенсация невозможна (мы не знаем, был ли это serial).
+- **Известное ограничение:** когда **обе** стороны default-less
+  (``serial4 NOT NULL`` vs ``int NOT NULL``), diff пуст — но это
+  потенциальное **сокрытие реальной разницы**. На практике не возникает:
+  RE всегда читает DEFAULT из `pg_attrdef` явно. Тест
+  `test_serial_vs_int_without_nextval_produces_no_diff` фиксирует
+  контракт с явным комментарием.
+- **Урок #1:** PG имеет **две разные формы записи для одного и того же
+  объекта** (text vs CAST, serial vs int+nextval, разные normalizations).
+  Каждый контрактный hash-сравнитель должен знать обе формы и канонизировать.
+  Lesson §63 уже говорил про текстовый CAST — это **родственный класс
+  багов**, не первый и не последний.
+- **Урок #2:** для каждого **PG-specific alias-класса** нужен явный
+  mapping в `_TYPE_ALIASES` (а не верить что sqlglot их канонизирует).
+  sqlglot фокусируется на ANSI SQL, PG-специфичные aliases — на нас.
+- **Урок #3:** backdoor через `int + DEFAULT nextval(...)` скрывает
+  реальную картину, если extract_columns потеряет default. Документируйте,
+  что default у `serialN` есть **всегда** на уровне PG (даже если sqlglot
+  пишет `default=None`), и считайте это при классификации дельты.
+- **Урок #4:** тесты на канонизацию должны покрывать **обе стороны**
+  формы (source vs target), иначе partial фиксы оставляют дыры. Наш
+  test `test_real_serial_hand_written_differs_from_int_with_unrelated_default`
+  проверяет, что default=42 (НЕ nextval) не скрывается — sanity-check
+  для over-агрессивной компенсации.
+- **Урок #5 (forward-looking):** у PG ещё много других классов эквивалентности:
+  - `VARCHAR(n)` vs `CHARACTER VARYING(n)` vs `TEXT` (последний без лимита),
+  - `NUMERIC(p,s)` vs `DECIMAL(p,s)` vs `NUMBER(p,s)` (если Greenplum),
+  - `TIMESTAMP` vs `TIMESTAMP WITHOUT TIME ZONE`,
+  - index/constraint naming differences (autogen names),
+  - и т.д.
+  Каждое из них — отдельный бэклог-тикет; полное решение — YAML-diff
+  (Phase 16+ backlog, см. related item).
+- **Урок #6:** ``Phase 15.5.3`` закрыл форматные различия текстовых
+  литералов в DEFAULT, ``Phase 15.5.4`` закрыл serial/int семейство.
+  Следующие паттерны ложно-положительных CHANGED будут вылезать при
+  столкновении с реальными мир-PG schemas. Правило: при первом
+  false-positive нужно добавить **и тест, и канонизацию** — не оставлять
+  workaround на уровне пользовательского кода.
