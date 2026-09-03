@@ -492,6 +492,71 @@ db-pm deploy init-service-schema first».
 
 ---
 
+## P3. YAML-сравнение source vs target вместо hash-сравнения (Phase 16+)
+
+**Контекст (cis_zup feedback 2026-09-03, 2026-09-04):** Phase 12
+`DeployApplyService` строит `DeltaPlan` на основе `sql_hash` сравнения
+source-side и target-side snapshots. Hash считается через
+`sqlglot`-нормализацию всего DDL-тела. Это даёт **false-positive CHANGED**
+на форматных различиях, которые PG и наш SQL-парсер считают
+семантически эквивалентными:
+
+* `CAST('utc' AS TEXT)` vs `'utc'` (Phase 15.5.3 — закрыто post-AST
+  regex нормализацией, см. `LESSONS §63`);
+* в перспективе — другие эквивалентные формы DEFAULTs, имена ограничений
+  (`group_id_fkey` vs автоматически-сгенерированное), whitespace внутри
+  DDL, и т.п.
+
+Каждое такое различие выливается в:
+
+1. safety gate violation (touch=CHANGED + covered=[] + presence=HAS_DATA);
+2. column-diff классифицируется как DEFAULT_CHANGED (NEEDS_PRE);
+3. deploy apply падает, если нет покрывающего pre-скрипта.
+
+**Альтернативный подход (предложен пользователем):** не опираться на
+`sql_hash` при сравнении. Вместо этого:
+
+1. Строить YAML-снимок **codebase-стороны** через `db-pm yaml generate`
+   по SQL-файлам в dir (Phase 13 уже умеет; текущая команда —
+   `yaml generate --source <dir>`).
+2. Строить YAML-снимок **target-стороны** через `db-pm yaml generate` по
+   БД-стороне (нужна `yaml generate --source <conn>` — расширение Phase 13).
+3. Сравнивать два YAML **по каждому объекту** (структурно, а не по hash):
+
+   - compare columns: name/type/nullable/default → per-column diff
+     (Phase 12 ALREADY делает это для changed таблиц).
+   - compare функций/proc/views — по тексту тела, нормализованному
+     ровно тем же sqlglot pipeline, что у Phase 13.
+   - compare constraints/indexes/etc. — пока нет (backlog P3 — multi-statement
+     normalize, Phase 12 LESSONS §3).
+
+**Выигрыш:**
+- YAML-сравнение устойчиво к форматным репрезентациям PG
+  (`CAST` ↔ literal, autogen names, whitespace).
+- Можно выявлять «реальные» отличия (тип колонки, default value),
+  игнорируя косметические.
+- Один формат хранения (`YamlProject`) и для diff, и для source-of-truth
+  codebase (yaml apply уже умеет генерировать из YAML).
+
+**Зависимости / сложность:**
+- Расширить `YamlGenerateService` (Phase 13) на source=DB.
+- Snapshotter нужен — общий с `compare_service`/`reverse_engineer`.
+- Comparator (`compare_service` или новый) должен принимать два YAML на
+  вход и выдавать структурный diff без hash.
+- Один новый контракт тестов + e2e.
+
+**Связано:** Phase 13 (`infrastructure/yaml_project/`),
+Phase 12 (`domain/delta.py::DeltaPlan`),
+`infrastructure/diff/normalize_sql.py` — сейчас там hash-логика; YAML-сравнение
+позволит **deprecate** hash для source-vs-target (но оставить для
+codebase-vs-codebase, например при проверке integrity).
+
+**Не блокирует.** Phase 15.5.3 закрывает наиболее частый кейс
+(default-format), но архитектурно правильнее уйти от hash целиком.
+Записываем как Phase 16+ кандидат (после Phase 16 post-deploy отчётов).
+
+---
+
 ## P3. Авто-генератор seed «одной записи на таблицу» (ALT-8b)
 
 **Контекст (Phase 12, ALT-8):** seed репетиции — пользовательские скрипты

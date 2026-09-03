@@ -961,3 +961,53 @@
   `executable = [op for op in plan.operations if op.script_file and op.classification is SAFE]`
   отфильтрует его, apply не выполнит. Контракт: каждый CREATE-объект в plan
   должен иметь `script_file` непустой.
+
+### 63. PG round-trips `CAST('x' AS TEXT)` и `'x'` в разных формах через `column_default`
+- **Симптом (cis_zup feedback 2026-09-03):** при RE-БД-стороны target
+  snapshot для таблицы `cis_dmt_zup.lu_zup_accountgroups` показывал
+  `DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE CAST('utc' AS TEXT))`, а source
+  snapshot (codebase) — `DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'utc')`.
+  Семантически эквивалентны, но `sqlglot`-нормализация оставляет обе формы
+  как есть — `sql_hash` отличается, `status=CHANGED`, safety gate
+  блокирует deploy, column-diff классифицируется как `DEFAULT_CHANGED`
+  → `NEEDS_PRE`. На повторный apply (тот же codebase, та же БД) —
+  тот же хеш, та же ошибка. Похоже на «призрак», потому что RE-clobber
+  собственный код. Триггер — любой DEFAULT с `AT TIME ZONE 'literal'`,
+  где literal — string.
+- **Корневая причина:** PostgreSQL на разных версиях и в зависимости от
+  пути чтения (`information_schema.columns.column_default` vs
+  `pg_attrdef` vs `pg_get_expr`) возвращает `CAST('x' AS TEXT)` либо
+  `'x'`. Это **нормальное поведение PG**, не bug — два lexical представления
+  одного и того же выражения. sqlglot при `tree.sql(normalize=True)`
+  намеренно сохраняет lexical форму (это часть его дизайна: см.
+  `transforms/prevent_invalidatable_cast_or_to_string.sql` и аналоги).
+- **Плохое решение:** просить пользователя переписать DEFAULT на
+  одно из двух представлений. Решает один кейс, не системно; завтра
+  появится `'utc'::text` vs `CAST('utc' AS TEXT)` — та же история.
+- **Хорошее решение (Phase 15.5.3):** post-AST regex-канонизатор в
+  `infrastructure/diff/normalize_sql.py::_canonicalize_text_casts`. Два
+  regex (`CAST('x' AS TEXT)` → `'x'`, `'x'::text` → `'x'`) срабатывают
+  **после** sqlglot pipeline, **и до** хеширования. Регрессия в
+  `tests/unit/test_normalize_sql.py::test_cis_zup_real_default_hash_collapses_after_fix`
+  на точных SQL-фрагментах из cis_zup.
+- **Консервативность:** regex ограничен **только `CAST(<quoted-string> AS TEXT)`**
+  и **только `'<str>'::text`** — не unwrap'ает:
+    * `CAST(1.5 AS NUMERIC(10,2))` (precision/format значимы);
+    * `CAST(col AS TEXT)` (col — идентификатор, не литерал);
+    * другие CAST-типы, не дающие семантически-эквивалентной строки.
+- **Урок #1:** при работе с PG `column_default` через любой snapshot-слой
+  всегда нормализуй **оба** направления записи (`CAST('<x>' AS TEXT)` ↔
+  `'<x>'::text` ↔ `'<x>'`); PG не гарантирует конкретную форму при
+  чтении.
+- **Урок #2:** AST-канонизация (sqlglot) **не даёт идиоматической
+  канонизации текстовых DEFAULT-выражений**. Для hash-сравнения после
+  sqlglot **всегда нужен дополнительный пост-процесс**, который
+  разбирает конкретные формы эквивалентности для конкретного диалекта.
+  Это проектируемое ограничение, не баг sqlglot.
+- **Урок #3:** КАЖДЫЙ раз, когда hash сравнения показывает CHANGED без
+  очевидной разницы в исходниках, проверяй тип-формат DEFAULTs /
+  квот литералов / имена auto-generated constraints. Это **самый
+  частый** источник «фантомных» изменений.
+- **Урок #4 (forward-looking):** hash-сравнение — хрупкий фундамент.
+  Phase 16+ BACKLOG предлагает YAML-сравнение source vs target как
+  архитектурное решение (структурный diff вместо hash-diff).
