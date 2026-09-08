@@ -19,6 +19,7 @@ from db_project_manager.infrastructure.deploy.safety_report import (
     JSON_OUTPUT_NAME,
     MD_OUTPUT_NAME,
     render_safety_markdown,
+    rows_phrase,
     write_safety_report,
 )
 
@@ -114,3 +115,26 @@ def test_json_report_roundtrip(tmp_path: Path) -> None:
     assert len(restored.touched) == 2
     assert restored.touched[0].covered_by == ["a.sql"]
     assert restored.touched[1].estimated_rows is None
+
+
+def test_never_analyzed_rows_rendered_honestly() -> None:
+    """Phase 15.7: reltuples=-1 (PG 13+, never VACUUMed) → «нет статистики», not ~-1."""
+    assert rows_phrase(-1) == "нет статистики (таблица не ANALYZEd)"
+    assert rows_phrase(None) == "число строк неизвестно"
+    assert rows_phrase(5000) == "~5000 строк"
+    verdict = SafetyGateVerdict(
+        clean=False, db_type="postgres",
+        touched=[_touched(rows=-1, confidence=StatsConfidence.UNKNOWN)],
+    )
+    md = render_safety_markdown(verdict)
+    assert "н/д (не ANALYZEd)" in md
+    assert "~-1" not in md
+
+
+def test_ignored_build_false_note() -> None:
+    """Phase 15.7: the report explains why build=false objects are absent."""
+    verdict = SafetyGateVerdict(
+        clean=True, db_type="postgres", touched=[], ignored_build_false=3,
+    )
+    md = render_safety_markdown(verdict)
+    assert "3 объектов исключены из анализа (project.build=false" in md

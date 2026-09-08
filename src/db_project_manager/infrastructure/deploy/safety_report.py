@@ -23,6 +23,11 @@ from db_project_manager.domain.safety import SafetyGateVerdict, TouchedTable
 JSON_OUTPUT_NAME = "safety_gate_report.json"
 MD_OUTPUT_NAME = "safety_gate_report.md"
 
+#: reltuples == -1 (PG 13+) means the table has never been VACUUMed/ANALYZed —
+#: the estimate is unknown, not negative. classify_presence already treats it
+#: fail-safe; this keeps the human-facing text honest (Phase 15.7).
+ROWS_NEVER_ANALYZED = -1
+
 _PRESENCE_HINT = {
     "has_data": "есть данные",
     "empty": "пусто",
@@ -36,7 +41,20 @@ _TOUCH_HINT = {
 
 
 def _fmt_rows(rows: int | None) -> str:
-    return "?" if rows is None else f"~{rows}"
+    if rows is None:
+        return "?"
+    if rows == ROWS_NEVER_ANALYZED:
+        return "н/д (не ANALYZEd)"
+    return f"~{rows}"
+
+
+def rows_phrase(rows: int | None) -> str:
+    """Human phrase for a violation line: ``~N строк`` / no-statistics wording."""
+    if rows == ROWS_NEVER_ANALYZED:
+        return "нет статистики (таблица не ANALYZEd)"
+    if rows is None:
+        return "число строк неизвестно"
+    return f"~{rows} строк"
 
 
 def _fmt_covered(t: TouchedTable) -> str:
@@ -68,6 +86,14 @@ def render_safety_markdown(verdict: SafetyGateVerdict, generated_at: str | None 
             "Обнаружены таблицы с данными, изменяемые дельтой без покрывающего "
             "pre-скрипта. **Пайплайн остановлен** (CD-9; правило: лучше потерять "
             "день, чем данные)."
+        )
+        lines.append("")
+
+    if verdict.ignored_build_false:
+        lines.append(
+            f"> Примечание: {verdict.ignored_build_false} объектов исключены из "
+            "анализа (project.build=false в autodoc) — изменения по ним не "
+            "проверяются и не применяются."
         )
         lines.append("")
 

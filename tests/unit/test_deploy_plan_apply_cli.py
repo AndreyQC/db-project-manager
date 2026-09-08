@@ -167,7 +167,9 @@ def test_plan_builds_correct_call(monkeypatch, tmp_path) -> None:
     assert len(stub.plan_calls) == 1
     call = stub.plan_calls[0]
     assert call["codebase_dir"] == tmp_path / "code"
-    assert call["output_dir"] == tmp_path / "out"
+    # Phase 15.7: per-run subdirectory under --output-dir (see deploy analyze).
+    assert call["output_dir"].parent == tmp_path / "out"
+    assert call["output_dir"].is_dir()
     assert call["include_drops"] is True
     assert call["target_cfg"].database == "target"
     assert call["target_cfg"].password == "plain-secret"

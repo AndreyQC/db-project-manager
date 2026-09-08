@@ -110,8 +110,11 @@ def test_dir_vs_dir_identical_produces_all_unchanged(tmp_path):
     # Phase 15.5 (cis_zup feedback 2026-09-02): ``schema`` was added to
     # DIFFED_TYPES, so schemas are now diffed too. The fixture has 20 vertices:
     # -1 extension -1 database_setting = 18 diffed (15 non-schema + 3 schemas).
-    assert '"unchanged": 18' in report_text
+    # Phase 15.7: ``materialized_view routes`` has project.build=false in its
+    # autodoc — excluded from the diff on BOTH sides → 18 - 1 = 17 unchanged.
+    assert '"unchanged": 17' in report_text
     assert '"added": 0' in report_text
+    assert '"ignored_build_false": 1' in report_text
 
 
 def test_dir_vs_dir_missing_manifest_raises(tmp_path):
@@ -239,3 +242,52 @@ def test_db_type_mismatch_between_db_and_dir(tmp_path):
             SideSpec(SnapshotSourceKind.DIR, str(tgt)),
             out,
         )
+
+
+def test_db_side_snapshot_copied_into_run_dir(tmp_path):
+    """Phase 15.7 (BACKLOG P3): DB-side RE snapshots survive in target/ and source/."""
+    out = tmp_path / "report"
+    conn = _conn(db="mydb")
+
+    service = CompareService(
+        reverse_engineer=_StubReverseEngineer(db_type="postgres", db_name="mydb"),  # type: ignore[arg-type]
+        adapter_factory=_fake_adapter_factory(),
+    )
+    service.run(
+        SideSpec(SnapshotSourceKind.DB, "conn.yaml", conn_cfg=conn),
+        SideSpec(SnapshotSourceKind.DB, "conn2.yaml", conn_cfg=conn),
+        out,
+    )
+    assert (out / "source" / "mydb" / "dbpm.manifest.json").is_file()
+    assert (out / "target" / "mydb" / "dbpm.manifest.json").is_file()
+
+
+def test_build_false_excluded_from_both_sides(tmp_path):
+    """Phase 15.7: build=false on ONE side excludes the object from both sides.
+
+    Source (DIR) keeps ``materialized_view routes`` at build=false; target (DIR)
+    flips it to build=true. Without two-sided exclusion the object would surface
+    as REMOVED (present in target, absent from a source-only filter). It must
+    instead vanish entirely, with a documented ignored count.
+    """
+    src = _copy_fixture_with_manifest(tmp_path / "src")
+    tgt = _copy_fixture_with_manifest(tmp_path / "tgt")
+    routes = tgt / "bookings" / "materialized_views" / "materialized_view routes.sql"
+    text = routes.read_text(encoding="utf-8-sig").replace("build: false", "build: true")
+    routes.write_text(text, encoding="utf-8")
+
+    out = tmp_path / "report"
+    service = CompareService()
+    service.run(
+        SideSpec(SnapshotSourceKind.DIR, str(src)),
+        SideSpec(SnapshotSourceKind.DIR, str(tgt)),
+        out,
+    )
+
+    import json
+
+    report = json.loads((out / DIFF_REPORT_FILENAME).read_text(encoding="utf-8"))
+    assert report["summary"]["ignored_build_false"] == 1
+    assert not any("routes" in e["object_key"] for e in report["entries"])
+    # The build=false object must not leak into the diff as removed.
+    assert report["summary"]["removed"] == 0

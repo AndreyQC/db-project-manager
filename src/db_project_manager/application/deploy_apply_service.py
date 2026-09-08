@@ -82,6 +82,7 @@ from db_project_manager.infrastructure.sql.autodoc import strip_autodoc
 
 SEED_DIR_NAME = "__migrations/seed"
 REHEARSAL_DIR_NAME = "rehearsal"
+REHEARSAL_RE_DIR_NAME = "rehearsal_re"  # Phase 15.7: kept RE of the target (BACKLOG P3)
 REHEARSAL_PREFIX = "dbpm_rehearsal"
 
 #: Diff statuses that make a table "touched" (mirrors the safety gate).
@@ -269,6 +270,15 @@ class DeployApplyService:
             logger.info(f"Репетиция успешна: {rehearsal_db}")
             return rehearsal_db
         finally:
+            # Phase 15.7: keep what the RE read from the target when building the
+            # rehearsal analog (diagnostics; same rationale as compare's target/).
+            try:
+                shutil.copytree(temp_root, output_dir / REHEARSAL_RE_DIR_NAME, dirs_exist_ok=True)
+            except OSError as e:  # noqa: BLE001 — diagnostics aid, never fatal
+                logger.warning(
+                    f"Не удалось сохранить RE-snapshot репетиции "
+                    f"в {output_dir / REHEARSAL_RE_DIR_NAME}: {e}"
+                )
             if rehearsal_db and not keep_db:
                 self._drop_quietly(target_cfg, rehearsal_db)
             shutil.rmtree(temp_root, ignore_errors=True)

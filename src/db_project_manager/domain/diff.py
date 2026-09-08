@@ -47,6 +47,12 @@ class DiffStatus(str, Enum):
     UNCHANGED = "unchanged"
 
 
+#: ``DiffReport.summary`` key for objects excluded from the whole diff because
+#: their autodoc carries ``project.build: false`` (Phase 15.7). Such objects are
+#: not managed by the deploy tooling; the count keeps their absence explainable.
+IGNORED_BUILD_FALSE_KEY = "ignored_build_false"
+
+
 class CodebaseManifest(BaseModel):
     """Properties of a whole database, written next to a reverse-engineer tree.
 
@@ -81,6 +87,10 @@ class ObjectSnapshot(BaseModel):
     sql_normalized: str       # sqlglot-normalized SQL body (audit/debug)
     sql_hash: str             # 8 hex SHA-256 of sql_normalized
     estimated_rows: int | None = None  # tables only (reltuples); None otherwise
+    # Phase 15.7: the autodoc ``project.build`` flag. Objects with build=false
+    # are excluded from the diff on BOTH sides (they are not managed by the
+    # deploy tooling) — see CompareService._exclude_build_false.
+    build: bool = True
     # Phase 12 (ALT-1b): columns extracted from the SQL body at snapshot-build time.
     # None = not extracted (non-table object, unparseable DDL) → structural diff
     # unavailable → fail-safe downstream; [] = extracted, the table has no columns.

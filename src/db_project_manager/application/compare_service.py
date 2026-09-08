@@ -38,14 +38,19 @@ from db_project_manager.application.reverse_engineer import (
     ReverseEngineerService,
 )
 from db_project_manager.domain.connection import ConnectionConfig
-from db_project_manager.domain.diff import DiffReport, SnapshotSourceKind, StateSnapshot
+from db_project_manager.domain.diff import (
+    DiffReport,
+    IGNORED_BUILD_FALSE_KEY,
+    SnapshotSourceKind,
+    StateSnapshot,
+)
 from db_project_manager.infrastructure.config.codebase_manifest import (
     ManifestError,
     read_manifest,
 )
 from db_project_manager.infrastructure.database.base import DatabaseAdapter, DatabaseError
 from db_project_manager.infrastructure.database.registry import get_adapter
-from db_project_manager.infrastructure.diff.comparator import compare
+from db_project_manager.infrastructure.diff.comparator import compare, identity_key
 from db_project_manager.infrastructure.diff.snapshot import build_snapshot_from_dir
 
 SOURCE_FILENAME = "source.json"
@@ -103,10 +108,10 @@ class CompareService:
         temp_dirs: list[Path] = []
         try:
             self._emit(progress, "Подготовка снимка source…", 0, 4)
-            src_snap = self._build_side(source, "source", temp_dirs, keep_model_dir, progress)
+            src_snap = self._build_side(source, "source", temp_dirs, keep_model_dir, progress, output_dir)
 
             self._emit(progress, "Подготовка снимка target…", 1, 4)
-            tgt_snap = self._build_side(target, "target", temp_dirs, keep_model_dir, progress)
+            tgt_snap = self._build_side(target, "target", temp_dirs, keep_model_dir, progress, output_dir)
 
             if src_snap.db_type != tgt_snap.db_type:
                 raise CompareError(
@@ -115,8 +120,12 @@ class CompareService:
                     f"одинаковых типов (PG↔PG, GP↔GP)."
                 )
 
+            ignored = self._exclude_build_false(src_snap, tgt_snap)
+
             self._emit(progress, "Сравнение снимков…", 2, 4)
             report = compare(src_snap, tgt_snap)
+            if ignored:
+                report.summary[IGNORED_BUILD_FALSE_KEY] = ignored
 
             self._emit(progress, "Запись отчёта…", 3, 4)
             self._write_report(report, output_dir)
@@ -143,10 +152,11 @@ class CompareService:
         temp_dirs: list[Path],
         keep_model_dir: bool,  # noqa: ARG002 — kept for symmetry / future per-side flags
         progress: ProgressCallback | None,
+        output_dir: Path,
     ) -> StateSnapshot:
         if side.kind == SnapshotSourceKind.DIR:
             return self._build_dir_side(side)
-        return self._build_db_side(side, label, temp_dirs, progress)
+        return self._build_db_side(side, label, temp_dirs, progress, output_dir)
 
     def _build_dir_side(self, side: SideSpec) -> StateSnapshot:
         """Read the manifest from a codebase dir, then build the snapshot."""
@@ -168,10 +178,11 @@ class CompareService:
         label: str,
         temp_dirs: list[Path],
         progress: ProgressCallback | None,
+        output_dir: Path,
     ) -> StateSnapshot:
         """Reverse-engineer the DB into a temp dir, then build the snapshot."""
         if side.conn_cfg is None:
-            raise CompareError(f"SideSpec {label} (DB) is missing conn_cfg")
+            raise CompareError(f"SideSpec {label} (DB) missing conn_cfg")
 
         temp_root = Path(tempfile.mkdtemp(prefix=f"dbpm_compare_{label}_"))
         temp_dirs.append(temp_root)
@@ -182,6 +193,12 @@ class CompareService:
             self._reverse_engineer.run(conn_cfg, temp_root, progress=progress)
         except ReverseEngineerError as e:
             raise CompareError(f"Reverse-engineer стороны {label} не удался: {e}") from e
+
+        # Phase 15.7 (BACKLOG P3): keep what the RE actually read from the DB in
+        # the run dir instead of losing it with the temp dir — this is the
+        # artifact that makes false-positive CHANGED diagnosis possible. Copied
+        # right after RE so it survives even a later snapshot-build failure.
+        self._copy_snapshot_dir(temp_root, output_dir / label)
 
         codebase_dir = temp_root / conn_cfg.database
         # Confirm the manifest was written by reverse-engineer (db_type comes from
@@ -212,6 +229,57 @@ class CompareService:
             row_counts=row_counts,
             graph_service=self._graph_service,
         )
+
+    # --- build=false exclusion + snapshot retention (Phase 15.7) ---
+
+    @staticmethod
+    def _exclude_build_false(src_snap: StateSnapshot, tgt_snap: StateSnapshot) -> int:
+        """Drop ``build=false`` objects from both snapshots (in place).
+
+        Objects marked ``project.build: false`` in autodoc are not managed by
+        the deploy tooling — ``deploy validate``/``plan`` already skip them.
+        Excluding them from BOTH sides (matched by catalog-insensitive
+        :func:`~...comparator.identity_key`) prevents two failure modes:
+        reporting them as CHANGED (noise/violations in ``deploy analyze``) or,
+        if only the source side were filtered, as REMOVED. Edges touching an
+        excluded object are dropped from both sides too, else the edge diff
+        would show phantom changes. RE-generated autodoc always writes
+        ``build: true``, so in practice the DIR side drives the exclusion.
+
+        Returns:
+            The number of excluded object identities.
+        """
+        excluded = {
+            identity_key(key)
+            for snap in (src_snap, tgt_snap)
+            for key, obj in snap.objects.items()
+            if obj.build is False
+        }
+        if not excluded:
+            return 0
+        for snap in (src_snap, tgt_snap):
+            for key in [k for k in snap.objects if identity_key(k) in excluded]:
+                del snap.objects[key]
+            snap.edges = [
+                edge
+                for edge in snap.edges
+                if identity_key(edge.source_object_key) not in excluded
+                and identity_key(edge.destination_object_key) not in excluded
+            ]
+        return len(excluded)
+
+    @staticmethod
+    def _copy_snapshot_dir(temp_root: Path, dest: Path) -> None:
+        """Copy a DB-side RE snapshot into the run dir (Phase 15.7, BACKLOG P3).
+
+        Best-effort diagnostics aid: a copy failure is logged and never fails
+        the comparison. Repeated compares into the same run dir overwrite
+        (``dirs_exist_ok=True``) — the latest DB read wins.
+        """
+        try:
+            shutil.copytree(temp_root, dest, dirs_exist_ok=True)
+        except OSError as e:
+            logger.warning(f"Не удалось сохранить RE-snapshot стороны в {dest}: {e}")
 
     # --- report writing ---
 

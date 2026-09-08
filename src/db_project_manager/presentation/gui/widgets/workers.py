@@ -17,6 +17,7 @@ from db_project_manager.application.reverse_engineer import (
 )
 from db_project_manager.domain.connection import ConnectionConfig
 from db_project_manager.infrastructure.deploy.canonical_ddl import DEFAULT_SERVICE_SCHEMA
+from db_project_manager.infrastructure.files.run_naming import create_run_dir
 
 
 class WorkerSignals(QObject):
@@ -205,7 +206,8 @@ class DeployAnalyzeWorker(QRunnable):
 
         try:
             verdict = service.analyze(
-                self.codebase_dir, self.conn_cfg, self.output_dir, progress=progress
+                self.codebase_dir, self.conn_cfg,
+                create_run_dir(self.output_dir), progress=progress,
             )
             self.signals.finished.emit(verdict)
         except SafetyGateError as e:
@@ -257,7 +259,7 @@ class DeployPlanWorker(QRunnable):
             plan = service.plan(
                 self.codebase_dir,
                 self.conn_cfg,
-                self.output_dir,
+                create_run_dir(self.output_dir),
                 include_drops=self.include_drops,
                 progress=progress,
             )
@@ -324,7 +326,7 @@ class DeployApplyWorker(QRunnable):
             result = service.apply(
                 self.codebase_dir,
                 self.conn_cfg,
-                self.output_dir,
+                create_run_dir(self.output_dir),
                 include_drops=self.include_drops,
                 rehearsal=not self.no_rehearsal,
                 keep_rehearsal_db=self.keep_rehearsal_db,
@@ -382,7 +384,7 @@ class CompareWorker(QRunnable):
             result = service.run(
                 self.source,
                 self.target,
-                self.output_dir,
+                create_run_dir(self.output_dir),
                 keep_model_dir=self.keep_model_dir,
                 progress=progress,
             )

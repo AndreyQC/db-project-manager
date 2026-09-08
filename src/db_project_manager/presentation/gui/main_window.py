@@ -31,6 +31,8 @@ from db_project_manager.infrastructure.config.connection_store import (
     ConnectionStoreError,
 )
 from db_project_manager.infrastructure.config.gui_settings import GuiSettingsStore
+from db_project_manager.infrastructure.deploy.safety_report import rows_phrase
+from db_project_manager.infrastructure.files.run_naming import resolve_report_dir
 from db_project_manager.infrastructure.logging_setup import configure as configure_logging
 from db_project_manager.presentation.gui.actions.registry import get_action
 from db_project_manager.presentation.gui.widgets.action_panel import ActionPanelWidget
@@ -329,14 +331,16 @@ class MainWindow(QMainWindow):
 
     def _report_analyze_result(self, verdict, settings) -> None:
         """Show the safety-gate verdict + point to the report (Phase 11, SG-7)."""
-        from pathlib import Path
-
-        report_md = Path(settings.output_dir) / "safety_gate_report.md"
+        # Phase 15.7: workers write into a per-run subdirectory; the just-finished
+        # run is by construction the latest one under settings.output_dir.
+        report_md = resolve_report_dir(settings.output_dir) / "safety_gate_report.md"
         touched = len(getattr(verdict, "touched", []) or [])
         violations = getattr(verdict, "violations", []) or []
+        ignored = getattr(verdict, "ignored_build_false", 0) or 0
+        ignored_note = f" Игнорировано (build=false): {ignored}." if ignored else ""
         if getattr(verdict, "clean", False):
             self._append_status(
-                f"✓ Safety gate: CLEAN (тронутых таблиц: {touched}). Отчёт: {report_md}"
+                f"✓ Safety gate: CLEAN (тронутых таблиц: {touched}).{ignored_note} Отчёт: {report_md}"
             )
             QMessageBox.information(
                 self,
@@ -345,13 +349,13 @@ class MainWindow(QMainWindow):
             )
             return
         self._append_status(
-            f"✗ Safety gate: VIOLATIONS ({len(violations)}) — пайплайн остановлен. "
-            f"Отчёт: {report_md}"
+            f"✗ Safety gate: VIOLATIONS ({len(violations)}) — пайплайн остановлен."
+            f"{ignored_note} Отчёт: {report_md}"
         )
         for v in violations:
             self._append_status(
                 f"  ! {v.object_schema}.{v.name} [{v.touch.value}, "
-                f"~{v.estimated_rows} строк] — нет покрывающего pre-скрипта"
+                f"{rows_phrase(v.estimated_rows)}] — нет покрывающего pre-скрипта"
             )
         QMessageBox.warning(
             self,
@@ -386,7 +390,9 @@ class MainWindow(QMainWindow):
     # --- Phase 15: deploy plan / apply result reporting ---
 
     def _plan_json_path(self, output_dir: str | Path) -> Path:
-        return Path(output_dir) / "plan.json"
+        # Phase 15.7: plan/apply write into a per-run subdirectory — the latest
+        # run under output_dir holds the freshest plan.json.
+        return resolve_report_dir(output_dir) / "plan.json"
 
     def _report_plan_result(self, plan, settings) -> None:
         """Show plan counters + offer to open the Plan Viewer (Phase 15, PRE-3)."""

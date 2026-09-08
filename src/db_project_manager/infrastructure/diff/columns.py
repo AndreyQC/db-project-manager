@@ -39,7 +39,10 @@ import sqlglot
 from sqlglot import exp
 
 from db_project_manager.domain.delta import ColumnChangeKind, ColumnDiff, ColumnSnapshot
-from db_project_manager.infrastructure.diff.normalize_sql import DEFAULT_DIALECT
+from db_project_manager.infrastructure.diff.normalize_sql import (
+    DEFAULT_DIALECT,
+    _canonicalize_text_casts,
+)
 
 #: Type synonyms sqlglot does NOT collapse on its own (base name, before modifiers).
 #: Keys and values are lower-case rendered base names; modifiers are preserved as-is.
@@ -58,6 +61,11 @@ _TYPE_ALIASES = {
     "int8": "bigint",
     "serial2": "smallint",
     "int2": "smallint",
+    # Phase 15.7: bare SERIAL/SMALLSERIAL/BIGSERIAL (the canonical __deploy DDL
+    # writes ``SERIAL``, not ``serial4``) are PG aliases of the same intN family.
+    "serial": "int",
+    "bigserial": "bigint",
+    "smallserial": "smallint",
     # Float families (sqlglot already collapses numeric → numeric, but map aliases)
     "float4": "real",
     "float8": "double precision",
@@ -66,6 +74,17 @@ _TYPE_ALIASES = {
     # Time (sqlglot already collapses timestamptz, etc.)
     # Misc
     "int4range": "int4range",
+}
+
+#: Serial type names (before alias canonicalization). PG's SERIAL/SMALLSERIAL/
+#: BIGSERIAL are shorthand that imply NOT NULL — ``id SERIAL`` is really
+#: ``integer NOT NULL DEFAULT nextval(...)`` (plus an implicit sequence). The
+#: extractor must treat a serial column as NOT NULL, or the canonical ``__deploy``
+#: DDL (``id SERIAL PRIMARY KEY``, no explicit NOT NULL) would diff as nullable
+#: against the RE round-trip (``id int4 NOT NULL ...``) — cis_zup 2026-09-04.
+_SERIAL_TYPES = {
+    "serial", "serial2", "serial4", "serial8",
+    "bigserial", "smallserial",
 }
 
 #: Regex pattern for ``NEXTVAL(...)`` as a default expression. Used to collapse the
@@ -133,6 +152,13 @@ def extract_columns(body: str, *, dialect: str = DEFAULT_DIALECT) -> list[Column
     return columns or None
 
 
+def _is_serial_type(dtype: exp.DataType, *, dialect: str = DEFAULT_DIALECT) -> bool:
+    """True iff the column's type is a PG serial family (which implies NOT NULL)."""
+    rendered = dtype.sql(dialect=dialect).lower()
+    base = rendered.partition("(")[0].strip()
+    return base in _SERIAL_TYPES
+
+
 def _has_not_null(column_def: exp.ColumnDef) -> bool:
     """True iff the column has a real inline NOT NULL constraint.
 
@@ -141,7 +167,14 @@ def _has_not_null(column_def: exp.ColumnDef) -> bool:
     ``NotNullColumnConstraint(allow_null=True)`` — the opposite of NOT NULL.
     Only ``allow_null`` falsy constraints count (LESSONS §44: verify the
     actual sqlglot semantics, don't assume from the class name).
+
+    A serial column (``SERIAL``/``BIGSERIAL``/``SMALLSERIAL``) is also NOT NULL:
+    PG expands it to ``integer NOT NULL DEFAULT nextval(...)``, so a codebase
+    writing ``id SERIAL`` must compare as NOT NULL against the RE round-trip
+    (which spells the NOT NULL explicitly) — Phase 15.7, __deploy schema.
     """
+    if column_def.kind is not None and _is_serial_type(column_def.kind):
+        return True
     for constraint in column_def.constraints or []:
         kind = constraint.kind
         if isinstance(kind, exp.NotNullColumnConstraint):
@@ -151,13 +184,21 @@ def _has_not_null(column_def: exp.ColumnDef) -> bool:
 
 
 def _default_expression(column_def: exp.ColumnDef, *, dialect: str) -> str | None:
-    """Rendered default expression text, or None when the column has no DEFAULT."""
+    """Rendered default expression text, or None when the column has no DEFAULT.
+
+    The rendered expression is passed through ``_canonicalize_text_casts`` so the
+    comparison uses the same canonical form as :func:`normalize_sql` does for the
+    body hash: PG round-trips ``'x'::text``/``CAST('x' AS TEXT)`` to different
+    lexical spellings, which would otherwise surface as a false DEFAULT_CHANGED
+    (cis_zup 2026-09-04, LESSONS §63 — the same equivalence class, applied to the
+    column extraction path rather than the whole-body hash).
+    """
     for constraint in column_def.constraints or []:
         if isinstance(constraint.kind, exp.DefaultColumnConstraint):
             expression = constraint.kind.this
             if expression is None:
                 return None
-            return expression.sql(dialect=dialect)
+            return _canonicalize_text_casts(expression.sql(dialect=dialect))
     return None
 
 

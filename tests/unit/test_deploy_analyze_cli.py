@@ -125,10 +125,31 @@ def test_cli_builds_correct_call(monkeypatch, tmp_path) -> None:
     assert len(stub.calls) == 1
     call = stub.calls[0]
     assert call["codebase_dir"] == tmp_path / "code"
-    assert call["output_dir"] == tmp_path / "report"
+    # Phase 15.7: the CLI writes into a per-run subdirectory under --output-dir
+    # (unless --no-run-subdir); the service receives that concrete run dir.
+    assert call["output_dir"].parent == tmp_path / "report"
+    assert call["output_dir"].is_dir()
     assert call["target_cfg"].database == "target"
     assert call["target_cfg"].type == "postgres"
     assert call["target_cfg"].password == "plain-secret"
+
+
+def test_no_run_subdir_passes_output_dir_flat(monkeypatch, tmp_path) -> None:
+    """Phase 15.7: --no-run-subdir keeps the legacy flat layout."""
+    _patch_common(monkeypatch)
+    monkeypatch.setattr(cli_main, "SafetyGateService", _StubService)
+    result = runner.invoke(
+        cli_main.app,
+        [
+            "deploy", "analyze",
+            "--dir", str(tmp_path / "code"),
+            "--target-connection-file", str(_conn_file(tmp_path)),
+            "--output-dir", str(tmp_path / "report"),
+            "--no-run-subdir",
+        ],
+    )
+    assert result.exit_code == 0
+    assert _StubService.last.calls[0]["output_dir"] == tmp_path / "report"
 
 
 def test_missing_connection_file_exit_two(monkeypatch, tmp_path) -> None:

@@ -47,6 +47,8 @@ from db_project_manager.infrastructure.config.connection_store import (
     ConnectionStore,
     ConnectionStoreError,
 )
+from db_project_manager.infrastructure.files.run_naming import create_run_dir
+from db_project_manager.infrastructure.deploy.safety_report import rows_phrase
 from db_project_manager.infrastructure.graph import graph_store
 from db_project_manager.infrastructure.graph.export import export_graph
 from db_project_manager.infrastructure.logging_setup import configure as configure_logging
@@ -75,6 +77,16 @@ def _load_connection(connection_file: Path) -> object:
     except ConnectionStoreError as e:
         typer.secho(f"Ошибка загрузки подключения: {e}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2) from e
+
+
+_NO_RUN_SUBDIR_OPTION = Annotated[
+    bool,
+    typer.Option(
+        "--no-run-subdir",
+        help="Писать отчёты прямо в --output-dir (плоская раскладка), "
+        "без уникального подкаталога прогона.",
+    ),
+]
 
 
 # --- reverse-engineer (Phase 1) ---
@@ -305,8 +317,9 @@ def compare_run(
         Optional[Path], typer.Option("--target-connection-file", help="Подключение к БД (target).")
     ] = None,
     keep_model_dir: Annotated[
-        bool, typer.Option("--keep-model-dir", help="Сохранить временный каталог reverse-engineer.")
+        bool, typer.Option("--keep-model-dir", help="(устарело) Сохранить временный каталог RE; снапшот БД всегда копируется в run-каталог.")
     ] = False,
+    no_run_subdir: _NO_RUN_SUBDIR_OPTION = False,
     config: Annotated[Optional[Path], typer.Option("--config", help="Путь к config.yaml.")] = None,
 ) -> None:
     """Сравнить два состояния (БД или каталог reverse-engineer) и записать отчёт."""
@@ -318,6 +331,7 @@ def compare_run(
     src = _resolve_side("source", source_dir, source_connection_file)
     tgt = _resolve_side("target", target_dir, target_connection_file)
 
+    run_dir = create_run_dir(output_dir, enabled=not no_run_subdir)
     service = CompareService()
 
     def progress(message: str, current: int, total: int) -> None:
@@ -328,7 +342,7 @@ def compare_run(
 
     try:
         result = service.run(
-            src, tgt, output_dir, keep_model_dir=keep_model_dir, progress=progress
+            src, tgt, run_dir, keep_model_dir=keep_model_dir, progress=progress
         )
     except CompareError as e:
         typer.secho(f"✗ {e}", fg=typer.colors.RED, err=True)
@@ -454,6 +468,7 @@ def deploy_analyze(
         Path,
         typer.Option("--output-dir", help="Where to write safety_gate_report.{md,json}."),
     ],
+    no_run_subdir: _NO_RUN_SUBDIR_OPTION = False,
     config: Annotated[Optional[Path], typer.Option("--config", help="Path to config.yaml.")] = None,
 ) -> None:
     """Safety gate (dry-run): analyze codebase vs the EXISTING target DB. Read-only.
@@ -468,6 +483,7 @@ def deploy_analyze(
     configure_logging(level=cfg.logging.level, console=True, logs_dir=cfg.paths.logs_dir)
     conn_cfg = _load_connection(target_connection_file)
 
+    run_dir = create_run_dir(output_dir, enabled=not no_run_subdir)
     service = SafetyGateService(service_schema=cfg.deploy.service_schema)
 
     def progress(message: str, current: int, total: int) -> None:
@@ -477,30 +493,35 @@ def deploy_analyze(
             typer.echo(message)
 
     try:
-        verdict = service.analyze(directory, conn_cfg, output_dir, progress=progress)
+        verdict = service.analyze(directory, conn_cfg, run_dir, progress=progress)
     except SafetyGateError as e:
         typer.secho(f"✗ Safety gate: {e}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2) from e
 
-    md_path = output_dir / "safety_gate_report.md"
+    md_path = run_dir / "safety_gate_report.md"
+    ignored_note = (
+        f" Игнорировано (build=false): {verdict.ignored_build_false}."
+        if verdict.ignored_build_false
+        else ""
+    )
     if verdict.clean:
         typer.secho(
-            f"✓ Safety gate: CLEAN (тронутых таблиц: {len(verdict.touched)}). "
-            f"Отчёт: {md_path}",
+            f"✓ Safety gate: CLEAN (тронутых таблиц: {len(verdict.touched)})."
+            f"{ignored_note} Отчёт: {md_path}",
             fg=typer.colors.GREEN,
         )
         return
 
     typer.secho(
         f"✗ Safety gate: VIOLATIONS ({len(verdict.violations)}) — пайплайн остановлен "
-        f"(CD-9). Тронутых таблиц: {len(verdict.touched)}. Отчёт: {md_path}",
+        f"(CD-9). Тронутых таблиц: {len(verdict.touched)}.{ignored_note} Отчёт: {md_path}",
         fg=typer.colors.RED,
         err=True,
     )
     for violation in verdict.violations:
         typer.secho(
             f"  ! {violation.object_schema}.{violation.name} "
-            f"[{violation.touch.value}, ~{violation.estimated_rows} строк] — "
+            f"[{violation.touch.value}, {rows_phrase(violation.estimated_rows)}] — "
             f"нет покрывающего pre-скрипта",
             fg=typer.colors.RED,
             err=True,
@@ -601,6 +622,7 @@ def deploy_plan(
             help="Allow DROP artifacts for REMOVED objects (data tables still blocked).",
         ),
     ] = False,
+    no_run_subdir: _NO_RUN_SUBDIR_OPTION = False,
     config: Annotated[Optional[Path], typer.Option("--config", help="Path to config.yaml.")] = None,
 ) -> None:
     """Dry-run delta plan: safety gate + ALTER plan + artifacts. Read-only.
@@ -616,6 +638,7 @@ def deploy_plan(
     configure_logging(level=cfg.logging.level, console=True, logs_dir=cfg.paths.logs_dir)
     conn_cfg = _load_connection(target_connection_file)
 
+    run_dir = create_run_dir(output_dir, enabled=not no_run_subdir)
     service = DeployApplyService(service_schema=cfg.deploy.service_schema)
 
     def progress(message: str, current: int, total: int) -> None:
@@ -626,7 +649,7 @@ def deploy_plan(
 
     try:
         plan = service.plan(
-            directory, conn_cfg, output_dir,
+            directory, conn_cfg, run_dir,
             include_drops=include_drops, progress=progress,
         )
     except DeployApplyRejected as e:
@@ -636,7 +659,7 @@ def deploy_plan(
         typer.secho(f"✗ Plan: {e}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2) from e
 
-    md_path = output_dir / "plan.md"
+    md_path = run_dir / "plan.md"
     if plan.violations:
         typer.secho(
             f"! План содержит BLOCKED-операции ({len(plan.violations)}) — деплой "
@@ -688,6 +711,7 @@ def deploy_apply(
             help="Keep the rehearsal temp DB after the run (for debugging).",
         ),
     ] = False,
+    no_run_subdir: _NO_RUN_SUBDIR_OPTION = False,
     config: Annotated[Optional[Path], typer.Option("--config", help="Path to config.yaml.")] = None,
 ) -> None:
     """MUTATES the target DB: rehearse the delta on a temp analog, then apply.
@@ -704,6 +728,7 @@ def deploy_apply(
     configure_logging(level=cfg.logging.level, console=True, logs_dir=cfg.paths.logs_dir)
     conn_cfg = _load_connection(target_connection_file)
 
+    run_dir = create_run_dir(output_dir, enabled=not no_run_subdir)
     service = DeployApplyService(service_schema=cfg.deploy.service_schema)
 
     def progress(message: str, current: int, total: int) -> None:
@@ -714,7 +739,7 @@ def deploy_apply(
 
     try:
         result = service.apply(
-            directory, conn_cfg, output_dir,
+            directory, conn_cfg, run_dir,
             include_drops=include_drops,
             rehearsal=not no_rehearsal,
             keep_rehearsal_db=keep_rehearsal_db,

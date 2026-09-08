@@ -31,6 +31,7 @@ from loguru import logger
 
 from db_project_manager.application.compare_service import (
     DIFF_REPORT_FILENAME,
+    IGNORED_BUILD_FALSE_KEY,
     CompareError,
     CompareService,
     SideSpec,
@@ -171,6 +172,7 @@ class SafetyGateService:
             source_version=manifest.source_version,
             target_version=target_version,
             touched=touched,
+            ignored_build_false=int(report.summary.get(IGNORED_BUILD_FALSE_KEY, 0)),
         )
 
         self._emit(progress, "Запись отчёта safety-gate…", 5, _TOTAL_STEPS)

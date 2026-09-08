@@ -86,6 +86,7 @@ def build_snapshot_from_dir(
             sql_normalized=normalized,
             sql_hash=sql_hash(normalized),
             estimated_rows=_lookup_row_count(row_counts, vertex.object_schema, vertex.object_name, vertex.object_type),
+            build=vertex.build,
             # Phase 12 (ALT-1b): table columns come from the SQL body itself —
             # both sides (codebase files and RE-generated DDL) use the same
             # extractor; None = unavailable → fail-safe downstream.

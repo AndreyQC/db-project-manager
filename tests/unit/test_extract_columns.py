@@ -345,3 +345,55 @@ def test_default_compensation_only_for_serial_type_match():
     # gated on type being a serial/int pair, not a generic nextval.
     types_differ = any(d.kind is ColumnChangeKind.TYPE_CHANGED for d in diffs)
     assert types_differ, "serial4 vs text must remain TYPE_CHANGED"
+
+
+def test_text_cast_default_canonicalized_in_extraction():
+    """Phase 15.7 (cis_zup 2026-09-04): ``'x'::text`` / ``CAST('x' AS TEXT)`` in a
+    DEFAULT must extract to the same canonical ``'x'`` as a plain literal — the
+    column path was missing the §63 text-cast canonicalisation that normalize_sql
+    applies to the body hash, producing a false DEFAULT_CHANGED on event_datetime.
+    """
+    a = _extract("CREATE TABLE t (c TIMESTAMP NOT NULL DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC'))")
+    b = _extract("CREATE TABLE t (c TIMESTAMP NOT NULL DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text))")
+    c = _extract("CREATE TABLE t (c TIMESTAMP NOT NULL DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE CAST('UTC' AS TEXT)))")
+    assert a and b and c
+    assert a[0].default == b[0].default == c[0].default
+    assert "CAST" not in (c[0].default or "")
+    assert diff_columns(a, b) == []
+    assert diff_columns(a, c) == []
+
+
+def test_cis_zup_serial_and_text_cast_combined_no_diff():
+    """The full cis_zup table shape: serial4 + 'UTC' (source) vs
+    int + NEXTVAL(...) + 'UTC'::text (target) must yield an EMPTY column diff.
+    """
+    src = _snap(
+        'CREATE TABLE t (id serial4 NOT NULL, '
+        "ev TIMESTAMP NOT NULL DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC'))"
+    )
+    tgt = _snap(
+        "CREATE TABLE t (id INT NOT NULL DEFAULT nextval('public.t_id_seq'::REGCLASS), "
+        "ev TIMESTAMP NOT NULL DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC'::text))"
+    )
+    assert diff_columns(src, tgt) == []
+
+
+def test_bare_serial_is_int_and_not_null():
+    """Phase 15.7 (__deploy schema): ``id SERIAL PRIMARY KEY`` (canonical DDL) must
+    canonicalise to ``int NOT NULL`` — SERIAL is ``int NOT NULL DEFAULT nextval``.
+    """
+    cols = _snap('CREATE TABLE t (id SERIAL PRIMARY KEY)')
+    assert cols[0].type == "int"
+    assert cols[0].nullable is False
+
+
+def test_bare_serial_vs_re_roundtrip_no_diff():
+    """The __deploy table false-positive: ``id SERIAL PRIMARY KEY`` vs the RE form
+    ``id int4 NOT NULL DEFAULT nextval(...)`` must produce no column diffs.
+    """
+    src = _snap('CREATE TABLE "__deploy"."schema_version" (id SERIAL PRIMARY KEY, version TEXT NOT NULL)')
+    tgt = _snap(
+        "CREATE TABLE \"__deploy\".\"schema_version\" "
+        "(id int4 NOT NULL DEFAULT nextval('__deploy.schema_version_id_seq'::REGCLASS), version TEXT NOT NULL)"
+    )
+    assert diff_columns(src, tgt) == []
