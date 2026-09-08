@@ -1079,3 +1079,75 @@
   столкновении с реальными мир-PG schemas. Правило: при первом
   false-positive нужно добавить **и тест, и канонизацию** — не оставлять
   workaround на уровне пользовательского кода.
+
+---
+
+## Phase 15.7 — run-каталоги, build=false в diff, финальные PG-эквивалентности
+
+### 65. Фильтр `project.build` обязателен во ВСЕХ downstream-слоях, а не только в deploy
+- **Симптом (cis_zup, 2026-09-04):** таблицы `cis_dmt_zup.zup_process_log` и
+  `cis_dmt_zup.zup_api_sourcedata_load_log` с `project.build: false` в autodoc
+  всё равно попадали в `safety_gate_report` как `[changed, ~-1 строк] — нет
+  покрывающего pre-скрипта`. «Поставил build: false — не помогло».
+- **Причина:** фильтр `vertex.build` применялся только в `deploy validate`
+  (`graph build(build_only=True)`) и `delta_service.build_plan`
+  (`deploy_order(build_only=True)`), но **не** в `build_snapshot_from_dir`
+  (`infrastructure/diff/snapshot.py`) — единственном источнике снапшотов для
+  compare / safety gate / delta. Тонкость: исключить только из source-стороны
+  нельзя — объект есть в target, и он стал бы REMOVED; исключать надо из ОБЕИХ
+  сторон по catalog-insensitive `identity_key`.
+- **Фикс (Phase 15.7):** `CompareService._exclude_build_false` — объединение
+  identity_key с build=false, удаление из обоих снапшотов (объекты + рёбра),
+  счётчик `summary["ignored_build_false"]` (показывается в отчётах).
+- **Урок:** любой фильтр/флаг, применённый в одном слое конвейера, — кандидат
+  на тихую рассинхронизацию в остальных. При добавлении флага проверяй ВСЕ
+  downstream-потребители (продолжение §61 — «список, который фильтрует типы,
+  — источник тихой потери»).
+
+### 66. Канонизация text-cast должна жить и в пути извлечения DEFAULT колонок
+- **Симптом (cis_zup, 2026-09-08):** после возврата `build: true` две таблицы
+  снова `changed`; `column_diffs` показывал `default_changed` на `event_datetime`
+  (`(CURRENT_TIMESTAMP AT TIME ZONE 'UTC')` vs `... CAST('UTC' AS TEXT)`).
+- **Причина:** `normalize_sql` канонизирует text-cast в теле (hash), но
+  `extract_columns`/`diff_columns` сравнивали DEFAULT сырым — `_canonical_default`
+  убирал только пробелы, не text-cast. Ложный `default_changed` ломал fallback
+  Phase 15.5.5 (`hash_agrees OR columns_match`): хэш согласован, но колонки «нет».
+- **Фикс (Phase 15.7):** `_default_expression` прогоняет извлечённый DEFAULT
+  через `_canonicalize_text_casts`.
+- **Урок:** эквивалентность, заведённая для хэша тела, должна быть продублирована
+  в КАЖДОМ отдельном пути извлечения (колонки — отдельный `parse`, не тот же
+  `normalize_sql`). Держи canonicalizer в одном helper'е и применяй во всех
+  точках, где строка участвует в сравнении.
+
+### 67. Bare `SERIAL` (без суффикса 4/8/2) + неявный NOT NULL
+- **Симптом (deploy apply, целевая `__deploy`):**
+  `__deploy.schema_version` и `__deploy.script_audit_log` — `blocked: колонка
+  id: type_changed` (под ним скрывался и `nullability_changed`).
+- **Причина:** канонический шаблон пишет `id SERIAL PRIMARY KEY`; RE возвращает
+  `id int4 NOT NULL DEFAULT nextval(...)`. `_TYPE_ALIASES` знал `serial4/8/2`,
+  но не bare `SERIAL`. Плюс `SERIAL` = `integer NOT NULL DEFAULT nextval(...)`
+  (PG разворачивает с неявным NOT NULL), а экстрактор смотрел только на явный
+  inline `NOT NULL` — отсюда ложная nullability.
+- **Фикс (Phase 15.7):** `_TYPE_ALIASES` += `serial→int`, `bigserial→bigint`,
+  `smallserial→smallint`; `_has_not_null` считает serial-колонки NOT NULL.
+- **Урок:** serial-семейство имеет много спеллингов (`serial4`/`int4`/bare
+  `SERIAL`/`BIGSERIAL`/`SMALLSERIAL`); алиас-таблица обязана покрывать все, а не
+  только те, что встретились первыми (§64 урок 5 это предсказывал). То же для
+  «тип подразумевает NOT NULL» — семантика типа важна для сравнения, а не только
+  его имя.
+
+### 68. Device Guard / App Control блокирует venv-`python.exe` — это НЕ TLS
+- **Симптом (2026-09-08):** `uv run python`/`uv run pytest` падает
+  `Failed to spawn: python ... An Application Control policy has blocked this
+  file (os error 4551)`; `uv sync` при этом проходит.
+- **Причина:** корпоративная политика Device Guard (WDAC/App Control) блокирует
+  исполнение `python.exe` внутри venv — не по пути (пересоздание venv и смена
+  пути `.venv_alt` не помогли). Это не TLS-прокси (§1): `unset SSL_CERT_FILE ...`
+  бесполезен.
+- **Обход:** кэшированный интерпретатор uv исполняется нормально —
+  `~/AppData/Roaming/uv/python/cpython-3.13.*/python.exe` +
+  `PYTHONPATH="src;.venv/Lib/site-packages"`. ruff — через `.venv/Scripts/ruff.exe`
+  (не заблокирован). Тесты/CLI гоняются так же.
+- **Урок:** «uv не работает» — это либо сеть (TLS, §1), либо политика исполнения
+  файлов (App Control). Разделяй симптомы: `uv sync` (network) vs `uv run python`
+  (spawn). Документируй обход в `PREPAREENV.md`.

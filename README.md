@@ -108,6 +108,13 @@ db-pm compare run \
 # Отчёт: source.json, target.json, diff_report.json (added/removed/changed/unchanged)
 ```
 
+> **Run-каталоги (Phase 15.7).** Команды `compare run`, `deploy analyze`,
+> `deploy plan`, `deploy apply` пишут артефакты в уникальный подкаталог
+> `<output-dir>/<имя-прогона>/` (имя вида `dancing-red-crazy-godzilla-45`
+> кодирует время), а DB-side RE-снапшот таргета сохраняется внутри в `target/`
+> (для отладки ложных «changed»). Флаг `--no-run-subdir` возвращает прежнюю
+> плоскую раскладку (всё прямо в `--output-dir`).
+
 ### GUI
 
 ```bash
