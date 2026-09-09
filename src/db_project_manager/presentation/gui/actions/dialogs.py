@@ -402,6 +402,14 @@ class YamlApplyDialog(BaseActionDialog):
             "Каталог кодовой базы (output):",
             placeholder="например C:\\Projects\\my_codebase",
         )
+        self._convert_ext = QCheckBox("Конвертировать внешние таблицы в обычные")
+        self._convert_ext.setChecked(settings.convert_external_to_tables)
+        self._convert_ext.setToolTip(
+            "external_tables из YAML станут обычными таблицами: колонки и имя 1:1,\n"
+            "LOCATION/FORMAT отбрасываются (в SQL останется комментарий-провенанс).\n"
+            "Также снимает запрет greenplum->postgres на external-таблицы."
+        )
+        self._form.addRow(self._convert_ext)
         self._add_buttons()
 
     def settings(self) -> YamlApplySettings:
@@ -409,6 +417,7 @@ class YamlApplyDialog(BaseActionDialog):
             yaml_file=self._yaml_file.text().strip(),
             target_db_type=self._target_db_type.currentData(),
             output_dir=self._output_dir.text().strip(),
+            convert_external_to_tables=self._convert_ext.isChecked(),
         )
 
 

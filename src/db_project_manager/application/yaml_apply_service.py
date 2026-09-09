@@ -7,7 +7,14 @@ Consumes a ``YamlProject`` (parsed from a YAML file) and produces:
 
 GP → Postgres transformations:
 - ``external_table`` objects are skipped (Postgres has no writable external tables)
+  — unless ``convert_external_to_tables`` is set (Phase 15.8): they are converted
+  to regular tables (columns 1:1, name kept, LOCATION/FORMAT dropped)
 - ``distributed_by`` and ``with_options`` are stripped from tables (they are GP-only)
+
+Greenplum targets (Phase 15.8, decision P-1): a table with an empty
+``distributed_by`` gets an explicit ``DISTRIBUTED RANDOMLY`` — for converted
+external tables AND regular tables alike; the GP default (hash on the first
+column) is never relied on silently.
 
 Postgres → Greenplum:
 - Not validated: Greenplum accepts all Postgres DDL, GP-specific fields simply
@@ -92,6 +99,7 @@ class YamlApplyResult:
     schemas_count: int
     objects_count: int
     skipped_external_tables: int
+    converted_external_tables: int = 0
 
 
 class YamlApplyError(Exception):
@@ -118,6 +126,7 @@ class YamlApplyService:
         project: YamlProject,
         output_dir: Path,
         target_db_type: str,
+        convert_external_to_tables: bool = False,
     ) -> YamlApplyResult:
         """Apply a YamlProject to a target directory.
 
@@ -125,6 +134,10 @@ class YamlApplyService:
             project: parsed YamlProject.
             output_dir: directory to write the generated codebase.
             target_db_type: ``greenplum`` or ``postgres``.
+            convert_external_to_tables: convert ``external_tables`` to regular
+                tables (Phase 15.8): columns and name are kept 1:1,
+                LOCATION/FORMAT/encoding are dropped, a provenance comment is
+                emitted. Also lifts the GP→postgres ban on external tables.
 
         Returns:
             Result with counts and output path.
@@ -132,6 +145,15 @@ class YamlApplyService:
         Raises:
             YamlApplyError: if validation fails or a file cannot be written.
         """
+        converted_provenance: dict[tuple[str, str], str] = {}
+        converted_count = 0
+        if convert_external_to_tables:
+            # Convert BEFORE validation: with external lists emptied, the
+            # GP→postgres ban in _validate no longer fires (decision P-3).
+            project, converted_provenance, converted_count = self._convert_external_tables(project)
+            if converted_count:
+                logger.info(f"Конвертация external → table: {converted_count} объект(ов)")
+
         self._validate(project, target_db_type)
 
         output_dir = Path(output_dir)
@@ -151,7 +173,14 @@ class YamlApplyService:
 
             # Tables
             for table in schema.tables:
-                objects_count += self._write_table_sql(table, schema, output_dir, project, target_db_type)
+                objects_count += self._write_table_sql(
+                    table,
+                    schema,
+                    output_dir,
+                    project,
+                    target_db_type,
+                    provenance=converted_provenance.get((schema.name, table.name)),
+                )
 
             # Views
             for view in schema.views:
@@ -217,9 +246,73 @@ class YamlApplyService:
             schemas_count=schemas_count,
             objects_count=objects_count,
             skipped_external_tables=skipped_external,
+            converted_external_tables=converted_count,
         )
 
     # ----------------------------------------------------------------- validation
+
+    def _convert_external_tables(
+        self, project: YamlProject
+    ) -> tuple[YamlProject, dict[tuple[str, str], str], int]:
+        """Convert external tables to regular tables (Phase 15.8).
+
+        Pure transformation: rebuilds the pydantic models instead of mutating
+        the input. Each ``YamlExternalTable`` becomes a ``YamlTable`` with the
+        same name and columns; ``distributed_by`` / ``with_options`` start
+        empty (an empty ``distributed_by`` renders as an explicit
+        ``DISTRIBUTED RANDOMLY`` for greenplum targets — decision P-1).
+        LOCATION / FORMAT / encoding are dropped from the DDL but preserved in
+        a provenance comment (decision P-4).
+
+        Returns:
+            (new project, provenance map ``(schema, name) -> comment line``,
+            converted count).
+
+        Raises:
+            YamlApplyError: on a name collision between an external table and
+                a regular table in the same schema (impossible in a live GP
+                database — same namespace — but possible in a hand-made YAML).
+        """
+        provenance: dict[tuple[str, str], str] = {}
+        count = 0
+        new_schemas: list[YamlSchema] = []
+        for schema in project.schemas:
+            if not schema.external_tables:
+                new_schemas.append(schema)
+                continue
+            table_names = {t.name for t in schema.tables}
+            new_tables = list(schema.tables)
+            for ext in schema.external_tables:
+                if ext.name in table_names:
+                    raise YamlApplyError(
+                        f"Cannot convert external table {schema.name}.{ext.name}: "
+                        f"a regular table with the same name already exists in the schema."
+                    )
+                new_tables.append(
+                    YamlTable(name=ext.name, columns=list(ext.columns), distributed_by=[], with_options={})
+                )
+                provenance[(schema.name, ext.name)] = (
+                    f"-- converted from external table; "
+                    f"source LOCATION: {ext.location}; FORMAT: {ext.format_type}"
+                )
+                count += 1
+            new_schemas.append(
+                YamlSchema(
+                    name=schema.name,
+                    tables=new_tables,
+                    views=list(schema.views),
+                    functions=list(schema.functions),
+                    external_tables=[],
+                )
+            )
+        new_project = YamlProject(
+            db_type=project.db_type,
+            database=project.database,
+            generated_at=project.generated_at,
+            source_version=project.source_version,
+            schemas=new_schemas,
+        )
+        return new_project, provenance, count
 
     def _validate(self, project: YamlProject, target_db_type: str) -> None:
         """Validate that target_db_type is compatible with the project."""
@@ -280,6 +373,7 @@ CREATE SCHEMA IF NOT EXISTS {self._qi(schema.name)};
         output_dir: Path,
         project: YamlProject,
         target_db_type: str,
+        provenance: str | None = None,
     ) -> int:
         """Write a table SQL file. Returns 1."""
         obj_key = (
@@ -318,8 +412,10 @@ CREATE SCHEMA IF NOT EXISTS {self._qi(schema.name)};
 
         # GP-specific clauses: WITH (...) and DISTRIBUTED BY (...) are SEPARATE
         # clauses in GP DDL. WITH must render even when distributed_by is empty
-        # (DISTRIBUTED RANDOMLY) — gating both on distributed_by silently dropped
-        # with_options for 123 tables on cis_zup.
+        # — gating both on distributed_by silently dropped with_options for 123
+        # tables on cis_zup. An empty distributed_by emits an explicit
+        # DISTRIBUTED RANDOMLY (Phase 15.8, decision P-1): the GP default
+        # (hash on the first column) is never relied on silently.
         if target_db_type == "greenplum":
             gp_parts = []
             if table.with_options:
@@ -330,6 +426,8 @@ CREATE SCHEMA IF NOT EXISTS {self._qi(schema.name)};
             if table.distributed_by:
                 cols_str = ", ".join(self._qi(c) for c in table.distributed_by)
                 gp_parts.append(f"DISTRIBUTED BY ({cols_str})")
+            else:
+                gp_parts.append("DISTRIBUTED RANDOMLY")
             ctx["gp_options"] = "\n".join(gp_parts)
         else:
             ctx["gp_options"] = ""
@@ -340,6 +438,10 @@ CREATE SCHEMA IF NOT EXISTS {self._qi(schema.name)};
         # Inject gp_options into the CREATE TABLE statement
         if ctx["gp_options"]:
             sql_body = _inject_gp_options(sql_body, ctx["gp_options"])
+
+        # Provenance comment for tables converted from external (Phase 15.8, P-4)
+        if provenance:
+            sql_body = provenance + "\n" + sql_body
 
         sql = f"""\
 /*====================================================================================

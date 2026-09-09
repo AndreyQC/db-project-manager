@@ -866,6 +866,17 @@ def yaml_apply(
         Path,
         typer.Option("--output", "-o", help="Output directory for the generated codebase."),
     ],
+    convert_external_to_tables: Annotated[
+        bool,
+        typer.Option(
+            "--convert-external-to-tables",
+            help=(
+                "Конвертировать внешние таблицы (external_tables) в обычные: "
+                "колонки и имя 1:1, LOCATION/FORMAT отбрасываются. Также снимает "
+                "запрет greenplum->postgres на external-таблицы."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Generate a full codebase (SQL files + manifest + graph) from a YAML project.
 
@@ -875,7 +886,11 @@ def yaml_apply(
 
     For ``greenplum -> postgres``: external tables are skipped (Postgres has no
     writable external tables), ``DISTRIBUTED BY`` / ``WITH (...)`` options are
-    dropped. For ``postgres -> greenplum``: an error is raised.
+    dropped — unless ``--convert-external-to-tables`` converts them to regular
+    tables. For ``postgres -> greenplum``: an error is raised.
+
+    Greenplum targets: a table without ``distributed_by`` gets an explicit
+    ``DISTRIBUTED RANDOMLY`` (Phase 15.8).
 
     Exit codes: 0 — ok; 1 — validation / generation error; 2 — target type incompatible.
     """
@@ -908,7 +923,7 @@ def yaml_apply(
     try:
         cfg = load_cfg(None)
         service = YamlApplyService(service_schema=cfg.deploy.service_schema)
-        result = service.run(project, output, target_db_type)
+        result = service.run(project, output, target_db_type, convert_external_to_tables)
     except YamlApplyError as e:
         typer.secho(f"Apply error: {e}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1) from e
@@ -918,6 +933,7 @@ def yaml_apply(
 
     typer.secho(
         f"Applied: schemas={result.schemas_count}, objects={result.objects_count}, "
+        f"converted_external={result.converted_external_tables}, "
         f"output={result.output_dir}",
         fg=typer.colors.GREEN,
     )

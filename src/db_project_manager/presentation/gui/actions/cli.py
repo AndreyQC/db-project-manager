@@ -117,12 +117,15 @@ def build_cli_yaml_generate(settings: YamlGenerateSettings, store: ConnectionSto
 
 def build_cli_yaml_apply(settings: YamlApplySettings, store: ConnectionStore) -> str:
     del store  # yaml apply does not use connections
-    return (
-        f"db-pm yaml apply "
-        f"--yaml {_quote(settings.yaml_file)} "
-        f"--target-db-type {settings.target_db_type} "
-        f"--output {_quote(settings.output_dir)}"
-    )
+    parts = [
+        "db-pm yaml apply",
+        f"--yaml {_quote(settings.yaml_file)}",
+        f"--target-db-type {settings.target_db_type}",
+        f"--output {_quote(settings.output_dir)}",
+    ]
+    if settings.convert_external_to_tables:
+        parts.append("--convert-external-to-tables")
+    return " ".join(parts)
 
 
 def build_cli_deploy_plan(settings: DeployApplySettings, store: ConnectionStore) -> str:

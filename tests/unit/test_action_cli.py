@@ -25,6 +25,7 @@ from db_project_manager.presentation.gui.actions.cli import (
     build_cli_deploy_validate,
     build_cli_graph_prepare,
     build_cli_reverse_engineer,
+    build_cli_yaml_apply,
 )
 from db_project_manager.presentation.gui.actions.models import (
     CompareSettings,
@@ -34,6 +35,7 @@ from db_project_manager.presentation.gui.actions.models import (
     DeployValidateSettings,
     GraphPrepareSettings,
     ReverseEngineerSettings,
+    YamlApplySettings,
 )
 
 runner = CliRunner()
@@ -599,3 +601,100 @@ def test_contract_deploy_init_service_schema(tmp_path, monkeypatch):
     result = runner.invoke(cli_main.app, _argv(cmd))
     assert result.exit_code == 0, result.output
     assert "идемпотентный no-op" in result.output
+
+
+# --- yaml apply (Phase 13 + 15.8) ---
+
+
+def test_yaml_apply_cli_string_basic(tmp_path):
+    store = _store(tmp_path)
+    s = YamlApplySettings(yaml_file="C:/proj/p.yml", target_db_type="greenplum", output_dir="C:/out/gp")
+    cmd = build_cli_yaml_apply(s, store)
+    assert cmd == (
+        "db-pm yaml apply --yaml C:/proj/p.yml --target-db-type greenplum --output C:/out/gp"
+    )
+
+
+def test_yaml_apply_cli_string_convert_flag(tmp_path):
+    store = _store(tmp_path)
+    s = YamlApplySettings(
+        yaml_file="C:/proj/p.yml",
+        target_db_type="greenplum",
+        output_dir="C:/out/gp",
+        convert_external_to_tables=True,
+    )
+    cmd = build_cli_yaml_apply(s, store)
+    assert cmd == (
+        "db-pm yaml apply --yaml C:/proj/p.yml --target-db-type greenplum "
+        "--output C:/out/gp --convert-external-to-tables"
+    )
+
+
+def test_yaml_apply_cli_string_flag_off_omitted(tmp_path):
+    store = _store(tmp_path)
+    s = YamlApplySettings(yaml_file="C:/proj/p.yml", target_db_type="postgres", output_dir="C:/out/pg")
+    assert "--convert-external-to-tables" not in build_cli_yaml_apply(s, store)
+
+
+def test_contract_yaml_apply_convert_flag(tmp_path, monkeypatch):
+    """The GUI-built yaml apply command with the Phase 15.8 flag parses through
+    the real typer CLI and delivers convert_external_to_tables=True to the
+    service (guard against GUI<->CLI drift)."""
+    _patch_common(monkeypatch)
+    monkeypatch.setattr(
+        cli_main, "load_cfg",
+        lambda *a, **k: SimpleNamespace(
+            deploy=SimpleNamespace(service_schema="__deploy"),
+        ),
+    )
+
+    import db_project_manager.application.yaml_apply_service as yas_module
+
+    received = {}
+
+    class _FakeResult:
+        output_dir = tmp_path / "out"
+        schemas_count = 1
+        objects_count = 1
+        skipped_external_tables = 0
+        converted_external_tables = 1
+
+    class _FakeService:
+        def __init__(self, service_schema="__deploy"):
+            pass
+
+        def run(self, project, output_dir, target_db_type, convert_external_to_tables=False):
+            received["convert"] = convert_external_to_tables
+            return _FakeResult()
+
+    monkeypatch.setattr(yas_module, "YamlApplyService", _FakeService)
+
+    yaml_file = tmp_path / "p.yml"
+    yaml_file.write_text(
+        "db_type: greenplum\n"
+        "database: d\n"
+        'generated_at: "2026-09-08T00:00:00+00:00"\n'
+        "schemas:\n"
+        "  - schema_name: s\n"
+        "    external_tables:\n"
+        "      - external_table_name: ext_x\n"
+        "        location: pxf://t\n"
+        "        columns:\n"
+        "          - column_name: c\n"
+        "            type: text\n",
+        encoding="utf-8",
+    )
+
+    store = _store(tmp_path)
+    cmd = build_cli_yaml_apply(
+        YamlApplySettings(
+            yaml_file=str(yaml_file),
+            target_db_type="greenplum",
+            output_dir=str(tmp_path / "out"),
+            convert_external_to_tables=True,
+        ),
+        store,
+    )
+    result = runner.invoke(cli_main.app, _argv(cmd))
+    assert result.exit_code == 0, result.output
+    assert received["convert"] is True
