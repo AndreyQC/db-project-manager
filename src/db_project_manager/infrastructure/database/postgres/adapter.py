@@ -115,6 +115,7 @@ class PGDatabaseAdapter(DatabaseAdapter):
         self._engine: Engine | None = None
         self._connection = None
         self._is_greenplum: bool = False
+        self._pg_sequence_available: bool | None = None
         self._tunnel: SSHTunnelManager | None = None
         self._cfg: ConnectionConfig | None = None
 
@@ -127,6 +128,8 @@ class PGDatabaseAdapter(DatabaseAdapter):
         to the jump host and connects through it.
         """
         self._cfg = cfg
+        # Capability probes are per-connection (see _get_sequences).
+        self._pg_sequence_available = None
         if cfg.connection_type == ConnectionType.SSH_TUNNEL:
             self._connect_via_ssh_tunnel(cfg)
         else:
@@ -628,12 +631,27 @@ class PGDatabaseAdapter(DatabaseAdapter):
         return list(grouped.values())
 
     def _get_sequences(self, schema: str) -> list[dict[str, Any]]:
-        try:
+        # pg_sequence exists in PG 10+ and Greenplum 7 (kernel PG 12) but not in
+        # Greenplum 6 (kernel PG 9.4) — hence a capability probe cached for the
+        # connection, not a branch on _is_greenplum: GP 7 must keep the richer
+        # pg_sequence query, GP 6 must not retry the doomed query per schema.
+        if self._pg_sequence_available is None:
+            try:
+                rows = self._exec(q.GET_SEQUENCES_POSTGRES, {"schema": schema})
+                self._pg_sequence_available = True
+            except Exception as e:
+                if not self._is_greenplum:
+                    raise
+                self._pg_sequence_available = False
+                reason = str(e).splitlines()[0]
+                logger.info(
+                    f"pg_sequence недоступен ({reason}) — ожидаемо для ядра GP < PG 10; "
+                    "далее используется Greenplum-фолбэк без повторных проб."
+                )
+                rows = self._exec(q.GET_SEQUENCES_GREENPLUM, {"schema": schema})
+        elif self._pg_sequence_available:
             rows = self._exec(q.GET_SEQUENCES_POSTGRES, {"schema": schema})
-        except Exception as e:
-            if not self._is_greenplum:
-                raise
-            logger.warning(f"pg_sequence недоступен ({e}), использую Greenplum-фолбэк")
+        else:
             rows = self._exec(q.GET_SEQUENCES_GREENPLUM, {"schema": schema})
         infos = [
             {
