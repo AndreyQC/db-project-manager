@@ -111,6 +111,9 @@ GET_CONSTRAINTS = """
 
 # --- indexes ---
 
+# NOTE: the ORDER BY uses unnest(...) WITH ORDINALITY instead of
+# array_position(idx.indkey, a.attnum): array_position requires PostgreSQL 9.5+,
+# while the Greenplum 6 kernel is PG 9.4.26 and has no such function.
 GET_INDEXES = """
     SELECT
         i.relname AS index_name,
@@ -128,7 +131,10 @@ GET_INDEXES = """
       AND t.relkind = 'r'
       AND n.nspname = :schema
       AND t.relname = :table_name
-    ORDER BY i.relname, array_position(idx.indkey, a.attnum)
+    ORDER BY i.relname, (
+        SELECT u.ord FROM unnest(idx.indkey::smallint[]) WITH ORDINALITY AS u(k, ord)
+        WHERE u.k = a.attnum
+    )
 """
 
 # --- sequences ---

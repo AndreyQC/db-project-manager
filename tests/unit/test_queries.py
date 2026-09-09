@@ -143,3 +143,13 @@ def test_createdb_check_accounts_for_superuser() -> None:
     """
     assert "rolsuper OR rolcreatedb" in queries.GET_CREATEDB_CHECK
     assert "rolname = current_user" in queries.GET_CREATEDB_CHECK
+
+
+def test_indexes_query_avoids_pg95_array_position() -> None:
+    """Regression (Greenplum feedback 2026-09-09): array_position requires
+    PostgreSQL 9.5+, the Greenplum 6 kernel is PG 9.4.26 — reverse-engineer
+    died with UndefinedFunction on the first indexed table. The ORDER BY must
+    order columns via unnest(...) WITH ORDINALITY (available since PG 9.4).
+    """
+    assert "array_position" not in queries.GET_INDEXES
+    assert "WITH ORDINALITY" in queries.GET_INDEXES
