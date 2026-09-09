@@ -133,3 +133,13 @@ def test_function_query_excludes_extension_owned() -> None:
 def test_procedure_query_excludes_extension_owned() -> None:
     """Same extension-ownership filter as for functions (see above)."""
     assert "deptype = 'e'" in queries.GET_PROCEDURES
+
+
+def test_createdb_check_accounts_for_superuser() -> None:
+    """Regression (Phase 15.9): a superuser bypasses the CREATE DATABASE
+    privilege check even with rolcreatedb=false (GP gpadmin cluster:
+    rolsuper=True, rolcreatedb=False). The preflight must OR both flags,
+    not look at rolcreatedb alone.
+    """
+    assert "rolsuper OR rolcreatedb" in queries.GET_CREATEDB_CHECK
+    assert "rolname = current_user" in queries.GET_CREATEDB_CHECK

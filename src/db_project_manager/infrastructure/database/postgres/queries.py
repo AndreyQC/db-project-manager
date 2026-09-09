@@ -9,7 +9,7 @@ from __future__ import annotations
 # --- privileges / server info (Phase 2: validation deploy) ---
 
 GET_CREATEDB_CHECK = """
-    SELECT rolcreatedb
+    SELECT rolsuper OR rolcreatedb
       FROM pg_roles
      WHERE rolname = current_user
 """
