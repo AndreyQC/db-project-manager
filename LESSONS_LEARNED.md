@@ -1151,3 +1151,37 @@
 - **Урок:** «uv не работает» — это либо сеть (TLS, §1), либо политика исполнения
   файлов (App Control). Разделяй симптомы: `uv sync` (network) vs `uv run python`
   (spawn). Документируй обход в `PREPAREENV.md`.
+
+---
+
+## Phase 15.9 — deploy validate: preflight CREATEDB не учитывал суперюзера
+
+### 69. Привилегия ≠ атрибут роли: суперюзер обходит проверку — preflight обязан учитывать `rolsuper`
+- **Симптом (первый тестовый деплой на Greenplum, 2026-09-08):**
+  `db-pm deploy validate` падал на preflight «У пользователя 'gpadmin' нет
+  права CREATEDB», при этом тот же пользователь **руками успешно создавал
+  базу** на том же кластере.
+- **Диагноз (живой запрос через адаптер проекта):** у роли `gpadmin`
+  `rolsuper=True, rolcreatedb=False`. Preflight
+  (`queries.py::GET_CREATEDB_CHECK`) спрашивал только
+  `SELECT rolcreatedb FROM pg_roles WHERE rolname = current_user`.
+- **Корневая причина:** в PostgreSQL/Greenplum `rolsuper` и `rolcreatedb` —
+  независимые атрибуты (`CREATE ROLE ... SUPERUSER` не ставит CREATEDB), но
+  **суперюзер обходит проверку привилегий на CREATE DATABASE**. Проверка
+  задала неверный вопрос: «есть ли флаг», вместо «пропустит ли сервер».
+- **Фикс (Phase 15.9):** `SELECT rolsuper OR rolcreatedb FROM pg_roles
+  WHERE rolname = current_user`. Один метод
+  `PGDatabaseAdapter.check_can_create_db` закрывает `deploy validate` и
+  `deploy apply` (репетиция).
+- **Урок #1:** preflight-проверка прав должна моделировать фактическое
+  поведение сервера, а не читать один атрибут каталога. «Суперюзер обходит
+  все privilege checks» — часть контракта PG; любой privilege-preflight
+  обязан учитывать `rolsuper`.
+- **Урок #2:** сообщение пользователя («создал руками успешно») — ключевой
+  диагностический сигнал: если действие проходит вне инструмента, а внутри
+  блокируется, виноват preflight, а не сервер. Проверяй фактические
+  атрибуты роли живым запросом (`rolname, rolsuper, rolcreatedb`), прежде
+  чем верить сообщению об ошибке.
+- **Урок #3:** гипотезы пользователя («owner берется от PG, а не для GP»)
+  часто верны по направлению, но неточны в механике. Подтверждай живым
+  запросом к каталогу, прежде чем чинить.
