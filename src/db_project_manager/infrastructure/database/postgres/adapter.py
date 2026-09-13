@@ -26,6 +26,15 @@ from db_project_manager.infrastructure.database.ssh_tunnel import SSHTunnelManag
 #: CREATE DATABASE / DROP DATABASE — see LESSONS_LEARNED §create_database).
 _DB_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
+#: Serial detection (Phase 16.7, LESSONS §67 family): a column whose default
+#: is nextval of the PG-default-named sequence ``<table>_<col>_seq`` renders
+#: as serialN — the codebase spelling. Bare ``serial`` is avoided on purpose:
+#: sqlglot normalizes it to IDENTITY, which would break the hash compare.
+#: The sequence itself is still emitted as a standalone object (pg_dump-style
+#: folding is a separate concern).
+_SERIAL_NEXTVAL_RE = re.compile(r"^nextval\('([^']+)'::regclass\)$", re.IGNORECASE)
+_SERIAL_BY_UDT = {"int2": "smallserial", "int4": "serial4", "int8": "serial8"}
+
 #: Greenplum administrative schemas — product-managed (gp_toolkit views read
 #: master/segment logs), never user objects. Excluded from RE only on
 #: greenplum connections: they are not extension-owned (pg_depend has no
@@ -386,9 +395,11 @@ class PGDatabaseAdapter(DatabaseAdapter):
                 "enums": [],
             }
             schema_name = schema["name"]
+            gp_table_options = self._get_gp_table_options(schema_name)
 
             schema_info["tables"] = [
-                self._build_table(schema_name, table) for table in self._get_tables(schema_name)
+                self._build_table(schema_name, table, gp_table_options.get(table["name"]))
+                for table in self._get_tables(schema_name)
             ]
             schema_info["sequences"] = self._get_sequences(schema_name)
             schema_info["views"] = self._get_views(schema_name)
@@ -554,21 +565,63 @@ class PGDatabaseAdapter(DatabaseAdapter):
         logger.info(f"Таблиц в '{schema}': {len(infos)}")
         return infos
 
-    def _build_table(self, schema: str, table: dict[str, Any]) -> dict[str, Any]:
-        name = table["name"]
-        columns = [
-            {
-                "name": col[0],
-                "type": col[1],
-                "nullable": col[2] == "YES",
-                "default": _qualify_default_schema(col[3], schema),
-                "character_maximum_length": col[4],
-                "numeric_precision": col[5],
-                "numeric_scale": col[6],
-                "comment": col[7],
+    def _get_gp_table_options(self, schema: str) -> dict[str, dict[str, Any]]:
+        """Greenplum-only table properties: distribution + storage options.
+
+        Returns {} on PostgreSQL (gp_distribution_policy does not exist there;
+        a same-name catalog would be a user object — LESSONS §71-3). One query
+        per schema, not per table.
+        """
+        if not self._is_greenplum:
+            return {}
+        rows = self._exec(q.GET_TABLE_GP_OPTIONS, {"schema": schema})
+        options: dict[str, dict[str, Any]] = {}
+        for name, policytype, distkey_columns, reloptions in rows:
+            distribution: dict[str, Any] | None = None
+            if policytype == "r":
+                distribution = {"kind": "replicated", "columns": []}
+            elif distkey_columns:
+                distribution = {
+                    "kind": "by",
+                    "columns": [c.strip() for c in distkey_columns.split(",") if c.strip()],
+                }
+            else:
+                # policytype 'p' with an empty distkey — the cluster-wide
+                # default on cis_zup_gp_dev (196/196 tables).
+                distribution = {"kind": "randomly", "columns": []}
+            options[name] = {
+                "distribution": distribution,
+                "storage_options": list(reloptions) if reloptions else None,
             }
-            for col in self._exec(q.GET_COLUMNS, {"table_name": name, "schema": schema})
-        ]
+        return options
+
+    def _build_table(
+        self,
+        schema: str,
+        table: dict[str, Any],
+        gp_options: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        name = table["name"]
+        columns = []
+        for col in self._exec(q.GET_COLUMNS, {"table_name": name, "schema": schema}):
+            col_type, default = col[1], col[3]
+            serial = _SERIAL_BY_UDT.get(col_type)
+            if serial and default:
+                match = _SERIAL_NEXTVAL_RE.match(default.strip())
+                if match and match.group(1).lower() == f"{schema}.{name}_{col[0]}_seq".lower():
+                    col_type, default = serial, None
+            columns.append(
+                {
+                    "name": col[0],
+                    "type": col_type,
+                    "nullable": col[2] == "YES",
+                    "default": _qualify_default_schema(default, schema),
+                    "character_maximum_length": col[4],
+                    "numeric_precision": col[5],
+                    "numeric_scale": col[6],
+                    "comment": col[7],
+                }
+            )
         constraints = self._group_constraints(
             self._exec(q.GET_CONSTRAINTS, {"table_name": name, "schema": schema})
         )
@@ -592,6 +645,8 @@ class PGDatabaseAdapter(DatabaseAdapter):
             "constraints": constraints,
             "primary_keys": [],
             "indexes": indexes,
+            "distribution": (gp_options or {}).get("distribution"),
+            "storage_options": (gp_options or {}).get("storage_options"),
         }
 
     @staticmethod

@@ -5,7 +5,7 @@ CREATE TABLE {{ _qi(schema) }}.{{ _qi(name) }} (
 {% endfor %}
 {% for c in constraints %}
     CONSTRAINT {{ _qi(c.name) }} {{ c.definition }}{{ _constraint_comma(loop) }}{{ _comment_mod(c) }}
-{% endfor %});
+{% endfor %}){{ gp_tail }};
 {% if comment %}
 COMMENT ON TABLE {{ _qi(schema) }}.{{ _qi(name) }} IS '{{ comment }}';
 {% endif %}

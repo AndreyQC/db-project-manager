@@ -47,6 +47,34 @@ GET_TABLES = """
     ORDER BY t.table_name
 """
 
+#: Greenplum-only table properties (Phase 16.6): distribution policy and
+#: storage options. pg_catalog.gp_distribution_policy does not exist on
+#: PostgreSQL — the adapter runs this query only on greenplum connections.
+#: policytype: 'p' + empty distkey = DISTRIBUTED RANDOMLY, 'p' + distkey =
+#: DISTRIBUTED BY (cols), 'r' = DISTRIBUTED REPLICATED. distkey attnames are
+#: resolved with the same unnest WITH ORDINALITY pattern as GET_INDEXES
+#: (LESSONS §70: array_position is PG 9.5+, absent on the GP 6 kernel).
+GET_TABLE_GP_OPTIONS = """
+    SELECT
+        c.relname AS table_name,
+        d.policytype,
+        CASE
+            WHEN d.distkey IS NULL OR d.distkey = '' THEN NULL
+            ELSE (
+                SELECT string_agg(a.attname, ', ' ORDER BY u.ord)
+                FROM unnest(d.distkey::smallint[]) WITH ORDINALITY AS u(attnum, ord)
+                JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = u.attnum
+            )
+        END AS distkey_columns,
+        c.reloptions
+    FROM pg_catalog.pg_class AS c
+    JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
+    LEFT JOIN pg_catalog.gp_distribution_policy AS d ON d.localoid = c.oid
+    WHERE n.nspname = :schema
+      AND c.relkind = 'r'
+    ORDER BY c.relname
+"""
+
 # --- columns ---
 
 GET_COLUMNS = """
