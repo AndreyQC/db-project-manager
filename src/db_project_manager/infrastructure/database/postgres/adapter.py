@@ -26,6 +26,15 @@ from db_project_manager.infrastructure.database.ssh_tunnel import SSHTunnelManag
 #: CREATE DATABASE / DROP DATABASE — see LESSONS_LEARNED §create_database).
 _DB_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
+#: Greenplum administrative schemas — product-managed (gp_toolkit views read
+#: master/segment logs), never user objects. Excluded from RE only on
+#: greenplum connections: they are not extension-owned (pg_depend has no
+#: deptype='e' rows for them), so the schema list is the only filter point.
+#: ``gp_statistics``/``gp_statistics_history`` exist on GP 7 only — filtering
+#: by name is a no-op where they are absent. On PostgreSQL a same-name schema
+#: would be a user schema and is kept.
+GP_ADMIN_SCHEMAS = frozenset({"gp_toolkit", "gp_statistics", "gp_statistics_history"})
+
 
 def map_presence_row(
     schema: str,
@@ -530,6 +539,11 @@ class PGDatabaseAdapter(DatabaseAdapter):
 
     def _get_schemas(self) -> list[dict[str, Any]]:
         rows = self._exec(q.GET_SCHEMAS)
+        if self._is_greenplum:
+            dropped = sorted(row[0] for row in rows if row[0] in GP_ADMIN_SCHEMAS)
+            if dropped:
+                logger.info(f"Админ-схемы GP исключены из RE: {', '.join(dropped)}")
+            rows = [row for row in rows if row[0] not in GP_ADMIN_SCHEMAS]
         infos = [{"name": row[0], "comment": row[1]} for row in rows]
         logger.info(f"Схем найдено: {len(infos)}")
         return infos
