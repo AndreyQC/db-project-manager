@@ -246,7 +246,13 @@ GET_MATERIALIZED_VIEWS = """
 
 # --- functions ---
 
-GET_FUNCTIONS = """
+# Two variants with disjoint column sets: pg_proc.prokind exists only in
+# PG 11+ (and Greenplum 7); the PG <= 10 / Greenplum 6 kernel distinguishes
+# plain functions via proisagg/proiswindow, which were REMOVED in PG 11.
+# A single universal query is therefore impossible (unlike the GET_INDEXES
+# fix, LESSONS §70) — the adapter picks the variant by a per-connection
+# capability probe (PROKIND_PROBE).
+GET_FUNCTIONS_POSTGRES = """
     SELECT
         p.proname AS function_name,
         n.nspname AS schema_name,
@@ -278,9 +284,51 @@ GET_FUNCTIONS = """
     ORDER BY n.nspname, p.proname
 """
 
+GET_FUNCTIONS_GREENPLUM = """
+    SELECT
+        p.proname AS function_name,
+        n.nspname AS schema_name,
+        pg_get_function_result(p.oid) AS return_type,
+        pg_get_function_arguments(p.oid) AS arguments,
+        array_to_string(
+            array(
+                SELECT t.typname
+                FROM unnest(p.proargtypes) AS argtype
+                JOIN pg_type t ON t.oid = argtype
+            ),
+            ', '
+        ) AS argument_types,
+        l.lanname AS language,
+        p.proretset AS returns_set,
+        pg_get_functiondef(p.oid) AS function_definition,
+        obj_description(p.oid, 'pg_proc') AS function_comment
+    FROM pg_proc AS p
+    LEFT JOIN pg_namespace AS n ON n.oid = p.pronamespace
+    LEFT JOIN pg_language AS l ON l.oid = p.prolang
+    WHERE n.nspname = :schema
+      AND n.nspname NOT LIKE 'pg_%'
+      AND n.nspname != 'information_schema'
+      AND NOT p.proisagg
+      AND NOT p.proiswindow
+      AND NOT EXISTS (
+          SELECT 1 FROM pg_depend d
+          WHERE d.objid = p.oid AND d.deptype = 'e'
+      )
+    ORDER BY n.nspname, p.proname
+"""
+
+#: Capability probe for pg_proc.prokind: the planner resolves the column at
+#: planning time, so the query fails with UndefinedColumn on kernels < PG 11
+#: (Greenplum 6) and returns no rows otherwise — cheap and side-effect free.
+PROKIND_PROBE = """
+    SELECT p.prokind FROM pg_catalog.pg_proc AS p WHERE false
+"""
+
 # --- procedures ---
 
-GET_PROCEDURES = """
+# No GREENPLUM variant: kernels without prokind (PG <= 10, Greenplum 6) have
+# no CREATE PROCEDURE at all — the adapter returns an empty list there.
+GET_PROCEDURES_POSTGRES = """
     SELECT
         p.proname AS procedure_name,
         n.nspname AS schema_name,

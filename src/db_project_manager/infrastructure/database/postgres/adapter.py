@@ -116,6 +116,7 @@ class PGDatabaseAdapter(DatabaseAdapter):
         self._connection = None
         self._is_greenplum: bool = False
         self._pg_sequence_available: bool | None = None
+        self._prokind_available: bool | None = None
         self._tunnel: SSHTunnelManager | None = None
         self._cfg: ConnectionConfig | None = None
 
@@ -128,8 +129,9 @@ class PGDatabaseAdapter(DatabaseAdapter):
         to the jump host and connects through it.
         """
         self._cfg = cfg
-        # Capability probes are per-connection (see _get_sequences).
+        # Capability probes are per-connection (see _get_sequences, _supports_prokind).
         self._pg_sequence_available = None
+        self._prokind_available = None
         if cfg.connection_type == ConnectionType.SSH_TUNNEL:
             self._connect_via_ssh_tunnel(cfg)
         else:
@@ -706,8 +708,31 @@ class PGDatabaseAdapter(DatabaseAdapter):
         logger.info(f"Мат. представлений в '{schema}': {len(grouped)}")
         return list(grouped.values())
 
+    def _supports_prokind(self) -> bool:
+        """Whether pg_proc.prokind is available (PG 11+ / Greenplum 7).
+
+        Probed once per connection and cached (same pattern as the pg_sequence
+        probe): Greenplum 6 (kernel PG 9.4) lacks the column and uses the
+        legacy proisagg/proiswindow queries instead.
+        """
+        if self._prokind_available is None:
+            try:
+                self._exec(q.PROKIND_PROBE)
+                self._prokind_available = True
+            except Exception as e:
+                if not self._is_greenplum:
+                    raise
+                self._prokind_available = False
+                reason = str(e).splitlines()[0]
+                logger.info(
+                    f"pg_proc.prokind недоступен ({reason}) — ожидаемо для ядра GP < PG 11; "
+                    "функции читаются legacy-запросом, процедуры ядром не поддерживаются."
+                )
+        return self._prokind_available
+
     def _get_functions(self, schema: str) -> list[dict[str, Any]]:
-        rows = self._exec(q.GET_FUNCTIONS, {"schema": schema})
+        query = q.GET_FUNCTIONS_POSTGRES if self._supports_prokind() else q.GET_FUNCTIONS_GREENPLUM
+        rows = self._exec(query, {"schema": schema})
         infos = [
             {
                 "name": r[0],
@@ -762,7 +787,12 @@ class PGDatabaseAdapter(DatabaseAdapter):
         return settings
 
     def _get_procedures(self, schema: str) -> list[dict[str, Any]]:
-        rows = self._exec(q.GET_PROCEDURES, {"schema": schema})
+        if not self._supports_prokind():
+            # Kernels without prokind (PG <= 10, Greenplum 6) have no CREATE
+            # PROCEDURE at all — prokind='p' has nothing to match.
+            logger.info(f"Процедур в '{schema}': 0 (ядро без CREATE PROCEDURE)")
+            return []
+        rows = self._exec(q.GET_PROCEDURES_POSTGRES, {"schema": schema})
         infos = [
             {
                 "name": r[0],
