@@ -29,7 +29,7 @@
 ```bash
 git clone <repo-url> db-project-manager
 cd db-project-manager
-uv sync
+uv sync --system-certs
 ```
 
 ## Настройка
