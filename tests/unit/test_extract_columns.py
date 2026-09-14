@@ -68,7 +68,8 @@ COMMENT ON TABLE s.t IS 'x';"""
     assert cols is not None
     by_name = {c.name: c for c in cols}
     assert by_name["id"].nullable is False
-    assert by_name["amount"].type == "decimal(38,0)"
+    # Phase 16.9: explicit zero scale is collapsed by canonical_type.
+    assert by_name["amount"].type == "decimal(38)"
     assert by_name["amount"].default == "0"
 
 
@@ -423,3 +424,23 @@ def test_extract_columns_plain_pg_body_unchanged():
     assert extract_columns(body) == extract_columns(body)
     cols = extract_columns(body)
     assert [c.name for c in cols] == ["id", "v"]
+
+
+def test_canonical_type_zero_scale_collapsed():
+    """Phase 16.9: ``numeric(9,0)`` (catalog round-trip renders the default
+    scale explicitly) == ``decimal(9)`` (codebase spelling)."""
+    import sqlglot
+
+    a = canonical_type(sqlglot.parse_one("SELECT CAST(1 AS numeric(9,0))", read="postgres").expressions[0].this)
+    b = canonical_type(sqlglot.parse_one("SELECT CAST(1 AS decimal(9))", read="postgres").expressions[0].this)
+    assert a == b
+
+
+def test_extract_columns_numeric_scale_forms_equal():
+    """End-to-end: same column spelled decimal(9) vs numeric(9,0) must not
+    diff as type_changed (live finding: lu_limits_on_food_cards blocked)."""
+    body_a = 'CREATE TABLE s.t ("code" decimal(9) NULL);'
+    body_b = 'CREATE TABLE s.t ("code" numeric(9,0) NULL);'
+    ca, cb = extract_columns(body_a), extract_columns(body_b)
+    assert ca is not None and cb is not None
+    assert ca[0].type == cb[0].type
