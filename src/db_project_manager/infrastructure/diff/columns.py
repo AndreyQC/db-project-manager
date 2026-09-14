@@ -106,10 +106,19 @@ def canonical_type(dtype: exp.DataType, *, dialect: str = DEFAULT_DIALECT) -> st
     Lower-cased, alias-collapsed base name, whitespace-free modifiers. Both comparison
     sides run through this function, so any deterministic form would be symmetric —
     the canonicalization mainly keeps the string short and human-readable in reports.
+
+    Phase 16.9: an explicit zero scale is collapsed (``numeric(9,0)`` →
+    ``numeric(9)``) — the codebase writes ``decimal(9)``, the catalog round-trip
+    reports precision+scale from ``numeric_precision/numeric_scale`` and renders
+    the default scale explicitly.
     """
     rendered = dtype.sql(dialect=dialect).lower()
     base, sep, rest = rendered.partition("(")
     base = _TYPE_ALIASES.get(base.strip(), base.strip())
+    if sep and base in {"numeric", "decimal"}:
+        parts = [p.strip() for p in rest.rstrip(")").split(",")]
+        if len(parts) == 2 and parts[1] == "0":
+            rest = f"{parts[0]})"
     return f"{base}{sep}{rest}".replace(" ", "")
 
 

@@ -142,3 +142,8 @@ logs/
 
 # GUI action panel settings (local paths, per-machine)
 gui_settings.json
+
+
+#zcode
+
+.zcode
