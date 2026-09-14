@@ -379,3 +379,108 @@ def test_custom_service_schema_name_honored(tmp_path):
     assert "ignored_service_schema" not in report_text
     assert [m for m in messages if "отсутствует на стороне source" in str(m)]
     assert [m for m in messages if "отсутствует на стороне target" in str(m)]
+
+
+# --- implicit serial-sequence folding (Phase 16.10) ---
+
+
+def _write_serial_pair(root: Path, *, with_sequence: bool) -> None:
+    """A table with an implicit serial column + (optionally) its default-named
+    sequence file — the cis_zup zup_process_log shape (table name contains
+    underscores, column name too)."""
+    (root / "app").mkdir(parents=True, exist_ok=True)
+    table = """/*====================================================================================
+[<[autodoc-yaml]]
+object:
+  object_catalog: demo
+  object_schema: app
+  object_type: table
+  object_name: zup_process_log
+  object_key: pg_database/demo/schema/app/type/table/name/zup_process_log
+project:
+  build: true
+[[autodoc-yaml]>]
+=====================================================================================*/
+
+CREATE TABLE "app"."zup_process_log" (
+    "process_log_id" serial4 NOT NULL,
+    "note" text NULL
+)
+DISTRIBUTED RANDOMLY;
+"""
+    (root / "app" / "tables").mkdir(exist_ok=True)
+    (root / "app" / "tables" / "table zup_process_log.sql").write_text(table, encoding="utf-8")
+    if with_sequence:
+        seq = """/*====================================================================================
+[<[autodoc-yaml]]
+object:
+  object_catalog: demo
+  object_schema: app
+  object_type: sequence
+  object_name: zup_process_log_process_log_id_seq
+  object_key: pg_database/demo/schema/app/type/sequence/name/zup_process_log_process_log_id_seq
+project:
+  build: true
+[[autodoc-yaml]>]
+=====================================================================================*/
+
+CREATE SEQUENCE "app"."zup_process_log_process_log_id_seq" START 1;
+"""
+        (root / "app" / "sequences").mkdir(exist_ok=True)
+        (root / "app" / "sequences" / "sequence zup_process_log_process_log_id_seq.sql").write_text(
+            seq, encoding="utf-8"
+        )
+
+
+def test_serial_sequence_folded_no_removed_no_blocked(tmp_path):
+    """DB side has the implicit sequence, codebase (serial4 spelling) does
+    not — must NOT appear as removed (the drop-then-fail deadlock)."""
+    src = _copy_fixture_with_manifest(tmp_path / "src")
+    tgt = _copy_fixture_with_manifest(tmp_path / "tgt")
+    _write_serial_pair(src, with_sequence=False)
+    _write_serial_pair(tgt, with_sequence=True)
+
+    service = CompareService()
+    service.run(
+        SideSpec(SnapshotSourceKind.DIR, str(src)),
+        SideSpec(SnapshotSourceKind.DIR, str(tgt)),
+        tmp_path / "report",
+    )
+    report_text = (tmp_path / "report" / DIFF_REPORT_FILENAME).read_text(encoding="utf-8")
+    assert '"removed": 0' in report_text
+    assert "zup_process_log_process_log_id_seq" not in report_text
+    assert '"ignored_serial_sequences": 1' in report_text
+
+
+def test_standalone_sequence_not_folded(tmp_path):
+    """A sequence whose name does not match <table>_<col>_seq stays diffed."""
+    src = _copy_fixture_with_manifest(tmp_path / "src")
+    tgt = _copy_fixture_with_manifest(tmp_path / "tgt")
+    _write_serial_pair(src, with_sequence=False)
+    _write_serial_pair(tgt, with_sequence=False)
+    seq = """/*====================================================================================
+[<[autodoc-yaml]]
+object:
+  object_catalog: demo
+  object_schema: app
+  object_type: sequence
+  object_name: custom_named_seq
+  object_key: pg_database/demo/schema/app/type/sequence/name/custom_named_seq
+project:
+  build: true
+[[autodoc-yaml]>]
+=====================================================================================*/
+
+CREATE SEQUENCE "app"."custom_named_seq" START 1;
+"""
+    (tgt / "app" / "sequences").mkdir(exist_ok=True)
+    (tgt / "app" / "sequences" / "sequence custom_named_seq.sql").write_text(seq, encoding="utf-8")
+
+    service = CompareService()
+    service.run(
+        SideSpec(SnapshotSourceKind.DIR, str(src)),
+        SideSpec(SnapshotSourceKind.DIR, str(tgt)),
+        tmp_path / "report",
+    )
+    report_text = (tmp_path / "report" / DIFF_REPORT_FILENAME).read_text(encoding="utf-8")
+    assert "custom_named_seq" in report_text

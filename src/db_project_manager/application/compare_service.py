@@ -62,6 +62,13 @@ DIFF_REPORT_FILENAME = "diff_report.json"
 #: (Phase 16.8) — parity with ``ignored_build_false``.
 IGNORED_SERVICE_SCHEMA_KEY = "ignored_service_schema"
 
+#: Summary key: implicit serial sequences folded into their columns (16.10).
+IGNORED_SERIAL_SEQUENCES_KEY = "ignored_serial_sequences"
+
+#: Canonical integer type names (columns.py ``_TYPE_ALIASES`` folds int4/int8/
+#: int2/serial* here): only integer columns can own an implicit serial sequence.
+_INT_TYPES = frozenset({"int", "integer", "int4", "bigint", "int8", "smallint", "int2"})
+
 
 class CompareError(Exception):
     """Raised on incompatible db_types, missing manifest, or a bad side spec."""
@@ -129,6 +136,7 @@ class CompareService:
 
             ignored = self._exclude_build_false(src_snap, tgt_snap)
             ignored_service = self._exclude_service_schema(src_snap, tgt_snap)
+            ignored_serial = self._exclude_serial_sequences(src_snap, tgt_snap)
 
             self._emit(progress, "Сравнение снимков…", 2, 4)
             report = compare(src_snap, tgt_snap)
@@ -136,6 +144,8 @@ class CompareService:
                 report.summary[IGNORED_BUILD_FALSE_KEY] = ignored
             if ignored_service:
                 report.summary[IGNORED_SERVICE_SCHEMA_KEY] = ignored_service
+            if ignored_serial:
+                report.summary[IGNORED_SERIAL_SEQUENCES_KEY] = ignored_serial
 
             self._emit(progress, "Запись отчёта…", 3, 4)
             self._write_report(report, output_dir)
@@ -241,6 +251,60 @@ class CompareService:
         )
 
     # --- service-schema exclusion (Phase 16.8) + build=false (Phase 15.7) ---
+
+    # --- serial-sequence folding (Phase 16.10) ---
+
+    @staticmethod
+    def _exclude_serial_sequences(src_snap: StateSnapshot, tgt_snap: StateSnapshot) -> int:
+        """Drop implicitly-owned serial sequences from both snapshots (in place).
+
+        A sequence named ``<table>_<col>_seq`` where the same snapshot has that
+        table with an integer ``<col>`` and no/default-nextval default is the
+        implicit artefact of a SERIAL column — the pg_dump model folds it into
+        the column and never emits it as a standalone object. Diffing it is
+        harmful in both directions: the codebase (serial4 spelling) never
+        declares it → REMOVED → with ``--include-drops`` a DROP SEQUENCE that
+        fails on the column ownership (no CASCADE), without the flag a CD-11
+        block (ALT-6) — exactly the cis_zup_gp_dev 2026-09-14 deadlock.
+
+        Known trade-off: a deliberately hand-tuned sequence that happens to
+        match ``<table>_<col>_seq`` + integer column is also folded — its
+        START/INCREMENT drift stops being diffed (pg_dump has the same blind
+        spot). Rename it to break the pattern if it must be tracked.
+
+        Returns:
+            The number of excluded object identities.
+        """
+        excluded: set[str] = set()
+        for snap in (src_snap, tgt_snap):
+            sequences = {
+                (o.object_schema, o.object_name): key
+                for key, o in snap.objects.items()
+                if o.object_type == "sequence"
+            }
+            for obj in snap.objects.values():
+                if obj.object_type != "table":
+                    continue
+                for column in obj.columns or []:
+                    expected = f"{obj.object_name}_{column.name}_seq"
+                    seq_key = sequences.get((obj.object_schema, expected))
+                    if seq_key is None or column.type not in _INT_TYPES:
+                        continue
+                    if column.default is None or expected in (column.default or ""):
+                        excluded.add(identity_key(seq_key))
+        if not excluded:
+            return 0
+        for snap in (src_snap, tgt_snap):
+            for key in [k for k in snap.objects if identity_key(k) in excluded]:
+                del snap.objects[key]
+            snap.edges = [
+                edge
+                for edge in snap.edges
+                if identity_key(edge.source_object_key) not in excluded
+                and identity_key(edge.destination_object_key) not in excluded
+            ]
+        logger.info(f"Имплицитные serial-последовательности исключены из сравнения: {len(excluded)}.")
+        return len(excluded)
 
     def _exclude_service_schema(self, src_snap: StateSnapshot, tgt_snap: StateSnapshot) -> int:
         """Drop the deploy service schema objects from both snapshots (in place).
