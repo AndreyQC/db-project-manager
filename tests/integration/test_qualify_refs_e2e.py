@@ -77,7 +77,7 @@ def test_bare_function_call_qualified_and_deploys(pg_conn_cfg, tmp_path: Path) -
     finally:
         # Teardown source objects.
         adapter.connect(pg_conn_cfg)
-        for name in ("public.sp_caller", "public.sp_helper"):
+        for name in ("public.sp_caller(int)", "public.sp_helper(int)"):
             try:
                 adapter._connection.execute(text(f"DROP FUNCTION IF EXISTS {name}"))
             except Exception:

@@ -29,16 +29,54 @@ def test_snapshot_filters_to_diffed_types():
 
 
 def test_snapshot_contains_expected_object_count():
-    """Fixture has 18 vertices; minus extension & database_setting & __deploy schema = 15."""
+    """Fixture has 20 vertices; minus extension & database_setting = 18.
+
+    Regression note: 2026-09-02 — ``schema`` was added to DIFFED_TYPES after the
+    cis_zup feedback (Phase 15.5). Before the fix, schema vertices were silently
+    dropped from snapshots, so ``deploy apply`` on an empty target DB tried to
+    CREATE TABLE in a schema that did not yet exist (InvalidSchemaName). With
+    the fix, 3 user/service schemas enter the snapshot: __deploy, app, bookings.
+    """
     snap = build_snapshot_from_dir(
         CODEBASE_SAMPLE,
         source_kind=SnapshotSourceKind.DIR,
         source_ref=str(CODEBASE_SAMPLE),
         db_type="postgres",
     )
-    # Phase 10 added the __deploy service schema (1 schema vertex skipped as
-    # non-diffed + 3 table vertices included) — count went 12 → 15.
-    assert len(snap.objects) == 15
+    # 20 vertices total: -1 extension -1 database_setting +0 (schemas now kept)
+    # = 18 diffed.
+    assert len(snap.objects) == 18
+
+
+def test_snapshot_includes_schema_vertices():
+    """Regression test for cis_zup feedback 2026-09-02.
+
+    ``schema`` MUST be a member of DIFFED_TYPES — otherwise CompareService
+    drops schema vertices from the snapshot, the resulting DeltaPlan has no
+    CREATE SCHEMA artifact, and deploy apply on an empty target fails with
+    ``psycopg2.errors.InvalidSchemaName: schema "X" does not exist`` when
+    CREATE TABLE "X"."t" tries to run first.
+    """
+    assert "schema" in DIFFED_TYPES, (
+        "schema must be in DIFFED_TYPES (Phase 15.5 regression after cis_zup "
+        "feedback 2026-09-02): without it, schema vertices are dropped from "
+        "snapshots and CREATE SCHEMA artifacts are never emitted, breaking "
+        "deploy apply on empty target DBs."
+    )
+    snap = build_snapshot_from_dir(
+        CODEBASE_SAMPLE,
+        source_kind=SnapshotSourceKind.DIR,
+        source_ref=str(CODEBASE_SAMPLE),
+        db_type="postgres",
+    )
+    schema_keys = [k for k, v in snap.objects.items() if v.object_type == "schema"]
+    assert len(schema_keys) >= 2, (
+        f"Expected at least __deploy + user schemas in snapshot, got {schema_keys}"
+    )
+    for k in schema_keys:
+        obj = snap.objects[k]
+        assert obj.sql_hash, "schema snapshot must have a non-empty sql_hash"
+        assert obj.sql_normalized, "schema snapshot must have a non-empty sql_normalized"
 
 
 def test_each_object_has_sql_hash():

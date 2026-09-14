@@ -5,6 +5,8 @@ Layout:
     db-pm graph     build|export|show|validate  --dir <dir> [...]
     db-pm deploy    validate                    --dir <dir> --connection-file <conn.yaml> [...]
     db-pm deploy    analyze                     --dir <dir> --target-connection-file <conn.yaml> [...]
+    db-pm deploy    plan                        --dir <dir> --target-connection-file <conn.yaml> [...]
+    db-pm deploy    apply                       --dir <dir> --target-connection-file <conn.yaml> [...]
 
 Connection management (create/edit) is UI-only; the CLI consumes a connection
 file produced in the GUI (see roadmap §8).
@@ -17,6 +19,11 @@ from typing import Annotated, Optional
 
 import typer
 
+from db_project_manager.application.deploy_apply_service import (
+    DeployApplyError,
+    DeployApplyRejected,
+    DeployApplyService,
+)
 from db_project_manager.application.deploy_service import (
     DeployPermissionError,
     DeployValidateService,
@@ -25,6 +32,10 @@ from db_project_manager.application.graph_service import BuildGraphService
 from db_project_manager.application.safety_gate_service import (
     SafetyGateError,
     SafetyGateService,
+)
+from db_project_manager.application.service_schema_initializer import (
+    ServiceSchemaInitializer,
+    ServiceSchemaInitializerError,
 )
 from db_project_manager.application.reverse_engineer import (
     ReverseEngineerError,
@@ -36,6 +47,8 @@ from db_project_manager.infrastructure.config.connection_store import (
     ConnectionStore,
     ConnectionStoreError,
 )
+from db_project_manager.infrastructure.files.run_naming import create_run_dir
+from db_project_manager.infrastructure.deploy.safety_report import rows_phrase
 from db_project_manager.infrastructure.graph import graph_store
 from db_project_manager.infrastructure.graph.export import export_graph
 from db_project_manager.infrastructure.logging_setup import configure as configure_logging
@@ -44,9 +57,11 @@ app = typer.Typer(no_args_is_help=True, add_completion=False, help="DB Project M
 graph_app = typer.Typer(no_args_is_help=True, help="Граф зависимостей кодовой базы.")
 deploy_app = typer.Typer(no_args_is_help=True, help="Деплой кодовой базы в базу данных.")
 compare_app = typer.Typer(no_args_is_help=True, help="Сравнение состояния БД и кодовой базы.")
+yaml_app = typer.Typer(no_args_is_help=True, help="YAML project: generate from directory or apply to target.")
 app.add_typer(graph_app, name="graph")
 app.add_typer(deploy_app, name="deploy")
 app.add_typer(compare_app, name="compare")
+app.add_typer(yaml_app, name="yaml")
 
 
 @app.callback()
@@ -62,6 +77,16 @@ def _load_connection(connection_file: Path) -> object:
     except ConnectionStoreError as e:
         typer.secho(f"Ошибка загрузки подключения: {e}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2) from e
+
+
+_NO_RUN_SUBDIR_OPTION = Annotated[
+    bool,
+    typer.Option(
+        "--no-run-subdir",
+        help="Писать отчёты прямо в --output-dir (плоская раскладка), "
+        "без уникального подкаталога прогона.",
+    ),
+]
 
 
 # --- reverse-engineer (Phase 1) ---
@@ -292,8 +317,9 @@ def compare_run(
         Optional[Path], typer.Option("--target-connection-file", help="Подключение к БД (target).")
     ] = None,
     keep_model_dir: Annotated[
-        bool, typer.Option("--keep-model-dir", help="Сохранить временный каталог reverse-engineer.")
+        bool, typer.Option("--keep-model-dir", help="(устарело) Сохранить временный каталог RE; снапшот БД всегда копируется в run-каталог.")
     ] = False,
+    no_run_subdir: _NO_RUN_SUBDIR_OPTION = False,
     config: Annotated[Optional[Path], typer.Option("--config", help="Путь к config.yaml.")] = None,
 ) -> None:
     """Сравнить два состояния (БД или каталог reverse-engineer) и записать отчёт."""
@@ -305,6 +331,7 @@ def compare_run(
     src = _resolve_side("source", source_dir, source_connection_file)
     tgt = _resolve_side("target", target_dir, target_connection_file)
 
+    run_dir = create_run_dir(output_dir, enabled=not no_run_subdir)
     service = CompareService()
 
     def progress(message: str, current: int, total: int) -> None:
@@ -315,7 +342,7 @@ def compare_run(
 
     try:
         result = service.run(
-            src, tgt, output_dir, keep_model_dir=keep_model_dir, progress=progress
+            src, tgt, run_dir, keep_model_dir=keep_model_dir, progress=progress
         )
     except CompareError as e:
         typer.secho(f"✗ {e}", fg=typer.colors.RED, err=True)
@@ -441,6 +468,7 @@ def deploy_analyze(
         Path,
         typer.Option("--output-dir", help="Where to write safety_gate_report.{md,json}."),
     ],
+    no_run_subdir: _NO_RUN_SUBDIR_OPTION = False,
     config: Annotated[Optional[Path], typer.Option("--config", help="Path to config.yaml.")] = None,
 ) -> None:
     """Safety gate (dry-run): analyze codebase vs the EXISTING target DB. Read-only.
@@ -455,6 +483,7 @@ def deploy_analyze(
     configure_logging(level=cfg.logging.level, console=True, logs_dir=cfg.paths.logs_dir)
     conn_cfg = _load_connection(target_connection_file)
 
+    run_dir = create_run_dir(output_dir, enabled=not no_run_subdir)
     service = SafetyGateService(service_schema=cfg.deploy.service_schema)
 
     def progress(message: str, current: int, total: int) -> None:
@@ -464,35 +493,434 @@ def deploy_analyze(
             typer.echo(message)
 
     try:
-        verdict = service.analyze(directory, conn_cfg, output_dir, progress=progress)
+        verdict = service.analyze(directory, conn_cfg, run_dir, progress=progress)
     except SafetyGateError as e:
         typer.secho(f"✗ Safety gate: {e}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2) from e
 
-    md_path = output_dir / "safety_gate_report.md"
+    md_path = run_dir / "safety_gate_report.md"
+    ignored_note = (
+        f" Игнорировано (build=false): {verdict.ignored_build_false}."
+        if verdict.ignored_build_false
+        else ""
+    )
     if verdict.clean:
         typer.secho(
-            f"✓ Safety gate: CLEAN (тронутых таблиц: {len(verdict.touched)}). "
-            f"Отчёт: {md_path}",
+            f"✓ Safety gate: CLEAN (тронутых таблиц: {len(verdict.touched)})."
+            f"{ignored_note} Отчёт: {md_path}",
             fg=typer.colors.GREEN,
         )
         return
 
     typer.secho(
         f"✗ Safety gate: VIOLATIONS ({len(verdict.violations)}) — пайплайн остановлен "
-        f"(CD-9). Тронутых таблиц: {len(verdict.touched)}. Отчёт: {md_path}",
+        f"(CD-9). Тронутых таблиц: {len(verdict.touched)}.{ignored_note} Отчёт: {md_path}",
         fg=typer.colors.RED,
         err=True,
     )
     for violation in verdict.violations:
         typer.secho(
             f"  ! {violation.object_schema}.{violation.name} "
-            f"[{violation.touch.value}, ~{violation.estimated_rows} строк] — "
+            f"[{violation.touch.value}, {rows_phrase(violation.estimated_rows)}] — "
             f"нет покрывающего pre-скрипта",
             fg=typer.colors.RED,
             err=True,
         )
     raise typer.Exit(code=1)
+
+
+@deploy_app.command("init-service-schema")
+def deploy_init_service_schema(
+    target_connection_file: Annotated[
+        Path,
+        typer.Option(
+            "--target-connection-file",
+            help="Connection YAML of the EXISTING target DB "
+            "(typically empty / freshly CREATE DATABASE'd).",
+        ),
+    ],
+    config: Annotated[Optional[Path], typer.Option("--config", help="Path to config.yaml.")] = None,
+) -> None:
+    """Bootstrap the ``__deploy`` service schema on the target DB (idempotent).
+
+    Phase 15.5.2 (cis_zup feedback 2026-09-02): on a freshly-created target DB,
+    ``deploy apply`` does NOT create ``__deploy`` because the target-side
+    ReverseEngineer in ``CompareService`` seeds canonical ``__deploy`` files
+    into its temp snapshot — comparator sees them as UNCHANGED and the
+    DeltaPlan marks them as ``skip``. This command provides an explicit,
+    idempotent opt-in path: ``CREATE SCHEMA IF NOT EXISTS __deploy`` plus the
+    three bookkeeping tables (``schema_version``, ``script_history``,
+    ``script_audit_log``) from the same canonical DDL templates that RE
+    / yaml apply use. Idempotent: re-running on a fully initialized target
+    exits with a no-op summary.
+
+    Safe to run before or after a deploy; never touches user schemas or data.
+    """
+    cfg = load_cfg(config if config is not None else None)
+    configure_logging(level=cfg.logging.level, console=True, logs_dir=cfg.paths.logs_dir)
+    conn_cfg = _load_connection(target_connection_file)
+
+    initializer = ServiceSchemaInitializer(service_schema=cfg.deploy.service_schema)
+
+    def progress(message: str, current: int, total: int) -> None:
+        if total:
+            typer.echo(f"[{current}/{total}] {message}")
+        else:
+            typer.echo(message)
+
+    try:
+        result = initializer.run(conn_cfg, progress=progress)
+    except ServiceSchemaInitializerError as e:
+        typer.secho(
+            f"✗ Init-service-schema: {e}",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=2) from e
+
+    if not result.changed:
+        typer.secho(
+            f"✓ Init-service-schema: {result.service_schema} + "
+            f"{len(result.tables_present)} таблиц уже существуют "
+            "(идемпотентный no-op).",
+            fg=typer.colors.GREEN,
+        )
+        return
+
+    parts = [f"схема {result.service_schema}"]
+    if result.created_schema:
+        parts.append("создана")
+    if result.created_tables:
+        parts.append(
+            f"таблицы: {', '.join(result.created_tables)}"
+        )
+    typer.secho(
+        f"✓ Init-service-schema: {', '.join(parts)}. Можно повторно запускать "
+        "`db-pm deploy analyze` / `db-pm deploy apply` против этой БД.",
+        fg=typer.colors.GREEN,
+    )
+
+
+@deploy_app.command("plan")
+def deploy_plan(
+    directory: Annotated[Path, typer.Option("--dir", help="Codebase root to plan.")],
+    target_connection_file: Annotated[
+        Path,
+        typer.Option(
+            "--target-connection-file",
+            help="Connection YAML of the EXISTING target DB.",
+        ),
+    ],
+    output_dir: Annotated[
+        Path,
+        typer.Option("--output-dir", help="Where to write delta/ + plan.{json,md}."),
+    ],
+    include_drops: Annotated[
+        bool,
+        typer.Option(
+            "--include-drops",
+            help="Allow DROP artifacts for REMOVED objects (data tables still blocked).",
+        ),
+    ] = False,
+    no_run_subdir: _NO_RUN_SUBDIR_OPTION = False,
+    config: Annotated[Optional[Path], typer.Option("--config", help="Path to config.yaml.")] = None,
+) -> None:
+    """Dry-run delta plan: safety gate + ALTER plan + artifacts. Read-only.
+
+    Compares the codebase against the live target database, classifies every
+    operation (safe / needs-pre / blocked) and writes the review artifacts:
+    delta/NNN_*.sql, plan.json, plan.md. Nothing is applied and no
+    pre-scripts are executed.
+
+    Exit codes: 0 — ok; 1 — safety-gate violations; 2 — hard error.
+    """
+    cfg = load_cfg(config if config is not None else None)
+    configure_logging(level=cfg.logging.level, console=True, logs_dir=cfg.paths.logs_dir)
+    conn_cfg = _load_connection(target_connection_file)
+
+    run_dir = create_run_dir(output_dir, enabled=not no_run_subdir)
+    service = DeployApplyService(service_schema=cfg.deploy.service_schema)
+
+    def progress(message: str, current: int, total: int) -> None:
+        if total:
+            typer.echo(f"[{current}/{total}] {message}")
+        else:
+            typer.echo(message)
+
+    try:
+        plan = service.plan(
+            directory, conn_cfg, run_dir,
+            include_drops=include_drops, progress=progress,
+        )
+    except DeployApplyRejected as e:
+        typer.secho(f"✗ Plan отклонён: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from e
+    except DeployApplyError as e:
+        typer.secho(f"✗ Plan: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from e
+
+    md_path = run_dir / "plan.md"
+    if plan.violations:
+        typer.secho(
+            f"! План содержит BLOCKED-операции ({len(plan.violations)}) — деплой "
+            "невозможен без pre-скриптов/решений. Отчёт: " + str(md_path),
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    typer.secho(
+        f"✓ План готов: операций {len(plan.operations)} "
+        f"(safe: {len(plan.safe_ops)}, needs-pre: {len(plan.needs_pre_ops)}, "
+        f"blocked: {len(plan.violations)}). Отчёт: {md_path}",
+        fg=typer.colors.GREEN,
+    )
+
+
+@deploy_app.command("apply")
+def deploy_apply(
+    directory: Annotated[Path, typer.Option("--dir", help="Codebase root to apply.")],
+    target_connection_file: Annotated[
+        Path,
+        typer.Option(
+            "--target-connection-file",
+            help="Connection YAML of the EXISTING target DB (will be MUTATED).",
+        ),
+    ],
+    output_dir: Annotated[
+        Path,
+        typer.Option("--output-dir", help="Where to write artifacts (delta/, plan.*, rehearsal/)."),
+    ],
+    include_drops: Annotated[
+        bool,
+        typer.Option(
+            "--include-drops",
+            help="Apply DROP artifacts for REMOVED objects (data tables still blocked).",
+        ),
+    ] = False,
+    no_rehearsal: Annotated[
+        bool,
+        typer.Option(
+            "--no-rehearsal",
+            help="Skip the rehearsal phase (CI/throwaway targets only!).",
+        ),
+    ] = False,
+    keep_rehearsal_db: Annotated[
+        bool,
+        typer.Option(
+            "--keep-rehearsal-db",
+            help="Keep the rehearsal temp DB after the run (for debugging).",
+        ),
+    ] = False,
+    no_run_subdir: _NO_RUN_SUBDIR_OPTION = False,
+    config: Annotated[Optional[Path], typer.Option("--config", help="Path to config.yaml.")] = None,
+) -> None:
+    """MUTATES the target DB: rehearse the delta on a temp analog, then apply.
+
+    Full pipeline: safety gate → pre-scripts → re-computed delta (only SAFE
+    operations allowed, CD-11) → apply with stop-on-error → post-scripts →
+    record schema_version. By default the whole pipeline first runs against a
+    rehearsal DB reproducing the target state (seeded from
+    __migrations/seed/); a rehearsal failure leaves the target untouched.
+
+    Exit codes: 0 — ok; 1 — safety violations; 2 — hard error.
+    """
+    cfg = load_cfg(config if config is not None else None)
+    configure_logging(level=cfg.logging.level, console=True, logs_dir=cfg.paths.logs_dir)
+    conn_cfg = _load_connection(target_connection_file)
+
+    run_dir = create_run_dir(output_dir, enabled=not no_run_subdir)
+    service = DeployApplyService(service_schema=cfg.deploy.service_schema)
+
+    def progress(message: str, current: int, total: int) -> None:
+        if total:
+            typer.echo(f"[{current}/{total}] {message}")
+        else:
+            typer.echo(message)
+
+    try:
+        result = service.apply(
+            directory, conn_cfg, run_dir,
+            include_drops=include_drops,
+            rehearsal=not no_rehearsal,
+            keep_rehearsal_db=keep_rehearsal_db,
+            progress=progress,
+        )
+    except DeployApplyRejected as e:
+        typer.secho(f"✗ Apply отклонён: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from e
+    except DeployApplyError as e:
+        typer.secho(f"✗ Apply: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from e
+
+    rehearsal_note = (
+        f", репетиция: {result.rehearsal_db}" if result.rehearsal_db else " (без репетиции)"
+    )
+    typer.secho(
+        f"✓ Apply завершён: применено операций {result.applied}/{result.planned}, "
+        f"версия {result.applied_version}{rehearsal_note}. Артефакты: {result.output_dir}",
+        fg=typer.colors.GREEN,
+    )
+
+
+# --- yaml subapp (Phase 13) ---
+
+
+_VALID_DB_TYPES = ("greenplum", "postgres")
+
+
+@yaml_app.command("generate")
+def yaml_generate(
+    source: Annotated[
+        Path,
+        typer.Option("--source", help="Directory with SQL files (reverse-engineer output)."),
+    ],
+    db_type: Annotated[
+        str,
+        typer.Option("--db-type", help=f"Source database type: {', '.join(_VALID_DB_TYPES)}."),
+    ],
+    output: Annotated[
+        Path,
+        typer.Option("--output", "-o", help="Output YAML file path."),
+    ],
+    source_version: Annotated[
+        str,
+        typer.Option("--source-version", help="Optional calver version string (e.g. 2026.08.27.01)."),
+    ] = "",
+    require_autodoc: Annotated[
+        bool,
+        typer.Option(
+            "--require-autodoc",
+            help="Strict mode: fail (exit 1) when any .sql file lacks an autodoc header. "
+            "Without the flag such files are parsed via SQL fallback and reported in a warning.",
+        ),
+    ] = False,
+    fix_broken_autodoc: Annotated[
+        bool,
+        typer.Option(
+            "--fix-broken-autodoc",
+            help="Rewrite IN PLACE headers whose YAML does not parse: a fresh autodoc is "
+            "regenerated from the identity salvaged out of the broken block. "
+            "Extra sections (remarks etc.) are dropped and reported. "
+            "Without the flag generation is read-only.",
+        ),
+    ] = False,
+) -> None:
+    """Generate a portable YAML project from a directory of SQL files.
+
+    Walks ``--source``, parses all ``*.sql`` files (with or without autodoc
+    headers), extracts schema/table/column/function/view definitions, and writes
+    a ``.yaml`` file that can later be used to generate a full codebase via
+    ``db-pm yaml apply``.
+
+    Exit codes: 0 — ok; 1 — generation error (including --require-autodoc violations); 2 — usage error.
+    """
+    if db_type not in _VALID_DB_TYPES:
+        typer.secho(
+            f"Invalid --db-type: {db_type!r}. Must be one of: {', '.join(_VALID_DB_TYPES)}.",
+            fg=typer.colors.RED, err=True,
+        )
+        raise typer.Exit(code=2)
+
+    configure_logging()
+
+    try:
+        from db_project_manager.infrastructure.yaml_project import (
+            YamlGeneratorError,
+            generate_yaml_project,
+            serialize_yaml_project,
+        )
+    except ImportError as e:
+        typer.secho(f"Import error: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from e
+
+    try:
+        project = generate_yaml_project(
+            source, db_type,
+            source_version=source_version,
+            require_autodoc=require_autodoc,
+            fix_broken_autodoc=fix_broken_autodoc,
+        )
+        yaml_text = serialize_yaml_project(project)
+        output.write_text(yaml_text, encoding="utf-8")
+    except YamlGeneratorError as e:
+        typer.secho(f"Generation error: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from e
+    except Exception as e:  # noqa: BLE001
+        typer.secho(f"Unexpected error: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from e
+
+    typer.secho(f"Generated YAML: {output}", fg=typer.colors.GREEN)
+
+
+@yaml_app.command("apply")
+def yaml_apply(
+    yaml_file: Annotated[
+        Path,
+        typer.Option("--yaml", help="YAML project file to apply."),
+    ],
+    target_db_type: Annotated[
+        str,
+        typer.Option("--target-db-type", help=f"Target database type: {', '.join(_VALID_DB_TYPES)}."),
+    ],
+    output: Annotated[
+        Path,
+        typer.Option("--output", "-o", help="Output directory for the generated codebase."),
+    ],
+) -> None:
+    """Generate a full codebase (SQL files + manifest + graph) from a YAML project.
+
+    Parses the YAML file, validates compatibility with ``--target-db-type``,
+    generates SQL files using the existing Jinja2 templates (table, view, function,
+    external_table), writes a ``dbpm.manifest.json``, and runs ``graph build``.
+
+    For ``greenplum -> postgres``: external tables are skipped (Postgres has no
+    writable external tables), ``DISTRIBUTED BY`` / ``WITH (...)`` options are
+    dropped. For ``postgres -> greenplum``: an error is raised.
+
+    Exit codes: 0 — ok; 1 — validation / generation error; 2 — target type incompatible.
+    """
+    if target_db_type not in _VALID_DB_TYPES:
+        typer.secho(
+            f"Invalid --target-db-type: {target_db_type!r}. Must be one of: {', '.join(_VALID_DB_TYPES)}.",
+            fg=typer.colors.RED, err=True,
+        )
+        raise typer.Exit(code=2)
+
+    configure_logging()
+
+    try:
+        from db_project_manager.application.yaml_apply_service import (
+            YamlApplyError,
+            YamlApplyService,
+        )
+        from db_project_manager.infrastructure.yaml_project import parse_yaml_project
+    except ImportError as e:
+        typer.secho(f"Import error: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from e
+
+    try:
+        yaml_text = yaml_file.read_text(encoding="utf-8")
+        project = parse_yaml_project(yaml_text)
+    except Exception as e:  # noqa: BLE001
+        typer.secho(f"Failed to parse YAML: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from e
+
+    try:
+        cfg = load_cfg(None)
+        service = YamlApplyService(service_schema=cfg.deploy.service_schema)
+        result = service.run(project, output, target_db_type)
+    except YamlApplyError as e:
+        typer.secho(f"Apply error: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from e
+    except Exception as e:  # noqa: BLE001
+        typer.secho(f"Unexpected error: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from e
+
+    typer.secho(
+        f"Applied: schemas={result.schemas_count}, objects={result.objects_count}, "
+        f"output={result.output_dir}",
+        fg=typer.colors.GREEN,
+    )
 
 
 if __name__ == "__main__":

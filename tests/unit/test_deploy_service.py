@@ -358,6 +358,55 @@ def test_database_setting_script_db_name_replaced_in_deploy(tmp_path: Path) -> N
     assert result.objects_total == 19
 
 
+def test_comment_only_script_is_skipped_not_failed(tmp_path: Path) -> None:
+    """BACKLOG P1: RE of a DB without explicit db-level settings emits
+    'settings/database settings.sql' whose body is the comment banner only
+    (CREATE DATABASE properties live in the autodoc header). Deploy must skip
+    the execution instead of failing with 'can't execute an empty query'."""
+    import shutil
+
+    from db_project_manager.infrastructure.sql.sql_text import has_executable_sql
+
+    dst = tmp_path / "codebase"
+    shutil.copytree(FIXTURE_ROOT, dst)
+    # Rewrite the settings file the way real RE renders it on a clean PG:
+    # autodoc header kept, body = comments only (no ALTER statements).
+    settings = dst / "settings" / "database settings.sql"
+    text = settings.read_text(encoding="utf-8")
+    header = text[: text.index("-- Параметры уровня базы")]
+    settings.write_text(
+        header + "-- Параметры уровня базы (ALTER DATABASE ... SET).\n",
+        encoding="utf-8",
+    )
+
+    class RecordingAdapter(DeployFakeAdapter):
+        """Records raw script bodies reaching execute_script."""
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.scripts: list[str] = []
+
+        def execute_script(self, script: str) -> None:
+            self.scripts.append(script)
+            super().execute_script(script)
+
+    adapter = RecordingAdapter()
+    svc = DeployValidateService(adapter_factory=lambda _cfg: adapter)
+    result = svc.run(_conn(), dst)
+
+    # Deploy succeeds; the comment-only vertex still counts (graph unchanged).
+    assert result.success is True
+    assert result.objects_total == 19
+    assert result.objects_done == result.objects_total
+    # db_properties from the comment-only file's header still reach
+    # create_database — skipping execution does not drop the vertex.
+    props = adapter._db_properties[adapter.created_dbs[0]]
+    assert props.get("encoding") == "UTF8"
+    # Every script actually executed has executable SQL.
+    assert adapter.scripts
+    assert all(has_executable_sql(s) for s in adapter.scripts)
+
+
 # ------------------------------------------- Phase 10 S8: __deploy integration
 
 
@@ -455,3 +504,31 @@ def test_deploy_pre_script_failure_aborts(tmp_path: Path) -> None:
         svc.run(_conn(), dst)
     # Cleanup still happened.
     assert adapter.dropped_dbs
+
+
+def test_validate_deploy_presence_accepts_prefixed_service_tables(tmp_path):
+    """Phase 12 rehearsal finding: RE rendering a DB that already had __deploy
+    emits `table schema_version.sql` (prefixed), while seeding writes unprefixed
+    canonical names — the presence check must accept both spellings."""
+    from db_project_manager.application.deploy_service import DeployError, DeployValidateService
+
+    service = DeployValidateService()
+    tables_dir = tmp_path / "__deploy" / "tables"
+    tables_dir.mkdir(parents=True)
+    for name in ("schema_version.sql", "script_history.sql", "script_audit_log.sql"):
+        (tables_dir / f"table {name}").write_text("-- canonical-ish\n", encoding="utf-8")
+
+    # Prefixed-only spelling must pass (previously raised DeployError).
+    service._validate_deploy_presence(tmp_path, "__deploy")
+
+    # Mixed spelling passes too.
+    (tables_dir / "table schema_version.sql").unlink()
+    (tables_dir / "schema_version.sql").write_text("-- seeded\n", encoding="utf-8")
+    service._validate_deploy_presence(tmp_path, "__deploy")
+
+    # Truly missing file still fails (remove both spellings).
+    (tables_dir / "table script_history.sql").unlink()
+    import pytest
+
+    with pytest.raises(DeployError, match="script_history"):
+        service._validate_deploy_presence(tmp_path, "__deploy")

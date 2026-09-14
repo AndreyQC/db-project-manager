@@ -178,6 +178,9 @@ class SafetyGateVerdict(BaseModel):
     source_version: str | None = None
     target_version: str | None = None
     touched: list[TouchedTable] = Field(default_factory=list)
+    # Phase 15.7: objects excluded from the whole analysis because their autodoc
+    # has ``project.build: false`` — reported so their absence is explainable.
+    ignored_build_false: int = 0
 
     @property
     def violations(self) -> list[TouchedTable]:

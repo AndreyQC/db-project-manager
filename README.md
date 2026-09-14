@@ -2,7 +2,7 @@
 
 Инструмент для работы со структурой баз данных (PostgreSQL/Greenplum; Snowflake/MSSQL/MySQL — в планах): чтение метаданных каталога, генерация дерева SQL-файлов (по одному на объект), построение графа зависимостей, валидация деплоя на пустую временную БД, и (в будущих фазах) миграции.
 
-> Статус: Phase 11 — Safety Gate готов: reverse-engineering, граф зависимостей, validation deploy, compare и dry-run анализ деплоя на существующую БД с данными (CLI + GUI). Real-target apply и ALTER — Phase 12.
+> Статус: Phase 15 — GUI deploy plan/apply + Plan Viewer готов: CLI-команды `deploy plan`/`deploy apply` (Phase 12) теперь доступны из GUI с preflight-warning, Plan Viewer для просмотра `plan.json` и цепочкой analyze → plan → apply.
 
 ## Возможности
 
@@ -75,6 +75,30 @@ db-pm deploy analyze \
     --output-dir ./sg_report
 # Отчёты: safety_gate_report.md, safety_gate_report.json + diff_report.json
 
+# Дельта деплоя на СУЩЕСТВУЮЩУЮ БД — Phase 12 (dry-run).
+# Column-level diff, классификация операций safe / needs-pre / blocked,
+# артефакты для review: delta/NNN_*.sql, plan.json, plan.md.
+# Exit codes: 0 — ok; 1 — BLOCKED-операции (нужны pre-скрипты/решения); 2 — ошибка.
+db-pm deploy plan \
+    --dir ./output/mydb \
+    --target-connection-file connections/prod.yaml \
+    --output-dir ./sg_report \
+    [--include-drops]
+
+# Применение дельты к СУЩЕСТВУЮЩУЮ БД (изменяет её!) — Phase 12.
+# По умолчанию: репетиция — состояние таргета воспроизводится в temp-БД,
+# прогоняется seed (__migrations/seed/ — только в репетиции) и весь пайплайн;
+# затем против таргета: pre-скрипты -> повторная дельта (CD-11, только SAFE)
+# -> применение с stop-on-error -> post-скрипты -> запись schema_version
+# (source='apply'). Восстановление после сбоя — повторным apply (дельта
+# пересчитывается, исполненные pre/post скипаются).
+# Флаги: --include-drops (REMOVED-объекты), --no-rehearsal (CI),
+# --keep-rehearsal-db (отладка).
+db-pm deploy apply \
+    --dir ./output/mydb \
+    --target-connection-file connections/prod.yaml \
+    --output-dir ./sg_report
+
 # Сравнение двух состояний (БД или каталог reverse-engineer) — Phase 9
 db-pm compare run \
     --output-dir ./diff_report \
@@ -84,6 +108,13 @@ db-pm compare run \
 # Отчёт: source.json, target.json, diff_report.json (added/removed/changed/unchanged)
 ```
 
+> **Run-каталоги (Phase 15.7).** Команды `compare run`, `deploy analyze`,
+> `deploy plan`, `deploy apply` пишут артефакты в уникальный подкаталог
+> `<output-dir>/<имя-прогона>/` (имя вида `dancing-red-crazy-godzilla-45`
+> кодирует время), а DB-side RE-снапшот таргета сохраняется внутри в `target/`
+> (для отладки ложных «changed»). Флаг `--no-run-subdir` возвращает прежнюю
+> плоскую раскладку (всё прямо в `--output-dir`).
+
 ### GUI
 
 ```bash
@@ -91,6 +122,17 @@ db-pm-gui
 ```
 
 Добавьте подключение → выберите папку вывода → «Сгенерировать скрипты объектов БД». Файлы появятся в дереве слева; кликните любой `.sql`, чтобы увидеть содержимое с подсветкой. Кнопка «Deploy validate…» запускает валидационный деплой с диалогом опций (префикс, чекбокс «оставить БД», continue-on-error). Действие «Safety gate…» (Phase 11) — dry-run анализ деплоя на существующую БД: вердикт CLEAN/VIOLATIONS + ссылка на отчёт.
+
+**Phase 15 — полный флоу analyze → plan → apply из GUI:**
+- «Сформировать план деплоя на существующую БД (dry-run)» — запуск `deploy plan`,
+  просмотр `plan.json` в Plan Viewer (дерево операций, фильтры safe/needs-pre/blocked,
+  рендер DDL из `delta/NNN_*.sql` с подсветкой).
+- «Применить деплой к существующей БД» — запуск `deploy apply` с обязательным
+  preflight-чекбоксом «Я понимаю последствия и хочу применить» (красный заголовок
+  + гейт на OK). После успешного apply/plan в диалоге — кнопка «Открыть план»,
+  Plan Viewer получает prefill (`target_connection`/`codebase_dir`/`output_dir`)
+  и кнопка «Применить…» в тулбаре.
+- Меню «Вид → Plan Viewer…» — открыть любой `plan.json` отдельно.
 
 ## Разработка
 

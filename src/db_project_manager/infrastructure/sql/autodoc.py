@@ -23,6 +23,7 @@ The block is optional; when absent, render_header() produces one to prepend.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from typing import Any
 
@@ -159,6 +160,53 @@ def strip_autodoc(script: str) -> str:
     if comment_end != -1:
         tail = tail[comment_end + 2 :]
     return tail.lstrip()
+
+
+#: Identity fields salvageable line-wise from a (possibly invalid) header body.
+_SALVAGE_KEYS = ("object_catalog", "object_schema", "object_type", "object_name")
+
+
+def salvage_header_fields(script: str) -> dict[str, str]:
+    """Salvage identity fields from a header whose YAML does not parse.
+
+    A typical broken header (observed on a real corpus) has an unquoted scalar
+    containing ``': '`` — the document is invalid YAML, but the identity lines
+    (``object_schema: s``, ``object_type: table``, ...) are individually valid
+    plain scalars. Line-regex extraction recovers identity without a YAML parse.
+
+    Returns:
+        Dict with any of ``object_catalog`` / ``object_schema`` / ``object_type``
+        / ``object_name`` found between the markers; empty when absent.
+    """
+    if MARKER_OPEN not in script or MARKER_CLOSE not in script:
+        return {}
+    start = script.index(MARKER_OPEN) + len(MARKER_OPEN)
+    end = script.index(MARKER_CLOSE)
+    body = script[start:end]
+
+    found: dict[str, str] = {}
+    for line in body.splitlines():
+        m = re.match(r"^\s*(object_\w+)\s*:\s*(.+?)\s*$", line)
+        if m and m.group(1) in _SALVAGE_KEYS:
+            value = m.group(2).strip().strip("'\"")
+            if value:
+                found[m.group(1)] = value
+    return found
+
+
+def replace_header_yaml(script: str, metadata: dict[str, Any]) -> str:
+    """Rewrite the YAML between the autodoc markers, keeping the SQL body.
+
+    Used to repair a header whose YAML does not parse: the regenerated
+    ``metadata`` replaces the broken block; markers and everything after the
+    closing marker (the SQL body) are preserved verbatim.
+    """
+    if MARKER_OPEN not in script or MARKER_CLOSE not in script:
+        return script
+    new_yaml = yaml.safe_dump(metadata, allow_unicode=True, sort_keys=False)
+    open_idx = script.index(MARKER_OPEN) + len(MARKER_OPEN)
+    close_idx = script.index(MARKER_CLOSE)
+    return script[:open_idx] + "\n" + new_yaml + script[close_idx:]
 
 
 def ensure_header(

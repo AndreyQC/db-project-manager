@@ -344,3 +344,423 @@ Deploy затем падает: `psycopg2.ProgrammingError: can't execute an emp
 **Триггер:** любой integration-прогон RE→deploy на «чистой» PG (10 упавших
 интеграционных тестов при закрытии Phase 11 уже починены фикстурой `8ed60ab`;
 эти 2 — отдельная корневая причина).
+
+**Статус:** выполнено (2026-08-15). При разборе вскрылись **три** независимые
+причины, а не одна гипотеза выше:
+
+1. **Comment-only скрипт (гипотеза подтвердилась).** `_get_database_properties`
+   всегда непуст (encoding/lc_collate/lc_ctype), поэтому `database settings.sql`
+   эмитится даже при пустых settings — body = только комментарии → empty query.
+   Вариант (b) отвергнут: autodoc-заголовок файла несёт `db_properties` для
+   `CREATE DATABASE` temp-БД. Реализован вариант (a): новый
+   `infrastructure/sql/sql_text.py::has_executable_sql` (учёт `'…'`, `"…"`,
+   `$$…$$`, `--`, `/* */` — false «пусто» тихо пропустил бы исполняемый SQL);
+   `_deploy_object` пропускает comment-only с логом, вершина остаётся в графе.
+   Регрессия: `test_deploy_service.py::test_comment_only_script_is_skipped_not_failed`.
+2. **Баг сетапа `test_phase5_extensions_e2e`:** `CREATE EXTENSION IF NOT EXISTS
+   uuid-ossp` без кавычек — имя с дефисом парсится как `uuid - ossp` (SyntaxError);
+   тест не доходил до деплоя. Плюс два латентных бага того же теста: устаревший
+   `build_only=True` (API-дрейф `BuildGraphService.build`) и фильтр ключей
+   `"function public.f"` вместо актуального формата `/function/name/f/`.
+3. **Межтестовая контаминация:** общая БД `postgres` контейнера накапливала
+   объекты от предыдущих тестов → order-dependent падение qualify-теста на
+   `_validate_deploy_presence`. Фикстура `pg_conn_cfg` теперь создаёт чистую
+   пер-тестовую БД (`dbpm_it_<hex>`) и удаляет её в teardown.
+
+**Проверки:** `uv run pytest -m integration` — 16 passed (было 14 passed /
+2 failed); unit — 700 passed; ruff — чисто.
+
+---
+
+## P3. GUI-действия deploy plan/apply + рендер плана деплоя
+
+**Статус: ЗАКРЫТ** — реализован в Phase 15 (`_docs_/_phases_/Phase_15.md`):
+GUI-обёртки `deploy_plan`/`deploy_apply` с preflight-warning
+(`DeployApplyDialog`, чекбокс гейтит OK), `PlanViewerWindow` для просмотра
+`plan.json` (дерево, фильтры safe/needs-pre/blocked, DDL-таб), chain
+analyze → plan → apply через prefill в Plan Viewer. Все три CLI-флага
+(`--include-drops`/`--no-rehearsal`/`--keep-rehearsal-db`) доступны из GUI.
+Тесты: 20 новых unit-тестов (8 contract CLI, 4 offscreen-smoke диалогов,
+8 plan_viewer). Lessons §59-§60.
+
+---
+
+## P3. Multi-statement normalize + comment-level diff (по итогам Phase 12)
+
+**Контекст:** `infrastructure/diff/normalize_sql.py` использует `parse_one` —
+нормализует только ПЕРВЫЙ statement тела. `COMMENT ON`-строки в табличных файлах
+не участвуют в `sql_hash`: comment-only правки дают UNCHANGED (поведение Phase 9,
+сохранено в Phase 12). ColumnSnapshot.comment в v1 не заполняется по той же
+причине (см. `Phase_12_plan.md` S2, «Известное ограничение»).
+
+**Действие:** перевести normalize на `sqlglot.parse` (все statements) с защитным
+переходом — смена хэша сделает ВСЕ существующие объекты «изменившимися», нужен
+формат-бамп/миграция (напр. версии snapshot или канонический пересчёт обеих
+сторон). Затем: `extract_columns` парсит `COMMENT ON COLUMN` → `comment` в
+`ColumnSnapshot` → `COMMENT_CHANGED` в column-diff (классифицируется safe).
+
+**Триггер:** первые жалобы «отредактировал комментарий — деплой не увидел».
+
+**Связано:** `infrastructure/diff/{normalize_sql,columns}.py`, `domain/delta.py`.
+
+---
+
+## P3. validate_deploy_ddl не проверяет наличие schema __deploy.sql
+
+**Контекст (Phase 15.5, cis_zup feedback 2026-09-02):** при диагностике
+`InvalidSchemaName` для таблиц `__deploy` обнаружено, что
+`infrastructure/deploy/canonical_ddl.py::validate_deploy_ddl` (вызывается в
+`DeployValidateService.run` и `DeployApplyService._run_pipeline` перед apply)
+проверяет только3 таблицы (`schema_version`/`script_history`/`script_audit_log`).
+Наличие **`schema __deploy.sql`** НЕ проверяется.
+
+**Действие:** добавить проверку наличия файла
+`<codebase>/__deploy/schema __deploy.sql`. Если отсутствует — warning
+(как сейчас для таблиц), без блокировки apply (CDF-10 approach b).
+Compare с содержимым canonical: пустая схема `CREATE SCHEMA IF NOT
+EXISTS "__deploy";` + autodoc. SHA-256 нормализованного тела должен
+совпадать с `script_checksum(strip_autodoc("CREATE SCHEMA IF NOT
+EXISTS \"__deploy\";\n"))`.
+
+**Триггер:** первое ручное удаление schema __deploy.sql из codebase +
+последующий deploy apply.
+
+**Связано:** Phase 15.5 fix `DIFFED_TYPES + schema` (commit `606cd3d`)
+восстанавливает CREATE SCHEMA в плане для **пустой** target-БД, но не
+предотвращает silent drop schema.sql из codebase. Это второй шаг
+гигиены `__deploy`.
+
+**Не блокирует.** Реальный cis_zup имеет schema __deploy.sql на месте.
+
+---
+
+## P3. RE snapshot для target-БД seed'ит phantom `__deploy` в temp_root
+
+**Статус: ЗАКРЫТ через Phase 15.5.2** (commit `160cdd7`).
+Альтернативное решение — отдельная утилита `db-pm deploy
+init-service-schema` для явного bootstrap на пустой target-БД.
+
+**Оригинальный контекст:** при cis_zup feedback 2026-09-02 (повторный прогон
+на пустой target-БД `local-PG-18_DB__cis_zup_dev_U_postgres`) deploy apply
+не создавал `__deploy` schema +3 таблицы. Root cause: target-side RE
+в `CompareService._build_db_side` вызывает
+`ReverseEngineerService.run(...)`, который через `_seed_or_sync_deploy`
+**всегда** записывает canonical `__deploy/schema __deploy.sql` +
+3 таблицы в temp_root (даже если `__deploy` реально нет в БД).
+Compare видит их как UNCHANGED; DeltaPlan action=skip; apply ничего
+не выполняет для `__deploy`.
+
+**Закрытие:** вместо глобального рефакторинга RE (флаг `seed_deploy`
+в конструкторе / параметр `.run()`, поведение RE-сервиса в compare vs
+codebase-write) сделана отдельная команда
+`db-pm deploy init-service-schema --target-connection-file ...` —
+вызывает `ServiceSchemaInitializer`, который через
+`adapter.get_database_structure()` проверяет реальное состояние БД
+(НЕ temp_snapshot) и идемпотентно создаёт `__deploy` через
+`CREATE SCHEMA IF NOT EXISTS` + `CREATE TABLE IF NOT EXISTS`. На повторное
+выполнение — no-op.
+
+**Урок (LESSONS §62):** RE-write-to-codebase и RE-snapshot-for-compare
+выглядят одинаково в коде (`ReverseEngineerService.run`),
+но имеют разные инварианты. SEEDирование `__deploy` в codebase-write —
+правильно (rebuild); SEEDирование в temp_snapshot — **маскирует
+отсутствие `__deploy` в реальной БД** при compare с пустым target.
+Чистое исправление требует разделения этих путей (доп. параметр в
+RE-сервисе или две разные RE-функции). Для MVP — отдельная утилита
+достаточна; глобальный рефакторинг RE остаётся техдолгом на случай,
+если пользователи предпочтут одну кнопку.
+
+---
+
+## P3. (бывший) Долгая цепочка verify-then-bootstrap при каждом deploy apply
+
+**Контекст:** Phase 15.5.2 ввёл `deploy init-service-schema` как отдельный
+шаг. Сейчас пользователь должен явно запускать его перед
+`deploy apply` на свежей БД. Можно автоматизировать: в
+`DeployApplyService._run_pipeline` перед `manifest = read_manifest(...)`
+проверить, существует ли `__deploy` schema в target-БД (через `get_schema_version`
+или `adapter.execute_script("SELECT 1 FROM pg_namespace WHERE nspname='__deploy'")`).
+Если нет + `manifest.source_version` есть — вызвать `ServiceSchemaInitializer`
+и продолжить. Альтернатива: падать с понятным сообщением «run
+db-pm deploy init-service-schema first».
+
+**Действие:** держать поведение explicit-init (так безопаснее — пользователь
+видит отдельный шаг). Если CI-сценарии потребуют авто-init — добавить
+`--init-service-schema` флаг в `deploy apply`.
+
+**Не блокирует.**
+
+---
+
+## P3. YAML-сравнение source vs target вместо hash-сравнения (Phase 16+)
+
+**Контекст (cis_zup feedback 2026-09-03, 2026-09-04):** Phase 12
+`DeployApplyService` строит `DeltaPlan` на основе `sql_hash` сравнения
+source-side и target-side snapshots. Hash считается через
+`sqlglot`-нормализацию всего DDL-тела. Это даёт **false-positive CHANGED**
+на форматных различиях, которые PG и наш SQL-парсер считают
+семантически эквивалентными:
+
+* `CAST('utc' AS TEXT)` vs `'utc'` (Phase 15.5.3 — закрыто post-AST
+  regex нормализацией, см. `LESSONS §63`);
+* в перспективе — другие эквивалентные формы DEFAULTs, имена ограничений
+  (`group_id_fkey` vs автоматически-сгенерированное), whitespace внутри
+  DDL, и т.п.
+
+Каждое такое различие выливается в:
+
+1. safety gate violation (touch=CHANGED + covered=[] + presence=HAS_DATA);
+2. column-diff классифицируется как DEFAULT_CHANGED (NEEDS_PRE);
+3. deploy apply падает, если нет покрывающего pre-скрипта.
+
+**Альтернативный подход (предложен пользователем):** не опираться на
+`sql_hash` при сравнении. Вместо этого:
+
+1. Строить YAML-снимок **codebase-стороны** через `db-pm yaml generate`
+   по SQL-файлам в dir (Phase 13 уже умеет; текущая команда —
+   `yaml generate --source <dir>`).
+2. Строить YAML-снимок **target-стороны** через `db-pm yaml generate` по
+   БД-стороне (нужна `yaml generate --source <conn>` — расширение Phase 13).
+3. Сравнивать два YAML **по каждому объекту** (структурно, а не по hash):
+
+   - compare columns: name/type/nullable/default → per-column diff
+     (Phase 12 ALREADY делает это для changed таблиц).
+   - compare функций/proc/views — по тексту тела, нормализованному
+     ровно тем же sqlglot pipeline, что у Phase 13.
+   - compare constraints/indexes/etc. — пока нет (backlog P3 — multi-statement
+     normalize, Phase 12 LESSONS §3).
+
+**Выигрыш:**
+- YAML-сравнение устойчиво к форматным репрезентациям PG
+  (`CAST` ↔ literal, autogen names, whitespace).
+- Можно выявлять «реальные» отличия (тип колонки, default value),
+  игнорируя косметические.
+- Один формат хранения (`YamlProject`) и для diff, и для source-of-truth
+  codebase (yaml apply уже умеет генерировать из YAML).
+
+**Зависимости / сложность:**
+- Расширить `YamlGenerateService` (Phase 13) на source=DB.
+- Snapshotter нужен — общий с `compare_service`/`reverse_engineer`.
+- Comparator (`compare_service` или новый) должен принимать два YAML на
+  вход и выдавать структурный diff без hash.
+- Один новый контракт тестов + e2e.
+
+**Связано:** Phase 13 (`infrastructure/yaml_project/`),
+Phase 12 (`domain/delta.py::DeltaPlan`),
+`infrastructure/diff/normalize_sql.py` — сейчас там hash-логика; YAML-сравнение
+позволит **deprecate** hash для source-vs-target (но оставить для
+codebase-vs-codebase, например при проверке integrity).
+
+**Не блокирует.** Phase 15.5.3 закрывает наиболее частый кейс
+(default-format), но архитектурно правильнее уйти от hash целиком.
+Записываем как Phase 16+ кандидат (после Phase 16 post-deploy отчётов).
+
+---
+
+## P3. PG-различие ``serialN`` vs ``int + DEFAULT NEXTVAL(...)`` в extract_columns
+
+**Контекст (cis_zup feedback 2026-09-04, partially closed Phase 15.5.4):**
+`extract_columns` для codebase-стороны даёт `serial4 NOT NULL` (default=None);
+для target-БД-стороны через RE — `int NOT NULL DEFAULT NEXTVAL(...)`
+(после pg_attrdef round-trip). Это **семантически эквивалентные колонки**
+(`serial4` в PG это syntactic sugar для `int + implicit DEFAULT nextval` +
+auto-created sequence), но `diff_columns` показывал ложные
+`TYPE_CHANGED` + `DEFAULT_CHANGED`.
+
+**Phase 15.5.4 fix (closed частично):** добавил в `infrastructure/diff/columns.py`:
+- `_TYPE_ALIASES` расширен: `serial4/int4 → int`,
+  `serial8/int8 → bigint`, `serial2/int2 → smallint`,
+  `float4 → real`, `float8 → double precision`.
+- В `diff_columns` добавлена компенсация: если один тип — `serial*N`-family
+  (default=None), а другой — `int*N` + `DEFAULT nextval(...)`, default-difference
+  подавляется как false-positive.
+
+**Известное ограничение (Phase 15.5.4):** когда **обе** стороны default-less
+(`serial4 NOT NULL` vs `int NOT NULL`), компенсация НЕ срабатывает —
+мы не можем отличить «serial без явного DEFAULT» от «int без DEFAULT».
+Регрессия `test_serial_vs_int_without_nextval_produces_no_diff` фиксирует
+этот контракт. Round-trip через реальную БД в этом кейсе всё равно даст
+`int + DEFAULT NEXTVAL(...)` (RE об этом знает через pg_attrdef), так что
+проблема **не возникает на реальных данных**. Но теоретически — это пробел.
+
+**Связано:** Phase 12 LESSONS §3 (RE особенности),
+Phase 15.5.3 LESSONS §63 (PG-round-trips с форматами),
+Phase 15.5.4 LESSONS §64 (PG serial/int семейство).
+
+**Не блокирует.** Полное исправление потребует различать raw vs canonical
+type в `ColumnSnapshot` — добавить поле `raw_type` (до канонизации) и
+компенсировать по нему. Это архитектурное расширение схемы snapshot'а —
+Phase 16+.
+
+---
+
+## P3. Сохранение target-RESULT в `output_dir/target/` для отладки Phase 15.5.6
+
+> **Статус: реализовано в Phase 15.7** (см. `_tasks_/phase_15/Phase_15.7_result.md`).
+> Вместо `--keep-target-dir` выбрано: каждый прогон пишет в уникальный
+> run-подкаталог (`<output_dir>/<timeline-name>/`), а DB-side RE-snapshot
+> всегда копируется в `<run>/target/` (или `source/`, `rehearsal_re/`) —
+> без отдельного флага. Флаг `--no-run-subdir` возвращает плоскую раскладку.
+
+**Контекст (cis_zup feedback 2026-09-04, пользователь):** при `compare`
+или `safety_gate.analyze` (Phase 11) target-БД-сторона snapshot строится
+через `ReverseEngineerService.run(...)` в **tempdir** (например
+`C:\Users\ANDREY~1.POT\AppData\Local\Temp\dbpm_compare_target_*\`), который
+**удаляется** после compare (`if not keep_model_dir: shutil.rmtree(...)`).
+Из-за этого невозможно:
+
+1. Сравнить target-side snapshot с source-side вручную.
+2. Увидеть, какие именно column_diffs/sql_normalized RE прочитал из БД.
+3. Диагностировать ложные CHANGED в safety gate (cis_zup feedback) —
+   пришлось подключаться к БД напрямую через самописные diagnostic-скрипты.
+
+**Действие:** добавить опцию `--keep-target-dir` (или reuse
+`--keep-model-dir` из Phase 9) для команд `compare run` и
+`deploy analyze`, чтобы target-сторона **не** удалялась, а копировалась
+в `<output_dir>/target/` (для DIR-стороны — `<output_dir>/source/`,
+для DB-стороны — `<output_dir>/target/`). Это не требует рефакторинга
+RE-сервиса — только перенос в `compare_service._build_db_side` и
+`safety_gate_service` (которые используют RE).
+
+После фикса пользователь сможет:
+- Получить `output_dir/target/cis_zup_dev_local/cis_dmt_zup/.../*.sql` —
+  реальный SQL, который RE прочитал из БД.
+- Сравнить с `output_dir/source/cis_zup_dev_local/cis_dmt_zup/.../*.sql`
+  (когда DEPLOY-цепочка применит deploy validate в temp, для отдельной
+  верификации).
+- Не гадать — сразу видеть формат (CAST/serial4/int4) и поправить
+  canonicaliser при необходимости (Phase 15.5.3/15.5.4/15.5.5).
+
+**Триггер:** любой false-positive в safety gate / compare, который
+требует анализа target-side snapshot. В cis_zup мы потратили 1 час на
+диагностику потому что temp-каталог был удалён.
+
+**Связано:** Phase 9 (`compare run --keep-model-dir` уже есть, но
+относится к source-стороне, не DB-target), Phase 11 (`deploy analyze`).
+
+**Не блокирует.** Помогает при диагностике следующего false-positive
+класса (после Phase 15.5.5).
+
+---
+
+---
+
+## P3. (бывший) Phase 15.5.4 type-aliases canonicalization
+
+**Статус: ЗАКРЫТ (commit планируется вместе с этим шагом).**
+В рамках Phase 15.5.4 (`infrastructure/diff/columns.py`) добавлен полный
+словарь PG-синонимов типов в `_TYPE_ALIASES`. Это закрывает шум от:
+- serial4/int4 ↔ int
+- serial8/int8 ↔ bigint
+- serial2/int2 ↔ smallint
+- float4 ↔ real, float8 ↔ double precision
+
+Regression: `test_type_synonyms_collapse` (5 старых пар) +
+8 новых параметризованных кейсов в `tests/unit/test_extract_columns.py`.
+Всего 935 unit passed.
+
+Если вскроются ещё синонимы — добавлять в `_TYPE_ALIASES` (Phase 16+).
+
+---
+
+## P3. Авто-генератор seed «одной записи на таблицу» (ALT-8b)
+
+**Контекст (Phase 12, ALT-8):** seed репетиции — пользовательские скрипты
+`__migrations/seed/*.sql` (детерминированно, FK-порядок на авторе). Ручной seed
+скучен для больших схем.
+
+**Действие:** генератор черновика seed по структуре: INSERT одной строки на
+таблицу из DEFAULT-значений (NOT NULL-колонки без DEFAULT → таблица в протокол
+пропусков), порядок вставок по топосорту FK. Черновик предлагается
+`db-pm deploy rehearsal-seed --dir ... > __migrations/seed/...` — коммитится и
+дальше живёт как обычный seed-скрипт (не регенерируется).
+
+**Триггер:** регулярная работа с apply на схемах >30 таблиц.
+
+**Связано:** `application/deploy_apply_service.py` (`_run_seed`), BACKLOG-запись
+P3 GUI plan/apply.
+
+---
+
+## P3. deploy analyze: даунгрейд safe-alter нарушений по ALT-3
+
+**Контекст (Phase 12):** `deploy plan`/`apply` даунгрейдят gate-нарушения через
+колоночную классификацию (`_gate_residual_violations`): тронутая таблица с
+данными, дельта по которой safe (ADD COLUMN nullable), пропускается. Standalone
+`deploy analyze` (Phase 11) остался table-level строгим — та же ситуация даёт
+VIOLATIONS, хотя `apply` прошёл бы.
+
+**Действие:** синхронизировать `SafetyGateService.analyze` с residual-логикой
+(или задокументировать расхождение как осознанное: analyze = «худший случай»,
+apply = точная классификация).
+
+**Триггер:** путаница пользователей «analyze красный, apply зелёный».
+
+**Связано:** `application/{safety_gate_service,deploy_apply_service}.py`;
+`_tasks_/phase_12/Phase_12_result.md` (отклонения).
+
+---
+
+## P2. Именованные пресеты конфигураций действий GUI (save/load YAML)
+
+**Контекст (фидбек пользователя, 2026-08-31):** частые повторяющиеся операции
+между двумя базами (например, compare dev↔prod, deploy plan на один и тот же
+таргет). GUI хранит только «последние использованные» значения каждого действия —
+`gui_settings.json`, ровно один набор на действие (`GuiSettingsStore`,
+`presentation/gui/main_window.py:48`). Переключение между несколькими рабочими
+наборами (dev↔prod, staging↔prod) требует перенастройки диалога вручную каждый
+раз; хочется сохранять настроенные конфигурации в файл и выбирать из файлов.
+
+**Решение по USER_INPUT (2026-08-31):**
+- охват — **все** действия GUI (единый механизм, не только «двухбазовые»);
+- хранение — **папка пресетов**, один YAML-файл на пресет, выбор из выпадающего
+  списка в GUI;
+- **только GUI** (CLI уже покрыт флагами + copy-CLI из GUI);
+- подключения — **по имени из `connections/`** (секреты остаются зашифрованными
+  там, пресеты секретов не содержат).
+
+**Действие:**
+- Папка пресетов по умолчанию `presets/` рядом с `connections/` (вне git, как и
+  `connections/`); путь настраивается в `config.yaml` → `paths.presets_dir`.
+- Формат файла: обёртка `preset_version` / `action` (action_id) / `name` +
+  тело по pydantic-моделям `presentation/gui/actions/models.py`
+  (`extra="ignore"` — forward-compat по образцу `gui_settings.json`).
+- UX: dropdown пресетов текущего действия (место — action panel или шапка
+  диалога, решить в плане) + «Сохранить как…» / «Обновить»; выбранный пресет
+  подставляется в диалог через существующий `set_settings()`. Назначение
+  `gui_settings.json` не меняется — «последние использованные» значения.
+- Валидация при загрузке: подключение с указанным именем существует в
+  `connections/`, каталоги существуют; ошибка — видимым статусом, не молча.
+
+**Триггер:** зафиксирован — фидбек пользователя от 2026-08-31.
+
+**Связано:** `presentation/gui/actions/{models,registry,dialogs}.py`,
+`presentation/gui/widgets/action_panel.py`,
+`infrastructure/config/gui_settings.py`, `config.example.yaml`.
+
+**Кандидат:** Phase 15 (полировка GUI в её составе) или отдельная GUI-задача до
+неё — не зависит от CD-17..19.
+
+---
+
+## P3. Ротация run-каталогов (после Phase 15.7)
+
+**Контекст (пользователь, 2026-09-04):** Phase 15.7 переводит отчётные команды
+(`compare run`, `deploy analyze`, `deploy plan`, `deploy apply`) на уникальные
+run-подкаталоги `<output_dir>/<timeline-name>/`, внутри которых сохраняется и
+DB-side RE-snapshot (`target/`, `source/`, `rehearsal_re/`). Решено: ничего не
+чистить автоматически (прозрачность важнее диска; каталоги — текстовые SQL +
+JSON). Но накапливаться они будут неограниченно.
+
+**Действие:** опция ротации, например `--keep-runs N` (хранить последние N
+прогонов) и/или чистка старше X дней. Ключевая возможность: имена run-каталогов
+генерируются `infrastructure/files/run_naming.py` (TimelineNameGenerator) и
+**декодируются в дату/время прогона** — возраст каталога определяется по имени,
+без опоры на mtime (который меняется при копировании/синхронизации).
+
+**Триггер:** когда run-каталогов станет достаточно, чтобы объём или шум начали
+мешать.
+
+**Связано:** Phase 15.7 (`run_naming.py`, `latest_run_dir`), `_tasks_/phase_15/Phase_15.7_draft.md`.
+
+**Не блокирует.**

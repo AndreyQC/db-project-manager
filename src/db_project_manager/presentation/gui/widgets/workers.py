@@ -16,6 +16,8 @@ from db_project_manager.application.reverse_engineer import (
     build_default_service,
 )
 from db_project_manager.domain.connection import ConnectionConfig
+from db_project_manager.infrastructure.deploy.canonical_ddl import DEFAULT_SERVICE_SCHEMA
+from db_project_manager.infrastructure.files.run_naming import create_run_dir
 
 
 class WorkerSignals(QObject):
@@ -204,11 +206,142 @@ class DeployAnalyzeWorker(QRunnable):
 
         try:
             verdict = service.analyze(
-                self.codebase_dir, self.conn_cfg, self.output_dir, progress=progress
+                self.codebase_dir, self.conn_cfg,
+                create_run_dir(self.output_dir), progress=progress,
             )
             self.signals.finished.emit(verdict)
         except SafetyGateError as e:
             self.signals.error.emit(f"Safety gate: {e}")
+            self.signals.finished.emit(None)
+        except Exception as e:  # noqa: BLE001
+            self.signals.error.emit(f"Непредвиденная ошибка: {e}")
+            self.signals.finished.emit(None)
+
+
+class DeployPlanWorker(QRunnable):
+    """Run ``db-pm deploy plan`` (dry-run delta) off the UI thread (Phase 15, PRE-3).
+
+    Mirrors ``DeployAnalyzeWorker``: ``DeployApplyService.plan()`` is read-only
+    (no mutation of the target DB). Emits a ``DeltaPlan`` through ``finished``;
+    ``DeployApplyRejected`` and ``DeployApplyError`` go via ``signals.error`` with
+    ``finished(None)``.
+    """
+
+    def __init__(
+        self,
+        conn_cfg: ConnectionConfig,
+        codebase_dir: str | Path,
+        output_dir: str | Path,
+        *,
+        include_drops: bool = False,
+    ) -> None:
+        super().__init__()
+        self.conn_cfg = conn_cfg
+        self.codebase_dir = Path(codebase_dir)
+        self.output_dir = Path(output_dir)
+        self.include_drops = include_drops
+        self.signals = WorkerSignals()
+
+    def run(self) -> None:
+        from db_project_manager.application.deploy_apply_service import (
+            DeployApplyError,
+            DeployApplyRejected,
+            DeployApplyService,
+        )
+
+        service = DeployApplyService()
+
+        def progress(message: str, current: int, total: int) -> None:
+            self.signals.progress.emit(message, current, total)
+            self.signals.status.emit(message)
+
+        try:
+            plan = service.plan(
+                self.codebase_dir,
+                self.conn_cfg,
+                create_run_dir(self.output_dir),
+                include_drops=self.include_drops,
+                progress=progress,
+            )
+            self.signals.status.emit(
+                f"План готов: операций {len(plan.operations)} "
+                f"(safe: {len(plan.safe_ops)}, needs-pre: {len(plan.needs_pre_ops)}, "
+                f"blocked: {len(plan.violations)})"
+            )
+            self.signals.finished.emit(plan)
+        except DeployApplyRejected as e:
+            self.signals.error.emit(f"Safety gate отклонил план: {e}")
+            self.signals.finished.emit(None)
+        except DeployApplyError as e:
+            self.signals.error.emit(f"Plan: {e}")
+            self.signals.finished.emit(None)
+        except Exception as e:  # noqa: BLE001
+            self.signals.error.emit(f"Непредвиденная ошибка: {e}")
+            self.signals.finished.emit(None)
+
+
+class DeployApplyWorker(QRunnable):
+    """Run ``db-pm deploy apply`` (mutates an EXISTING target DB) off the UI thread.
+
+    This is the FIRST worker that mutates a live database — see the preflight
+    ``confirm_understands_risk`` gate in ``DeployApplyDialog``. Mirrors
+    ``DeployAnalyzeWorker`` for error handling: ``DeployApplyRejected`` and
+    ``DeployApplyError`` go via ``signals.error`` with ``finished(None)``;
+    success emits an ``ApplyResult`` through ``finished``.
+    """
+
+    def __init__(
+        self,
+        conn_cfg: ConnectionConfig,
+        codebase_dir: str | Path,
+        output_dir: str | Path,
+        *,
+        include_drops: bool = False,
+        no_rehearsal: bool = False,
+        keep_rehearsal_db: bool = False,
+    ) -> None:
+        super().__init__()
+        self.conn_cfg = conn_cfg
+        self.codebase_dir = Path(codebase_dir)
+        self.output_dir = Path(output_dir)
+        self.include_drops = include_drops
+        self.no_rehearsal = no_rehearsal
+        self.keep_rehearsal_db = keep_rehearsal_db
+        self.signals = WorkerSignals()
+
+    def run(self) -> None:
+        from db_project_manager.application.deploy_apply_service import (
+            DeployApplyError,
+            DeployApplyRejected,
+            DeployApplyService,
+        )
+
+        service = DeployApplyService()
+
+        def progress(message: str, current: int, total: int) -> None:
+            self.signals.progress.emit(message, current, total)
+            self.signals.status.emit(message)
+
+        try:
+            result = service.apply(
+                self.codebase_dir,
+                self.conn_cfg,
+                create_run_dir(self.output_dir),
+                include_drops=self.include_drops,
+                rehearsal=not self.no_rehearsal,
+                keep_rehearsal_db=self.keep_rehearsal_db,
+                progress=progress,
+            )
+            self.signals.status.emit(
+                f"✓ Apply завершён: {result.applied}/{result.planned} операций, "
+                f"версия {result.applied_version}"
+            )
+            self.signals.finished.emit(result)
+        except DeployApplyRejected as e:
+            self.signals.error.emit(f"Apply отклонён safety gate: {e}")
+            self.signals.finished.emit(None)
+        except DeployApplyError as e:
+            self.signals.error.emit(f"Apply: {e}")
             self.signals.finished.emit(None)
         except Exception as e:  # noqa: BLE001
             self.signals.error.emit(f"Непредвиденная ошибка: {e}")
@@ -251,7 +384,7 @@ class CompareWorker(QRunnable):
             result = service.run(
                 self.source,
                 self.target,
-                self.output_dir,
+                create_run_dir(self.output_dir),
                 keep_model_dir=self.keep_model_dir,
                 progress=progress,
             )
@@ -259,6 +392,103 @@ class CompareWorker(QRunnable):
             self.signals.finished.emit(result)
         except CompareError as e:
             self.signals.error.emit(str(e))
+            self.signals.finished.emit(None)
+        except Exception as e:  # noqa: BLE001
+            self.signals.error.emit(f"Непредвиденная ошибка: {e}")
+            self.signals.finished.emit(None)
+
+
+class YamlGenerateWorker(QRunnable):
+    """Run db-pm yaml generate off the UI thread (Phase 13)."""
+
+    def __init__(
+        self,
+        source_dir: str | Path,
+        db_type: str,
+        output_file: str | Path,
+        source_version: str = "",
+    ) -> None:
+        super().__init__()
+        self.source_dir = Path(source_dir)
+        self.db_type = db_type
+        self.output_file = Path(output_file)
+        self.source_version = source_version
+        self.signals = WorkerSignals()
+
+    def run(self) -> None:  # noqa: C901 (Qt entrypoint)
+        from db_project_manager.application.yaml_apply_service import YamlApplyError
+        from db_project_manager.infrastructure.yaml_project.generator import (
+            generate_yaml_project,
+        )
+        from db_project_manager.infrastructure.yaml_project.serializer import (
+            serialize_yaml_project,
+        )
+
+        try:
+            self.signals.status.emit(
+                f"Сканирование каталога: {self.source_dir} (db_type={self.db_type})"
+            )
+            project = generate_yaml_project(
+                self.source_dir,
+                self.db_type,
+                source_version=self.source_version,
+            )
+            yaml_text = serialize_yaml_project(project)
+            self.output_file.parent.mkdir(parents=True, exist_ok=True)
+            self.output_file.write_text(yaml_text, encoding="utf-8")
+            self.signals.status.emit(f"YAML сохранён: {self.output_file}")
+            self.signals.finished.emit(self.output_file)
+        except YamlApplyError as e:
+            self.signals.error.emit(f"YAML generate: {e}")
+            self.signals.finished.emit(None)
+        except Exception as e:  # noqa: BLE001
+            self.signals.error.emit(f"Непредвиденная ошибка: {e}")
+            self.signals.finished.emit(None)
+
+
+class YamlApplyWorker(QRunnable):
+    """Run db-pm yaml apply off the UI thread (Phase 13)."""
+
+    def __init__(
+        self,
+        yaml_file: str | Path,
+        target_db_type: str,
+        output_dir: str | Path,
+        service_schema: str = "__deploy",
+    ) -> None:
+        super().__init__()
+        self.yaml_file = Path(yaml_file)
+        self.target_db_type = target_db_type
+        self.output_dir = Path(output_dir)
+        self._service_schema = service_schema
+        self.signals = WorkerSignals()
+
+    def run(self) -> None:  # noqa: C901 (Qt entrypoint)
+        from db_project_manager.application.yaml_apply_service import (
+            YamlApplyError,
+            YamlApplyService,
+        )
+        from db_project_manager.infrastructure.yaml_project.serializer import (
+            parse_yaml_project,
+        )
+
+        try:
+            self.signals.status.emit(f"Чтение YAML: {self.yaml_file}")
+            yaml_text = self.yaml_file.read_text(encoding="utf-8")
+            project = parse_yaml_project(yaml_text)
+            self.signals.status.emit(
+                f"Применение YAML → {self.target_db_type}: {self.output_dir}"
+            )
+            service = YamlApplyService(service_schema=self._service_schema)
+            result = service.run(project, self.output_dir, self.target_db_type)
+            self.signals.status.emit(
+                f"YAML apply done: schemas={result.schemas_count}, "
+                f"objects={result.objects_count}, "
+                f"output={result.output_dir}"
+            )
+            self.signals.finished.emit(result)
+        except YamlApplyError as e:
+            self.signals.error.emit(f"YAML apply: {e}")
             self.signals.finished.emit(None)
         except Exception as e:  # noqa: BLE001
             self.signals.error.emit(f"Непредвиденная ошибка: {e}")
@@ -296,3 +526,107 @@ class LoadDiffReportWorker(QRunnable):
         except Exception as e:  # noqa: BLE001
             self.signals.error.emit(f"Непредвиденная ошибка: {e}")
             self.signals.finished.emit(None)
+
+
+class LoadPlanReportWorker(QRunnable):
+    """Load + parse a ``plan.json`` off the UI thread (Phase 15).
+
+    Mirrors :class:`LoadDiffReportWorker` (Phase 14) — keeps large-file parsing
+    off the UI thread for :class:`~db_project_manager.presentation.gui.widgets.plan_viewer.PlanViewerWindow`.
+    Emits the parsed :class:`~db_project_manager.domain.delta.DeltaPlan` on success,
+    or ``None`` + an error message on failure (missing/invalid file).
+    """
+
+    def __init__(self, path: str | Path) -> None:
+        super().__init__()
+        self.path = Path(path)
+        self.signals = WorkerSignals()
+
+    def run(self) -> None:  # noqa: C901 (Qt entrypoint)
+        from db_project_manager.infrastructure.deploy.plan_report import load_plan_report
+        from pydantic import ValidationError
+
+        try:
+            plan = load_plan_report(self.path)
+            self.signals.status.emit(f"План загружен: {self.path.name}")
+            self.signals.finished.emit(plan)
+        except (ValidationError, ValueError) as e:
+            self.signals.error.emit(f"Не удалось разобрать план: {e}")
+            self.signals.finished.emit(None)
+        except OSError as e:
+            self.signals.error.emit(f"Не удалось прочитать файл: {e}")
+            self.signals.finished.emit(None)
+        except Exception as e:  # noqa: BLE001
+            self.signals.error.emit(f"Непредвиденная ошибка: {e}")
+            self.signals.finished.emit(None)
+
+
+class DeployInitServiceSchemaWorker(QRunnable):
+    """Run ``db-pm deploy init-service-schema`` (idempotent __deploy bootstrap) off the UI thread.
+
+    Phase 15.5.2 (cis_zup feedback 2026-09-02): on a freshly created target DB
+    this MUST be run BEFORE the first ``deploy apply``, because apply silently
+    skips ``__deploy`` (CompareService flags it UNCHANGED via RE seeding into
+    a temp snapshot). Emits ``ServiceSchemaInitializerResult`` through
+    ``finished`` on success; ``ServiceSchemaInitializerError`` and unexpected
+    exceptions go via ``signals.error`` with ``finished(None)``.
+    """
+
+    def __init__(
+        self,
+        conn_cfg: ConnectionConfig,
+        *,
+        service_schema: str = DEFAULT_SERVICE_SCHEMA,
+    ) -> None:
+        super().__init__()
+        self.conn_cfg = conn_cfg
+        self.service_schema = service_schema
+        self.signals = WorkerSignals()
+
+    def run(self) -> None:
+        from db_project_manager.application.service_schema_initializer import (
+            ServiceSchemaInitializer,
+            ServiceSchemaInitializerError,
+        )
+        from db_project_manager.infrastructure.config.app_config import load_cfg
+
+        if self.service_schema == DEFAULT_SERVICE_SCHEMA:
+            # Pull cfg.deploy.service_schema only when caller didn't pass an
+            # explicit value; otherwise honour what the dialog wired through.
+            self.service_schema = load_cfg(None).deploy.service_schema
+
+        initializer = ServiceSchemaInitializer(service_schema=self.service_schema)
+
+        def progress(message: str, current: int, total: int) -> None:
+            if total:
+                self.signals.progress.emit(message, current, total)
+            else:
+                self.signals.status.emit(message)
+
+        try:
+            result = initializer.run(self.conn_cfg, progress=progress)
+        except ServiceSchemaInitializerError as e:
+            self.signals.error.emit(str(e))
+            self.signals.finished.emit(None)
+            return
+        except Exception as e:  # noqa: BLE001
+            self.signals.error.emit(f"Непредвиденная ошибка: {e}")
+            self.signals.finished.emit(None)
+            return
+
+        # Phase 15.5.2 UX: explicit summary message that distinguishes
+        # 'created' from 'no-op' for the GUI result dialog.
+        if result.changed:
+            summary = (
+                f"✓ Init-service-schema: схема {result.service_schema} "
+                f"{'создана' if result.created_schema else 'уже была'}, "
+                f"таблицы созданы: {', '.join(result.created_tables) or '—'}"
+            )
+        else:
+            summary = (
+                f"✓ Init-service-schema: {result.service_schema} + "
+                f"{len(result.tables_present)} таблиц уже существуют "
+                "(идемпотентный no-op)."
+            )
+        self.signals.status.emit(summary)
+        self.signals.finished.emit(result)

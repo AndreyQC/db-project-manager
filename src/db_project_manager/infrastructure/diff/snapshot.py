@@ -20,13 +20,21 @@ from pathlib import Path
 from db_project_manager.application.graph_service import BuildGraphService
 from db_project_manager.domain.diff import EdgeSnapshot, ObjectSnapshot, SnapshotSourceKind, StateSnapshot
 from db_project_manager.domain.graph import DependencyGraph
+from db_project_manager.infrastructure.diff.columns import extract_columns
 from db_project_manager.infrastructure.diff.normalize_sql import normalize_sql, sql_hash
 from db_project_manager.infrastructure.sql.autodoc import MARKER_CLOSE
 
 #: Object types that participate in the structural diff.
 #: Extensions and database settings are excluded (draft §2, decision 2): they
 #: vary between environments and would produce noisy diffs.
+#:
+#: ``schema`` is included so that ``deploy apply`` on an empty target DB writes
+#: ``CREATE SCHEMA`` artifacts before the tables that depend on them. Without
+#: this, a schema-less snapshot would silently drop every schema vertex and the
+#: resulting DeltaPlan would try to ``CREATE TABLE "schema"."t"`` in a schema
+#: that does not yet exist (bugfix after cis_zup feedback 2026-09-02).
 DIFFED_TYPES = frozenset({
+    "schema",
     "table", "view", "materialized_view",
     "function", "procedure", "sequence",
 })
@@ -78,6 +86,11 @@ def build_snapshot_from_dir(
             sql_normalized=normalized,
             sql_hash=sql_hash(normalized),
             estimated_rows=_lookup_row_count(row_counts, vertex.object_schema, vertex.object_name, vertex.object_type),
+            build=vertex.build,
+            # Phase 12 (ALT-1b): table columns come from the SQL body itself —
+            # both sides (codebase files and RE-generated DDL) use the same
+            # extractor; None = unavailable → fail-safe downstream.
+            columns=extract_columns(body) if vertex.object_type == "table" else None,
         )
 
     return StateSnapshot(

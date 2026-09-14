@@ -58,10 +58,11 @@
 | 1 | **Phase 8** — overload resolution | Граф | — | ✅ done (коммиты `d4b52e2`…`5587418`) |
 | 2 | **Phase 10** — CD Foundation | CD | Phase 8 (✓) | ✅ done (коммиты `3d5694c`…`15002ad`) |
 | 3 | **Phase 11** — Safety Gate | CD | Phase 10 (✓) | ✅ done (коммиты `35fc2e7`…`1b20480`) |
-| 4 | **Phase 12** — ALTER + Delta | CD | Phase 11 | не начата |
-| 5 | **Phase 13** — Post-deploy + отчёты | CD | Phase 12 | не начата |
+| 4 | **Phase 12** — ALTER + Delta | CD | Phase 11 (✓) | ✅ done (коммиты `d76d804`…`f55b5a7`) |
+| 5 | **Phase 13** — GP↔PG YAML Pipeline | CD | Phase 12 | ✅ done (`a5597c4`) |
 | 6 | **Phase 14** — Delta Viewer | DV | Phase 9 (✓) | ✅ done (коммиты `3649b0c`…`141e9fc`) |
-| 7 | **AI track** (overlay) | AI | Phase 12 | не начата, опциональная надстройка |
+| 7 | **Phase 15** — Post-deploy + отчёты (CD-17..19) | CD | Phase 13 | не начата |
+| 8 | **AI track** (overlay) | AI | Phase 12 | не начата, опциональная надстройка |
 
 **Логика порядка:** Phase 8 чинит граф (топосорт деплоя) — **закрыта**, развязка для Phase 10
 получена. Затем CD-ядро (10→13) по пайплайну: фундамент → пред-анализ → генерация дельты →
@@ -125,7 +126,14 @@ AI-трек надстраивается над Phase 12 (нужен струк�
 | **CD-14** | Применить скрипты дельты с логированием и stop-on-error по умолчанию. | • Подробный лог<br>• `continue-on-error` — только явная настройка | Must |
 | **CD-15** | После успешной дельты и post-скриптов — записать новую schema_version. | • git-тег / commit источника, время, связь с выполненными скриптами | Must |
 
-### Phase 13 — Post-deploy, отчёты, полировка
+### Phase 13 — GP↔PG YAML Pipeline
+
+| ID | User Story | Acceptance Criteria | Priority |
+|----|------------|---------------------|----------|
+| **CD-13a** | `db-pm yaml generate` — Greenplum/Postgres directory → portable YAML. | Рекурсивный обход `.sql`, autodoc-парсинг, regex-fallback для GP DDL | Must |
+| **CD-13b** | `db-pm yaml apply` — YAML → codebase (manifest + SQL + graph). | GP→PG трансформация: external tables пропускаются, `DISTRIBUTED BY`/`WITH` дропаются | Must |
+
+### Phase 15 — Post-deploy, отчёты, полировка
 
 | ID | User Story | Acceptance Criteria | Priority |
 |----|------------|---------------------|----------|
@@ -199,7 +207,8 @@ AI-трек надстраивается над Phase 12 (нужен струк�
 
 ### Prerequisite и ограничения AI-трека
 
-- **Структурный column-diff** (общий с детерминированным ALTER) — Phase 12 prerequisite.
+- **Структурный column-diff** (общий с детерминированным ALTER) — **закрыт в Phase 12**
+  (`infrastructure/diff/columns.py`, `diff_columns`; SQL-тело = источник правды, ALT-1b).
 - **Privacy:** DDL схемы чувствителен (имена таблиц/колонок раскрывают бизнес-логику).
   Облачный LLM = публикация схемы. Требует явного решения: on-prem/локальная модель
   vs облачная с opt-in и предупреждением.

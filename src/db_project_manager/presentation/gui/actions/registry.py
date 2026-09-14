@@ -21,16 +21,25 @@ from db_project_manager.infrastructure.config.connection_store import Connection
 from db_project_manager.presentation.gui.actions.cli import (
     build_cli_compare,
     build_cli_deploy_analyze,
+    build_cli_deploy_apply,
+    build_cli_deploy_init_service_schema,
+    build_cli_deploy_plan,
     build_cli_deploy_validate,
     build_cli_graph_prepare,
     build_cli_reverse_engineer,
+    build_cli_yaml_apply,
+    build_cli_yaml_generate,
 )
 from db_project_manager.presentation.gui.actions.models import (
     CompareSettings,
     DeployAnalyzeSettings,
+    DeployApplySettings,
+    DeployInitServiceSchemaSettings,
     DeployValidateSettings,
     GraphPrepareSettings,
     ReverseEngineerSettings,
+    YamlApplySettings,
+    YamlGenerateSettings,
 )
 
 
@@ -157,6 +166,98 @@ def _make_compare_worker(store, settings: CompareSettings):
     )
 
 
+def _make_yaml_generate_dialog(store, settings, parent):
+    from db_project_manager.presentation.gui.actions.dialogs import YamlGenerateDialog
+
+    return YamlGenerateDialog(store, settings, parent)
+
+
+def _make_yaml_apply_dialog(store, settings, parent):
+    from db_project_manager.presentation.gui.actions.dialogs import YamlApplyDialog
+
+    return YamlApplyDialog(store, settings, parent)
+
+
+def _make_yaml_generate_worker(store, settings: YamlGenerateSettings):
+    del store  # yaml generate does not use connections
+    from db_project_manager.presentation.gui.widgets.workers import YamlGenerateWorker
+
+    return YamlGenerateWorker(
+        settings.source_dir,
+        settings.db_type,
+        settings.output_file,
+        source_version=settings.source_version,
+    )
+
+
+def _make_yaml_apply_worker(store, settings: YamlApplySettings):
+    del store  # yaml apply does not use connections
+    from db_project_manager.presentation.gui.widgets.workers import YamlApplyWorker
+
+    from db_project_manager.infrastructure.config.app_config import load_cfg
+
+    return YamlApplyWorker(
+        settings.yaml_file,
+        settings.target_db_type,
+        settings.output_dir,
+        service_schema=load_cfg(None).deploy.service_schema,
+    )
+
+
+def _make_deploy_plan_dialog(store, settings, parent):
+    from db_project_manager.presentation.gui.actions.dialogs import DeployPlanDialog
+
+    return DeployPlanDialog(store, settings, parent)
+
+
+def _make_deploy_apply_dialog(store, settings, parent):
+    from db_project_manager.presentation.gui.actions.dialogs import DeployApplyDialog
+
+    return DeployApplyDialog(store, settings, parent)
+
+
+def _make_deploy_plan_worker(store, settings: DeployApplySettings):
+    from db_project_manager.presentation.gui.widgets.workers import DeployPlanWorker
+
+    return DeployPlanWorker(
+        store.load_by_name(settings.target_connection),
+        settings.codebase_dir,
+        settings.output_dir,
+        include_drops=settings.include_drops,
+    )
+
+
+def _make_deploy_apply_worker(store, settings: DeployApplySettings):
+    from db_project_manager.presentation.gui.widgets.workers import DeployApplyWorker
+
+    return DeployApplyWorker(
+        store.load_by_name(settings.target_connection),
+        settings.codebase_dir,
+        settings.output_dir,
+        include_drops=settings.include_drops,
+        no_rehearsal=settings.no_rehearsal,
+        keep_rehearsal_db=settings.keep_rehearsal_db,
+    )
+
+
+def _make_deploy_init_service_schema_dialog(store, settings, parent):
+    from db_project_manager.presentation.gui.actions.dialogs import (
+        DeployInitServiceSchemaDialog,
+    )
+
+    return DeployInitServiceSchemaDialog(store, settings, parent)
+
+
+def _make_deploy_init_service_schema_worker(store, settings: DeployInitServiceSchemaSettings):
+    from db_project_manager.presentation.gui.widgets.workers import (
+        DeployInitServiceSchemaWorker,
+    )
+
+    return DeployInitServiceSchemaWorker(
+        store.load_by_name(settings.target_connection),
+    )
+
+
 ACTIONS: list[ActionSpec] = [
     ActionSpec(
         action_id="reverse_engineer",
@@ -202,6 +303,51 @@ ACTIONS: list[ActionSpec] = [
         make_worker=_make_compare_worker,
         build_cli=build_cli_compare,
         required_fields=("output_dir",),
+    ),
+    ActionSpec(
+        action_id="yaml_generate",
+        title="YAML: сгенерировать из каталога SQL (GP/PG → YAML)",
+        settings_model=YamlGenerateSettings,
+        make_dialog=_make_yaml_generate_dialog,
+        make_worker=_make_yaml_generate_worker,
+        build_cli=build_cli_yaml_generate,
+        required_fields=("source_dir", "output_file"),
+    ),
+    ActionSpec(
+        action_id="yaml_apply",
+        title="YAML: применить к каталогу (YAML → GP/PG codebase)",
+        settings_model=YamlApplySettings,
+        make_dialog=_make_yaml_apply_dialog,
+        make_worker=_make_yaml_apply_worker,
+        build_cli=build_cli_yaml_apply,
+        required_fields=("yaml_file", "output_dir"),
+    ),
+    ActionSpec(
+        action_id="deploy_plan",
+        title="Сформировать план деплоя на существующую БД (dry-run)",
+        settings_model=DeployApplySettings,
+        make_dialog=_make_deploy_plan_dialog,
+        make_worker=_make_deploy_plan_worker,
+        build_cli=build_cli_deploy_plan,
+        required_fields=("codebase_dir", "target_connection", "output_dir"),
+    ),
+    ActionSpec(
+        action_id="deploy_apply",
+        title="Применить деплой к существующей БД (мутирует данные)",
+        settings_model=DeployApplySettings,
+        make_dialog=_make_deploy_apply_dialog,
+        make_worker=_make_deploy_apply_worker,
+        build_cli=build_cli_deploy_apply,
+        required_fields=("codebase_dir", "target_connection", "output_dir"),
+    ),
+    ActionSpec(
+        action_id="deploy_init_service_schema",
+        title="Инициализировать __deploy на целевой БД (idempotent bootstrap)",
+        settings_model=DeployInitServiceSchemaSettings,
+        make_dialog=_make_deploy_init_service_schema_dialog,
+        make_worker=_make_deploy_init_service_schema_worker,
+        build_cli=build_cli_deploy_init_service_schema,
+        required_fields=("target_connection",),
     ),
 ]
 

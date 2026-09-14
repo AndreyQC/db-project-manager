@@ -43,6 +43,7 @@ from db_project_manager.infrastructure.deploy.canonical_ddl import (
     validate_deploy_ddl,
 )
 from db_project_manager.infrastructure.sql.autodoc import strip_autodoc
+from db_project_manager.infrastructure.sql.sql_text import has_executable_sql
 
 #: Object types considered early DDL: structural, downstream of any failure
 #: here makes further deploy meaningless -> fail-fast + cleanup.
@@ -359,10 +360,19 @@ class DeployValidateService:
         bookkeeping tables the pre/post runner writes to (script_history /
         script_audit_log) and the version row (schema_version). Reverse-
         engineer seeds it (S6); a codebase missing it has not been through RE.
+
+        File names differ by origin: RE *seeding* writes canonical unprefixed
+        names (``schema_version.sql``), while the generator rendering a DB that
+        already had __deploy emits prefixed ones (``table schema_version.sql``).
+        Both spellings are accepted (found by the Phase 12 rehearsal flow).
         """
         tables_dir = codebase_dir / service_schema / "tables"
-        required = ("schema_version.sql", "script_history.sql", "script_audit_log.sql")
-        missing = [name for name in required if not (tables_dir / name).is_file()]
+        missing = [
+            name
+            for name in ("schema_version.sql", "script_history.sql", "script_audit_log.sql")
+            if not (tables_dir / name).is_file()
+            and not (tables_dir / f"table {name}").is_file()
+        ]
         if missing:
             raise DeployError(
                 f"Кодовая база не содержит служебную схему '{service_schema}' "
@@ -391,6 +401,16 @@ class DeployValidateService:
             script = script.replace(
                 f'"{vertex.object_catalog}"', f'"{target_db_name}"'
             )
+        # BACKLOG P1: a script may be comments-only (e.g. database_setting of
+        # a DB without explicit db-level settings — properties live in the
+        # autodoc header, the body has no ALTERs). PostgreSQL rejects an empty
+        # statement list, so skip; the vertex itself stays valid in the graph.
+        if not has_executable_sql(script):
+            logger.info(
+                f"Пропуск {vertex.object_type} '{vertex.object_name}': "
+                f"исполняемого SQL нет (только комментарии)."
+            )
+            return
         adapter.execute_script(script)
 
     @staticmethod

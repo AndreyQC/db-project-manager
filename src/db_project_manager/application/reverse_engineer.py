@@ -25,9 +25,9 @@ from db_project_manager.infrastructure.database.base import DatabaseAdapter, Dat
 from db_project_manager.infrastructure.database.registry import get_adapter
 from db_project_manager.infrastructure.deploy.canonical_ddl import (
     DEFAULT_SERVICE_SCHEMA,
-    canonical_deploy_ddl,
+    seed_deploy_files,
 )
-from db_project_manager.infrastructure.sql.autodoc import ensure_header, update_header
+from db_project_manager.infrastructure.sql.autodoc import update_header
 from db_project_manager.infrastructure.sql.sql_generator import SQLGenerator
 
 if TYPE_CHECKING:
@@ -209,39 +209,11 @@ class ReverseEngineerService:
     def _seed_deploy_files(self, deploy_dir: Path, service_schema: str, db_name: str) -> None:
         """Write the canonical service-schema tree (schema + 3 tables).
 
-        Bypasses SQLGenerator: the canonical templates are the source of truth
-        (S5), and rendering them directly ensures the seeded DDL matches what
-        ``validate_deploy_ddl`` expects (zero warnings on first RE).
+        Delegates to :func:`seed_deploy_files` (shared with ``yaml apply``);
+        RE passes ``overwrite=True`` — seeding is idempotent-by-canonical, the
+        rendered DDL always matches what ``validate_deploy_ddl`` expects (S5).
         """
-        deploy_dir.mkdir(parents=True, exist_ok=True)
-        # schema.sql — minimal CREATE SCHEMA IF NOT EXISTS.
-        schema_body = f'CREATE SCHEMA IF NOT EXISTS "{service_schema}";\n'
-        (deploy_dir / f"schema {service_schema}.sql").write_text(
-            ensure_header(
-                schema_body,
-                object_catalog=db_name,
-                object_schema=service_schema,
-                object_type="schema",
-                object_name=service_schema,
-                immutable=True,
-            ),
-            encoding="utf-8",
-        )
-        # tables/*.sql — render canonical DDL, decorate with immutable marker.
-        tables_dir = deploy_dir / "tables"
-        tables_dir.mkdir(parents=True, exist_ok=True)
-        for table_name, body in canonical_deploy_ddl(service_schema).items():
-            (tables_dir / f"{table_name}.sql").write_text(
-                ensure_header(
-                    body,
-                    object_catalog=db_name,
-                    object_schema=service_schema,
-                    object_type="table",
-                    object_name=table_name,
-                    immutable=True,
-                ),
-                encoding="utf-8",
-            )
+        seed_deploy_files(deploy_dir, service_schema, db_name, overwrite=True)
         logger.info(
             f"Seed {service_schema}/ (schema + 3 tables) — canonical DDL из встроенных шаблонов."
         )

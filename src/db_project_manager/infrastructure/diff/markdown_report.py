@@ -22,7 +22,13 @@ from __future__ import annotations
 import difflib
 from pathlib import Path
 
-from db_project_manager.domain.diff import DiffEntry, DiffReport, DiffStatus, ObjectSnapshot
+from db_project_manager.domain.diff import (
+    IGNORED_BUILD_FALSE_KEY,
+    DiffEntry,
+    DiffReport,
+    DiffStatus,
+    ObjectSnapshot,
+)
 from db_project_manager.infrastructure.diff.grouping import (
     group_entries_by_status,
     schema_label,
@@ -69,6 +75,9 @@ def render_diff_markdown(report: DiffReport) -> str:
     lines.append("| --- | --- |")
     for st in _SUMMARY_ORDER:
         lines.append(f"| {st.value} | {report.summary.get(st.value, 0)} |")
+    ignored = report.summary.get(IGNORED_BUILD_FALSE_KEY, 0)
+    if ignored:
+        lines.append(f"| ignored (build=false) | {ignored} |")
     lines.append("")
 
     # --- per-status sections (skip unchanged — it only appears in summary) ---
