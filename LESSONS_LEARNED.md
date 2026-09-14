@@ -1273,3 +1273,24 @@
   кавычки all-lowercase идентификаторов, избыточный список колонок view,
   case-only алиасы, appendonly↔appendoptimized) — закрывай построчным
   сравнением живых пар, а не «запрос выполнился» (продолжение §70-3).
+
+### 73. Сервис-схема (`__deploy`) — runtime-состояние инструмента, она не сравнивается; canonical-сид ≠ каталог-рендер по построению
+- **Симптом (cis_zup_gp_dev, 2026-09-14):** `deploy apply` отклонён CD-11: 3
+  таблицы `__deploy` — blocked «columns=None — fail-safe». Анализ: в кодовой
+  базе файлы сервис-таблиц — canonical-сид (статические шаблоны: `SERIAL`,
+  `IF NOT EXISTS`, inline PK, без DISTRIBUTED), в таргете — каталог-рендер GP
+  (named constraint, serial4, `DISTRIBUTED BY`) → hash-mismatch → alter вместо
+  расчётного skip; классификатор колонок на `DISTRIBUTED` деградирует до
+  Command-узла (§72-1) → columns=None → fail-safe blocked.
+- **Фикс (Phase 16.8):** `CompareService._exclude_service_schema` — сервис-схема
+  исключается из сравнения с обеих сторон (по образцу build=false и gp_toolkit
+  §71); при отсутствии схемы на любой стороне — WARNING на каждый прогон
+  (требование пользователя); `columns.py` использует `strip_gp_tail` перед
+  собственным parse. Живой `deploy plan`: 481 ops, blocked 0.
+- **Урок #1:** canonical-сид по построению не может hash-совпасть с
+  каталог-рендером (IF NOT EXISTS, spelling серийных типов, inline-vs-named
+  constraints, GP-клаузы) — «unchanged → skip» сервис-объектов нельзя
+  проектировать через hash-равенство сида с каталогом.
+- **Урок #2:** инструменты, владеющие runtime-состоянием (журналы, реестры),
+  не должны отдавать его в пользовательский diff — либо исключай на границе,
+  либо получишь вечный шум и fail-safe-блокировки.
