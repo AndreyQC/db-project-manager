@@ -112,9 +112,12 @@ def test_dir_vs_dir_identical_produces_all_unchanged(tmp_path):
     # -1 extension -1 database_setting = 18 diffed (15 non-schema + 3 schemas).
     # Phase 15.7: ``materialized_view routes`` has project.build=false in its
     # autodoc — excluded from the diff on BOTH sides → 18 - 1 = 17 unchanged.
-    assert '"unchanged": 17' in report_text
+    # Phase 16.8: the __deploy service schema (schema + 3 tables) is excluded
+    # on BOTH sides — tool-owned, never compared → 17 - 4 = 13.
+    assert '"unchanged": 13' in report_text
     assert '"added": 0' in report_text
     assert '"ignored_build_false": 1' in report_text
+    assert '"ignored_service_schema": 4' in report_text
 
 
 def test_dir_vs_dir_missing_manifest_raises(tmp_path):
@@ -291,3 +294,88 @@ def test_build_false_excluded_from_both_sides(tmp_path):
     assert not any("routes" in e["object_key"] for e in report["entries"])
     # The build=false object must not leak into the diff as removed.
     assert report["summary"]["removed"] == 0
+
+
+# --- service-schema exclusion + absence warning (Phase 16.8) ---
+
+
+def test_service_schema_absent_on_one_side_warns_but_never_diffs(tmp_path):
+    """A side without __deploy must not produce REMOVED/ADDED entries for the
+    service objects — and the absence must be warned about (user requirement:
+    the warning fires on every check run)."""
+    import shutil as _shutil
+
+    from loguru import logger
+
+    src = _copy_fixture_with_manifest(tmp_path / "src")
+    tgt = _copy_fixture_with_manifest(tmp_path / "tgt")
+    _shutil.rmtree(tgt / "__deploy")  # target side has no service schema
+
+    messages: list[str] = []
+    sink_id = logger.add(messages.append, level="DEBUG")
+    try:
+        service = CompareService()
+        service.run(
+            SideSpec(SnapshotSourceKind.DIR, str(src)),
+            SideSpec(SnapshotSourceKind.DIR, str(tgt)),
+            tmp_path / "report",
+        )
+    finally:
+        logger.remove(sink_id)
+
+    report_text = (tmp_path / "report" / DIFF_REPORT_FILENAME).read_text(encoding="utf-8")
+    assert '"removed": 0' in report_text
+    assert "__deploy" not in report_text
+    absence_warnings = [m for m in messages if "отсутствует на стороне target" in str(m)]
+    assert len(absence_warnings) == 1
+
+
+def test_service_schema_present_on_both_sides_no_absence_warning(tmp_path):
+    from loguru import logger
+
+    src = _copy_fixture_with_manifest(tmp_path / "src")
+    tgt = _copy_fixture_with_manifest(tmp_path / "tgt")
+
+    messages: list[str] = []
+    sink_id = logger.add(messages.append, level="DEBUG")
+    try:
+        service = CompareService()
+        service.run(
+            SideSpec(SnapshotSourceKind.DIR, str(src)),
+            SideSpec(SnapshotSourceKind.DIR, str(tgt)),
+            tmp_path / "report",
+        )
+    finally:
+        logger.remove(sink_id)
+
+    assert not [m for m in messages if "отсутствует на стороне" in str(m)]
+    # Exclusion still logged once with the object count.
+    assert any("исключена из сравнения: 4" in str(m) for m in messages)
+
+
+def test_custom_service_schema_name_honored(tmp_path):
+    """The service-schema name is constructor-configurable (mirrors
+    cfg.deploy.service_schema): with a non-default name the fixture's
+    __deploy objects are NOT excluded (and the absence of the custom
+    schema is warned about on both sides)."""
+    from loguru import logger
+
+    src = _copy_fixture_with_manifest(tmp_path / "src")
+    tgt = _copy_fixture_with_manifest(tmp_path / "tgt")
+
+    messages: list[str] = []
+    sink_id = logger.add(messages.append, level="DEBUG")
+    try:
+        service = CompareService(service_schema="srv_custom")
+        service.run(
+            SideSpec(SnapshotSourceKind.DIR, str(src)),
+            SideSpec(SnapshotSourceKind.DIR, str(tgt)),
+            tmp_path / "report",
+        )
+    finally:
+        logger.remove(sink_id)
+
+    report_text = (tmp_path / "report" / DIFF_REPORT_FILENAME).read_text(encoding="utf-8")
+    assert "ignored_service_schema" not in report_text
+    assert [m for m in messages if "отсутствует на стороне source" in str(m)]
+    assert [m for m in messages if "отсутствует на стороне target" in str(m)]

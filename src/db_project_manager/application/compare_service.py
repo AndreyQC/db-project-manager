@@ -50,12 +50,17 @@ from db_project_manager.infrastructure.config.codebase_manifest import (
 )
 from db_project_manager.infrastructure.database.base import DatabaseAdapter, DatabaseError
 from db_project_manager.infrastructure.database.registry import get_adapter
+from db_project_manager.infrastructure.deploy.canonical_ddl import DEFAULT_SERVICE_SCHEMA
 from db_project_manager.infrastructure.diff.comparator import compare, identity_key
 from db_project_manager.infrastructure.diff.snapshot import build_snapshot_from_dir
 
 SOURCE_FILENAME = "source.json"
 TARGET_FILENAME = "target.json"
 DIFF_REPORT_FILENAME = "diff_report.json"
+
+#: Summary key: how many service-schema objects were excluded from the diff
+#: (Phase 16.8) — parity with ``ignored_build_false``.
+IGNORED_SERVICE_SCHEMA_KEY = "ignored_service_schema"
 
 
 class CompareError(Exception):
@@ -83,10 +88,12 @@ class CompareService:
         reverse_engineer: ReverseEngineerService | None = None,
         adapter_factory: Callable[[ConnectionConfig], DatabaseAdapter] | None = None,
         graph_service: BuildGraphService | None = None,
+        service_schema: str = DEFAULT_SERVICE_SCHEMA,
     ) -> None:
         self._reverse_engineer = reverse_engineer or ReverseEngineerService()
         self._adapter_factory = adapter_factory or get_adapter
         self._graph_service = graph_service or BuildGraphService()
+        self._service_schema = service_schema
 
     def run(
         self,
@@ -121,11 +128,14 @@ class CompareService:
                 )
 
             ignored = self._exclude_build_false(src_snap, tgt_snap)
+            ignored_service = self._exclude_service_schema(src_snap, tgt_snap)
 
             self._emit(progress, "Сравнение снимков…", 2, 4)
             report = compare(src_snap, tgt_snap)
             if ignored:
                 report.summary[IGNORED_BUILD_FALSE_KEY] = ignored
+            if ignored_service:
+                report.summary[IGNORED_SERVICE_SCHEMA_KEY] = ignored_service
 
             self._emit(progress, "Запись отчёта…", 3, 4)
             self._write_report(report, output_dir)
@@ -230,7 +240,56 @@ class CompareService:
             graph_service=self._graph_service,
         )
 
-    # --- build=false exclusion + snapshot retention (Phase 15.7) ---
+    # --- service-schema exclusion (Phase 16.8) + build=false (Phase 15.7) ---
+
+    def _exclude_service_schema(self, src_snap: StateSnapshot, tgt_snap: StateSnapshot) -> int:
+        """Drop the deploy service schema objects from both snapshots (in place).
+
+        The service schema (default ``__deploy``) is db-pm's own runtime state —
+        the deploy journal (``schema_version``/``script_history``/
+        ``script_audit_log``) maintained by the tool itself (canonical_ddl.py,
+        ``immutable`` markers). Diffing it against the codebase is a category
+        error: the canonical seeded DDL can never hash-match the catalog render
+        (IF NOT EXISTS / inline SERIAL vs named constraint / serial4 /
+        DISTRIBUTED — live finding 2026-09-14), which turned the service tables
+        into blocked ALTERs (CD-11) on Greenplum. Same treatment as GP admin
+        schemas (LESSONS §71): tool-owned schemas are never compared.
+
+        Warns (per side, on every run) when the service schema is absent —
+        a side without it cannot carry the deploy journal.
+
+        Returns:
+            The number of excluded object identities.
+        """
+        schema = self._service_schema
+        for label, snap in (("source", src_snap), ("target", tgt_snap)):
+            present = any(o.object_schema == schema for o in snap.objects.values())
+            if not present:
+                logger.warning(
+                    f"Сервис-схема '{schema}' отсутствует на стороне {label}: "
+                    "деплой-журнал (schema_version/script_history/script_audit_log) "
+                    "на этой стороне не ведётся. deploy apply создаст её при необходимости "
+                    "(service_schema_initializer)."
+                )
+        excluded = {
+            identity_key(key)
+            for snap in (src_snap, tgt_snap)
+            for key, obj in snap.objects.items()
+            if obj.object_schema == schema
+        }
+        if not excluded:
+            return 0
+        for snap in (src_snap, tgt_snap):
+            for key in [k for k in snap.objects if identity_key(k) in excluded]:
+                del snap.objects[key]
+            snap.edges = [
+                edge
+                for edge in snap.edges
+                if identity_key(edge.source_object_key) not in excluded
+                and identity_key(edge.destination_object_key) not in excluded
+            ]
+        logger.info(f"Сервис-схема '{schema}' исключена из сравнения: {len(excluded)} объектов.")
+        return len(excluded)
 
     @staticmethod
     def _exclude_build_false(src_snap: StateSnapshot, tgt_snap: StateSnapshot) -> int:

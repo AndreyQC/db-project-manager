@@ -397,3 +397,29 @@ def test_bare_serial_vs_re_roundtrip_no_diff():
         "(id int4 NOT NULL DEFAULT nextval('__deploy.schema_version_id_seq'::REGCLASS), version TEXT NOT NULL)"
     )
     assert diff_columns(src, tgt) == []
+
+
+# --- Greenplum tail clauses (Phase 16.8) ---
+
+
+def test_extract_columns_with_gp_tail():
+    """DISTRIBUTED/WITH must not degrade the parse to a Command node — the
+    live cis_zup_gp_dev run had columns=None → fail-safe BLOCKED (CD-11)."""
+    body = """CREATE TABLE "__deploy"."schema_version" (
+    "id" serial4 NOT NULL,
+    "version" text NOT NULL,
+    "applied_at" timestamptz NOT NULL DEFAULT now()
+)
+WITH (appendonly=true, orientation=column)
+DISTRIBUTED BY ("id");"""
+    cols = extract_columns(body)
+    assert cols is not None
+    assert [c.name for c in cols] == ["id", "version", "applied_at"]
+    assert cols[0].nullable is False
+
+
+def test_extract_columns_plain_pg_body_unchanged():
+    body = 'CREATE TABLE s.t ("id" int4 NOT NULL, "v" text NULL);'
+    assert extract_columns(body) == extract_columns(body)
+    cols = extract_columns(body)
+    assert [c.name for c in cols] == ["id", "v"]

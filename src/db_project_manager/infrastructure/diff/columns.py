@@ -42,6 +42,7 @@ from db_project_manager.domain.delta import ColumnChangeKind, ColumnDiff, Column
 from db_project_manager.infrastructure.diff.normalize_sql import (
     DEFAULT_DIALECT,
     _canonicalize_text_casts,
+    strip_gp_tail,
 )
 
 #: Type synonyms sqlglot does NOT collapse on its own (base name, before modifiers).
@@ -123,6 +124,10 @@ def extract_columns(body: str, *, dialect: str = DEFAULT_DIALECT) -> list[Column
     """
     if not body or not body.strip():
         return None
+    # Phase 16.8: a Greenplum tail (WITH/DISTRIBUTED) degrades the statement
+    # to a sqlglot Command node with no AST — columns would come back None and
+    # the delta classifier would fail-safe to BLOCKED. Cut the tail first.
+    body = strip_gp_tail(body)
     try:
         statements = sqlglot.parse(body, read=dialect)
     except Exception:  # noqa: BLE001 — sqlglot raises various error subclasses

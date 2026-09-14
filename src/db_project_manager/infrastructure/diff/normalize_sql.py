@@ -304,6 +304,18 @@ def _lower_unquoted(text: str) -> str:
     )
 
 
+def strip_gp_tail(sql: str) -> str:
+    """Remove trailing Greenplum clauses (WITH/DISTRIBUTED) from the first
+    CREATE statement, leaving ``);``. Input unchanged when no tail is present.
+
+    Shared with :mod:`columns` (structural extraction, Phase 16.8): sqlglot
+    degrades a GP-clause statement to a Command node with no AST, so any
+    consumer that needs the real tree must cut the tail off first.
+    """
+    tail = _extract_gp_tail(sql)
+    return tail[0] if tail is not None else sql
+
+
 def sqlglot_can_parse(sql: str, dialect: str = DEFAULT_DIALECT) -> bool:
     """Quick pre-check whether sqlglot accepts the body (not empty, not whitespace-only)."""
     return bool(sql and sql.strip())
