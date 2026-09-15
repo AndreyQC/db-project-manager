@@ -136,13 +136,21 @@ def normalize_sql(sql: str, *, dialect: str = DEFAULT_DIALECT) -> str:
     tail = _extract_gp_tail(sql)
     if tail is not None:
         head, canonical_tail = tail
-        return _canonicalize(_normalize_head(head, dialect)) + "\n" + canonical_tail
+        # The trailing ';' keeps normalize_sql idempotent: a second pass
+        # re-matches the tail via _GP_TABLE_TAIL_RE instead of degrading to
+        # a Command node.
+        return _canonicalize(_normalize_head(head, dialect)) + "\n" + canonical_tail + ";"
     return _canonicalize(_normalize_head(sql, dialect))
 
 
 def _normalize_head(sql: str, dialect: str) -> str:
     try:
         tree = sqlglot.parse_one(sql, read=dialect)
+        if isinstance(tree, exp.Command):
+            # Genuinely unsupported DDL (degraded with no AST): fall back to
+            # the deterministic regex path instead of the raw Command text —
+            # raw text is whitespace/formatting-sensitive (LESSONS §72-1).
+            return _regex_normalize(sql)
         _canonicalize_view_ast(tree)
         return tree.sql(dialect=dialect, comments=False, normalize=True, identify=False)
     except Exception as e:  # noqa: BLE001 — sqlglot raises various error subclasses
@@ -324,8 +332,19 @@ def sqlglot_can_parse(sql: str, dialect: str = DEFAULT_DIALECT) -> bool:
 def sql_hash(sql: str) -> str:
     """Return an 8-hex-char SHA-256 prefix of the *normalized* SQL."""
     normalized = normalize_sql(sql)
-    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
-    return digest[:_HASH_PREFIX_LEN]
+    return hash_normalized(normalized)
+
+
+def hash_normalized(normalized: str) -> str:
+    """SHA-256 prefix of an ALREADY-normalized string — no re-parsing.
+
+    ``sql_hash`` normalizes then hashes; feeding it an already-normalized
+    string (as ``snapshot.py`` does) would parse a second time — and the
+    canonical GP tail (``... distributed randomly``) is exactly the form that
+    degrades sqlglot to a Command node, spamming 'contains unsupported
+    syntax' warnings on every table (1176 per plan run, 2026-09-15).
+    """
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:_HASH_PREFIX_LEN]
 
 
 def _regex_normalize(sql: str) -> str:

@@ -328,3 +328,37 @@ def test_volatile_word_in_function_body_preserved():
     a = "CREATE FUNCTION s.f() RETURNS int LANGUAGE plpgsql AS $$ DECLARE x int := 1; BEGIN x := volatile_calc(); END $$"
     b = "CREATE FUNCTION s.f() RETURNS int LANGUAGE plpgsql AS $$ DECLARE x int := 1; BEGIN x := other(); END $$"
     assert normalize_sql(a) != normalize_sql(b)
+
+
+# --- Phase 16.12: no double normalization, idempotence ---
+
+
+def test_normalize_gp_body_idempotent():
+    """A second pass over the normalized output must not degrade to a Command
+    node (the canonical tail carries a ';' for exactly this)."""
+    source_style = """CREATE TABLE "cis_dmt_zup"."t1" (
+    "id" int4 NOT NULL
+)
+WITH (appendoptimized=TRUE, orientation=COLUMN)
+DISTRIBUTED RANDOMLY;"""
+    once = normalize_sql(source_style)
+    assert normalize_sql(once) == once
+
+
+def test_hash_normalized_equals_sql_hash():
+    """The pure helper must agree with sql_hash's contract."""
+    sql = 'CREATE TABLE s.t ("id" int4)\nDISTRIBUTED RANDOMLY;'
+    from db_project_manager.infrastructure.diff.normalize_sql import hash_normalized
+
+    assert hash_normalized(normalize_sql(sql)) == sql_hash(sql)
+
+
+def test_hash_normalized_does_not_reparse(monkeypatch):
+    """Regression (1176 warnings per plan run): hashing an already-normalized
+    string must not call sqlglot at all."""
+    import db_project_manager.infrastructure.diff.normalize_sql as mod
+
+    calls = []
+    monkeypatch.setattr(mod.sqlglot, "parse_one", lambda *a, **k: calls.append(1) or (_ for _ in ()).throw(AssertionError("re-parsed")))
+    assert mod.hash_normalized("CREATE TABLE s.t (id INT NULL)")
+    assert not calls
