@@ -62,7 +62,7 @@
 | 5 | **Phase 13** — GP↔PG YAML Pipeline | CD | Phase 12 | ✅ done (`a5597c4`) |
 | 6 | **Phase 14** — Delta Viewer | DV | Phase 9 (✓) | ✅ done (коммиты `3649b0c`…`141e9fc`) |
 | 7 | **Phase 15** — GUI deploy plan/apply + Plan Viewer | CD | Phase 12, 13 | ✅ done |
-| 8 | **Phase 16** — Greenplum tuning (живой кластер GP 6.19, ядро PG 9.4) | CD | Phase 15 (✓) | в работе — `_tasks_/phase_16/Phase_16_plan.md` |
+| 8 | **Phase 16** — Greenplum tuning (живой кластер GP 6.19, ядро PG 9.4) | CD | Phase 15 (✓) | ✓ завершена — `_phases_/Phase_16.md` |
 | 9 | **Phase 17** — Post-deploy, отчёты, полировка (CD-16..19) | CD | Phase 16 | не начата |
 | — | **AI track** (overlay) | AI | Phase 12 | не начата, опциональная надстройка |
 
