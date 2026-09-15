@@ -659,9 +659,11 @@ def deploy_plan(
         )
     except DeployApplyRejected as e:
         typer.secho(f"✗ Plan отклонён: {e}", fg=typer.colors.RED, err=True)
+        typer.secho(f"Артефакты прогона (diff/safety-отчёты): {run_dir}", err=True)
         raise typer.Exit(code=1) from e
     except DeployApplyError as e:
         typer.secho(f"✗ Plan: {e}", fg=typer.colors.RED, err=True)
+        typer.secho(f"Артефакты прогона: {run_dir}", err=True)
         raise typer.Exit(code=2) from e
 
     md_path = run_dir / "plan.md"
@@ -752,9 +754,11 @@ def deploy_apply(
         )
     except DeployApplyRejected as e:
         typer.secho(f"✗ Apply отклонён: {e}", fg=typer.colors.RED, err=True)
+        typer.secho(f"Артефакты прогона (diff/safety-отчёты): {run_dir}", err=True)
         raise typer.Exit(code=1) from e
     except DeployApplyError as e:
         typer.secho(f"✗ Apply: {e}", fg=typer.colors.RED, err=True)
+        typer.secho(f"Артефакты прогона: {run_dir}", err=True)
         raise typer.Exit(code=2) from e
 
     rehearsal_note = (
