@@ -29,7 +29,7 @@
 ```bash
 git clone <repo-url> db-project-manager
 cd db-project-manager
-uv sync
+uv sync --system-certs
 ```
 
 ## Настройка
@@ -106,6 +106,18 @@ db-pm compare run \
     (--target-dir ./output/prod | --target-connection-file connections/prod.yaml) \
     [--keep-model-dir]
 # Отчёт: source.json, target.json, diff_report.json (added/removed/changed/unchanged)
+
+# Портативный YAML-проект: каталог SQL-файлов <-> кодовая база — Phase 13
+db-pm yaml generate --source ./output/mydb --db-type greenplum --output project.yaml
+db-pm yaml apply \
+    --yaml project.yaml \
+    --target-db-type greenplum \
+    --output ./output/restored \
+    [--convert-external-to-tables]
+# Phase 15.8: --convert-external-to-tables превращает external_tables в обычные
+# таблицы (колонки и имя 1:1, LOCATION/FORMAT отбрасываются, в SQL остаётся
+# комментарий-провенанс); также снимает запрет greenplum->postgres. Для
+# greenplum-таргета таблица без distributed_by получает явный DISTRIBUTED RANDOMLY.
 ```
 
 > **Run-каталоги (Phase 15.7).** Команды `compare run`, `deploy analyze`,
@@ -120,6 +132,26 @@ db-pm compare run \
 ```bash
 db-pm-gui
 ```
+
+
+# 1) через uv — активация не нужна (рекомендую)
+```bash
+uv run db-pm-gui
+
+# 2) с активацией
+
+```bash
+.venv\Scripts\Activate.ps1
+db-pm-gui
+```bash
+
+
+# 3) напрямую
+
+```bash
+.\.venv\Scripts\db-pm-gui.exe
+```bash
+
 
 Добавьте подключение → выберите папку вывода → «Сгенерировать скрипты объектов БД». Файлы появятся в дереве слева; кликните любой `.sql`, чтобы увидеть содержимое с подсветкой. Кнопка «Deploy validate…» запускает валидационный деплой с диалогом опций (префикс, чекбокс «оставить БД», continue-on-error). Действие «Safety gate…» (Phase 11) — dry-run анализ деплоя на существующую БД: вердикт CLEAN/VIOLATIONS + ссылка на отчёт.
 

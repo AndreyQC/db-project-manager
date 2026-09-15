@@ -1,5 +1,11 @@
 # AGENTS.md
 
+
+Инструкция для AI-агентов, работающих в этом репозитории. Контекст сессии
+начинать отсюда: `_docs_/REFRESH_CONTEXT.md` → последний чекпойнт
+(`ls _docs_/_checkpoints_/`).
+
+
 ## Commands
 
 ```bash
@@ -59,4 +65,5 @@ Marked `@pytest.mark.integration`, skipped by default. Require Docker Desktop ru
 
 ## Next Phase
 
-Phase 13 — Post-deploy + отчёты (CD-16..19)
+Phase 17 — post-deploy отчёты (CD-16..19); Phase 16 (Greenplum tuning) завершена —
+`_docs_/_phases_/Phase_16.md`

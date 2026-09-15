@@ -197,3 +197,168 @@ def test_canonicalizer_no_op_when_no_casts():
     assert normalize_sql(sql) == normalize_sql(sql)
     # And the canonicalizer invoked alone must NOT change it.
     assert _canonicalize_text_casts(sql) == sql
+
+
+# --- Greenplum tail clauses + cross-kernel canonical forms (Phase 16.7) ---
+
+
+def test_gp_tail_source_vs_re_render_hash_equal():
+    """The four false-positive CHANGED classes of the 2026-09-13 analyze run:
+    WITH option case/order, DISTRIBUTED clause presence, bool vs boolean,
+    DEFAULT (AT TIME ZONE 'utc') vs catalog timezone('utc'::text, now())."""
+    source_style = """CREATE TABLE "cis_dmt_zup"."t1" (
+    "id" int4 NOT NULL,
+    "flag" boolean NULL,
+    "ts" timestamp DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'utc')
+)
+WITH (appendoptimized=TRUE, orientation=COLUMN, compresstype=ZSTD, compresslevel=1)
+DISTRIBUTED RANDOMLY;"""
+    # RE side uses the catalog spelling: appendonly (legacy name of the same
+    # parameter) + option order from gp_class.reloptions.
+    re_style = """CREATE TABLE "cis_dmt_zup"."t1" (
+    "id" int4 NOT NULL,
+    "flag" bool NULL,
+    "ts" timestamp DEFAULT timezone('utc'::text, now())
+)
+WITH (orientation=column, compresstype=zstd, appendonly=true, compresslevel=1)
+DISTRIBUTED RANDOMLY;"""
+    assert normalize_sql(source_style) == normalize_sql(re_style)
+    assert sql_hash(source_style) == sql_hash(re_style)
+
+
+def test_gp_tail_distributed_by_forms_equal():
+    a = 'CREATE TABLE s.t ("id" int4)\nDISTRIBUTED BY ("id");'
+    b = 'CREATE TABLE s.t ("id" int4)\ndistributed  by (  "id" ) ;'
+    assert normalize_sql(a) == normalize_sql(b)
+
+
+def test_gp_tail_different_distribution_not_equal():
+    a = "CREATE TABLE s.t (id int4)\nDISTRIBUTED RANDOMLY;"
+    b = 'CREATE TABLE s.t (id int4)\nDISTRIBUTED BY ("id");'
+    assert normalize_sql(a) != normalize_sql(b)
+
+
+def test_gp_tail_different_option_value_not_equal():
+    a = "CREATE TABLE s.t (id int4)\nWITH (compresstype=zstd) DISTRIBUTED RANDOMLY;"
+    b = "CREATE TABLE s.t (id int4)\nWITH (compresstype=none) DISTRIBUTED RANDOMLY;"
+    assert normalize_sql(a) != normalize_sql(b)
+
+
+def test_gp_tail_identifier_case_preserved():
+    """Quoted identifiers keep their case — only unquoted tokens lowercase."""
+    a = 'CREATE TABLE s.t (id int4)\nDISTRIBUTED BY ("MixedCase");'
+    b = 'CREATE TABLE s.t (id int4)\nDISTRIBUTED BY ("mixedcase");'
+    assert normalize_sql(a) != normalize_sql(b)
+
+
+def test_gp_tail_not_degraded_to_raw_command_text():
+    """Before 16.7 the whole statement degraded to a sqlglot Command node
+    (raw, whitespace-sensitive). Now the head is AST-normalized: spacing
+    differences inside the column list must not leak into the hash."""
+    a = 'CREATE TABLE s.t ("a" int4, "b" text)\nDISTRIBUTED RANDOMLY;'
+    b = 'CREATE  TABLE  s.t ( "a"  int4 ,  "b"  text )\nDISTRIBUTED RANDOMLY;'
+    assert normalize_sql(a) == normalize_sql(b)
+
+
+def test_timezones_at_time_zone_operator_vs_function_equal():
+    """PG 18 codebase form vs GP 6 (PG 9.4 kernel) pg_attrdef form."""
+    a = "CREATE TABLE t (ts timestamp DEFAULT CURRENT_TIMESTAMP AT TIME ZONE 'utc')"
+    b = "CREATE TABLE t (ts timestamp DEFAULT timezone('utc'::text, now()))"
+    assert normalize_sql(a) == normalize_sql(b)
+
+
+def test_postgres_body_without_gp_clauses_unchanged():
+    """PG bodies (no WITH/DISTRIBUTED) keep the pre-16.7 normalized form —
+    the tail extraction is a no-op for them."""
+    sql = "CREATE TABLE a.b (id int4 NULL)"
+    assert normalize_sql(sql) == 'CREATE TABLE a.b (id INT NULL)'
+
+
+def test_gp_tail_with_only_without_distributed():
+    a = "CREATE TABLE s.t (id int4)\nWITH (fillfactor=70);"
+    b = "CREATE TABLE s.t (id int4)\nWITH (fillfactor=70)\n;"
+    assert normalize_sql(a) == normalize_sql(b)
+
+
+# --- Phase 16.7: view spellings, VOLATILE, identifier quoting ---
+
+
+def test_view_column_list_and_case_only_alias_equal():
+    """Hand-written DDL (explicit column list, no aliases) vs pg_get_viewdef
+    (no list, case-only aliases for the list's case-renames)."""
+    handwritten = 'CREATE VIEW s.v (a, n1_x) AS SELECT t.a, t."N1_x" FROM tbl t'
+    catalog_form = 'CREATE VIEW s.v AS SELECT t.a, t."N1_x" AS n1_x FROM tbl t'
+    assert normalize_sql(handwritten) == normalize_sql(catalog_form)
+
+
+def test_view_real_rename_via_column_list_not_equal():
+    """A list that renames (different names, not case) is meaningful."""
+    handwritten = "CREATE VIEW s.v (a, renamed) AS SELECT t.a, t.b FROM tbl t"
+    catalog_form = "CREATE VIEW s.v AS SELECT t.a, t.b FROM tbl t"
+    assert normalize_sql(handwritten) != normalize_sql(catalog_form)
+
+
+def test_quoted_lowercase_identifier_equals_unquoted():
+    a = 'CREATE TABLE "cis_dmt_zup"."t1" ("id" int4 NULL)'
+    b = "CREATE TABLE cis_dmt_zup.t1 (id int4 NULL)"
+    assert normalize_sql(a) == normalize_sql(b)
+
+
+def test_quoted_mixed_case_identifier_stays_distinct():
+    """Quoted mixed-case is a different object in PG — must not fold."""
+    a = 'CREATE TABLE s."MixedCase" (id int4 NULL)'
+    b = "CREATE TABLE s.mixedcase (id int4 NULL)"
+    assert normalize_sql(a) != normalize_sql(b)
+
+
+def test_default_volatile_stripped_from_function_header():
+    a = "CREATE FUNCTION s.f() RETURNS int LANGUAGE plpgsql VOLATILE AS $$ BEGIN RETURN 1; END $$"
+    b = "CREATE FUNCTION s.f() RETURNS int LANGUAGE plpgsql AS $$ BEGIN RETURN 1; END $$"
+    assert normalize_sql(a) == normalize_sql(b)
+
+
+def test_stable_and_immutable_not_stripped():
+    a = "CREATE FUNCTION s.f() RETURNS int LANGUAGE plpgsql STABLE AS $$ BEGIN RETURN 1; END $$"
+    b = "CREATE FUNCTION s.f() RETURNS int LANGUAGE plpgsql AS $$ BEGIN RETURN 1; END $$"
+    assert normalize_sql(a) != normalize_sql(b)
+
+
+def test_volatile_word_in_function_body_preserved():
+    """Only the header attribute is stripped; the plpgsql body keeps its text."""
+    a = "CREATE FUNCTION s.f() RETURNS int LANGUAGE plpgsql AS $$ DECLARE x int := 1; BEGIN x := volatile_calc(); END $$"
+    b = "CREATE FUNCTION s.f() RETURNS int LANGUAGE plpgsql AS $$ DECLARE x int := 1; BEGIN x := other(); END $$"
+    assert normalize_sql(a) != normalize_sql(b)
+
+
+# --- Phase 16.12: no double normalization, idempotence ---
+
+
+def test_normalize_gp_body_idempotent():
+    """A second pass over the normalized output must not degrade to a Command
+    node (the canonical tail carries a ';' for exactly this)."""
+    source_style = """CREATE TABLE "cis_dmt_zup"."t1" (
+    "id" int4 NOT NULL
+)
+WITH (appendoptimized=TRUE, orientation=COLUMN)
+DISTRIBUTED RANDOMLY;"""
+    once = normalize_sql(source_style)
+    assert normalize_sql(once) == once
+
+
+def test_hash_normalized_equals_sql_hash():
+    """The pure helper must agree with sql_hash's contract."""
+    sql = 'CREATE TABLE s.t ("id" int4)\nDISTRIBUTED RANDOMLY;'
+    from db_project_manager.infrastructure.diff.normalize_sql import hash_normalized
+
+    assert hash_normalized(normalize_sql(sql)) == sql_hash(sql)
+
+
+def test_hash_normalized_does_not_reparse(monkeypatch):
+    """Regression (1176 warnings per plan run): hashing an already-normalized
+    string must not call sqlglot at all."""
+    import db_project_manager.infrastructure.diff.normalize_sql as mod
+
+    calls = []
+    monkeypatch.setattr(mod.sqlglot, "parse_one", lambda *a, **k: calls.append(1) or (_ for _ in ()).throw(AssertionError("re-parsed")))
+    assert mod.hash_normalized("CREATE TABLE s.t (id INT NULL)")
+    assert not calls

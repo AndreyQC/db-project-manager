@@ -9,7 +9,7 @@ from __future__ import annotations
 # --- privileges / server info (Phase 2: validation deploy) ---
 
 GET_CREATEDB_CHECK = """
-    SELECT rolcreatedb
+    SELECT rolsuper OR rolcreatedb
       FROM pg_roles
      WHERE rolname = current_user
 """
@@ -45,6 +45,34 @@ GET_TABLES = """
     WHERE t.table_type = 'BASE TABLE'
       AND t.table_schema = :schema
     ORDER BY t.table_name
+"""
+
+#: Greenplum-only table properties (Phase 16.6): distribution policy and
+#: storage options. pg_catalog.gp_distribution_policy does not exist on
+#: PostgreSQL — the adapter runs this query only on greenplum connections.
+#: policytype: 'p' + empty distkey = DISTRIBUTED RANDOMLY, 'p' + distkey =
+#: DISTRIBUTED BY (cols), 'r' = DISTRIBUTED REPLICATED. distkey attnames are
+#: resolved with the same unnest WITH ORDINALITY pattern as GET_INDEXES
+#: (LESSONS §70: array_position is PG 9.5+, absent on the GP 6 kernel).
+GET_TABLE_GP_OPTIONS = """
+    SELECT
+        c.relname AS table_name,
+        d.policytype,
+        CASE
+            WHEN d.distkey IS NULL OR d.distkey = '' THEN NULL
+            ELSE (
+                SELECT string_agg(a.attname, ', ' ORDER BY u.ord)
+                FROM unnest(d.distkey::smallint[]) WITH ORDINALITY AS u(attnum, ord)
+                JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = u.attnum
+            )
+        END AS distkey_columns,
+        c.reloptions
+    FROM pg_catalog.pg_class AS c
+    JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
+    LEFT JOIN pg_catalog.gp_distribution_policy AS d ON d.localoid = c.oid
+    WHERE n.nspname = :schema
+      AND c.relkind = 'r'
+    ORDER BY c.relname
 """
 
 # --- columns ---
@@ -111,6 +139,9 @@ GET_CONSTRAINTS = """
 
 # --- indexes ---
 
+# NOTE: the ORDER BY uses unnest(...) WITH ORDINALITY instead of
+# array_position(idx.indkey, a.attnum): array_position requires PostgreSQL 9.5+,
+# while the Greenplum 6 kernel is PG 9.4.26 and has no such function.
 GET_INDEXES = """
     SELECT
         i.relname AS index_name,
@@ -128,7 +159,10 @@ GET_INDEXES = """
       AND t.relkind = 'r'
       AND n.nspname = :schema
       AND t.relname = :table_name
-    ORDER BY i.relname, array_position(idx.indkey, a.attnum)
+    ORDER BY i.relname, (
+        SELECT u.ord FROM unnest(idx.indkey::smallint[]) WITH ORDINALITY AS u(k, ord)
+        WHERE u.k = a.attnum
+    )
 """
 
 # --- sequences ---
@@ -240,7 +274,13 @@ GET_MATERIALIZED_VIEWS = """
 
 # --- functions ---
 
-GET_FUNCTIONS = """
+# Two variants with disjoint column sets: pg_proc.prokind exists only in
+# PG 11+ (and Greenplum 7); the PG <= 10 / Greenplum 6 kernel distinguishes
+# plain functions via proisagg/proiswindow, which were REMOVED in PG 11.
+# A single universal query is therefore impossible (unlike the GET_INDEXES
+# fix, LESSONS §70) — the adapter picks the variant by a per-connection
+# capability probe (PROKIND_PROBE).
+GET_FUNCTIONS_POSTGRES = """
     SELECT
         p.proname AS function_name,
         n.nspname AS schema_name,
@@ -272,9 +312,51 @@ GET_FUNCTIONS = """
     ORDER BY n.nspname, p.proname
 """
 
+GET_FUNCTIONS_GREENPLUM = """
+    SELECT
+        p.proname AS function_name,
+        n.nspname AS schema_name,
+        pg_get_function_result(p.oid) AS return_type,
+        pg_get_function_arguments(p.oid) AS arguments,
+        array_to_string(
+            array(
+                SELECT t.typname
+                FROM unnest(p.proargtypes) AS argtype
+                JOIN pg_type t ON t.oid = argtype
+            ),
+            ', '
+        ) AS argument_types,
+        l.lanname AS language,
+        p.proretset AS returns_set,
+        pg_get_functiondef(p.oid) AS function_definition,
+        obj_description(p.oid, 'pg_proc') AS function_comment
+    FROM pg_proc AS p
+    LEFT JOIN pg_namespace AS n ON n.oid = p.pronamespace
+    LEFT JOIN pg_language AS l ON l.oid = p.prolang
+    WHERE n.nspname = :schema
+      AND n.nspname NOT LIKE 'pg_%'
+      AND n.nspname != 'information_schema'
+      AND NOT p.proisagg
+      AND NOT p.proiswindow
+      AND NOT EXISTS (
+          SELECT 1 FROM pg_depend d
+          WHERE d.objid = p.oid AND d.deptype = 'e'
+      )
+    ORDER BY n.nspname, p.proname
+"""
+
+#: Capability probe for pg_proc.prokind: the planner resolves the column at
+#: planning time, so the query fails with UndefinedColumn on kernels < PG 11
+#: (Greenplum 6) and returns no rows otherwise — cheap and side-effect free.
+PROKIND_PROBE = """
+    SELECT p.prokind FROM pg_catalog.pg_proc AS p WHERE false
+"""
+
 # --- procedures ---
 
-GET_PROCEDURES = """
+# No GREENPLUM variant: kernels without prokind (PG <= 10, Greenplum 6) have
+# no CREATE PROCEDURE at all — the adapter returns an empty list there.
+GET_PROCEDURES_POSTGRES = """
     SELECT
         p.proname AS procedure_name,
         n.nspname AS schema_name,

@@ -43,6 +43,11 @@ from db_project_manager.application.reverse_engineer import (
 )
 from db_project_manager.domain.graph import CycleError
 from db_project_manager.infrastructure.config.app_config import load_cfg
+from db_project_manager.infrastructure.config.codebase_manifest import (
+    MANIFEST_FILENAME,
+    ManifestError,
+    read_manifest,
+)
 from db_project_manager.infrastructure.config.connection_store import (
     ConnectionStore,
     ConnectionStoreError,
@@ -654,9 +659,11 @@ def deploy_plan(
         )
     except DeployApplyRejected as e:
         typer.secho(f"✗ Plan отклонён: {e}", fg=typer.colors.RED, err=True)
+        typer.secho(f"Артефакты прогона (diff/safety-отчёты): {run_dir}", err=True)
         raise typer.Exit(code=1) from e
     except DeployApplyError as e:
         typer.secho(f"✗ Plan: {e}", fg=typer.colors.RED, err=True)
+        typer.secho(f"Артефакты прогона: {run_dir}", err=True)
         raise typer.Exit(code=2) from e
 
     md_path = run_dir / "plan.md"
@@ -747,9 +754,11 @@ def deploy_apply(
         )
     except DeployApplyRejected as e:
         typer.secho(f"✗ Apply отклонён: {e}", fg=typer.colors.RED, err=True)
+        typer.secho(f"Артефакты прогона (diff/safety-отчёты): {run_dir}", err=True)
         raise typer.Exit(code=1) from e
     except DeployApplyError as e:
         typer.secho(f"✗ Apply: {e}", fg=typer.colors.RED, err=True)
+        typer.secho(f"Артефакты прогона: {run_dir}", err=True)
         raise typer.Exit(code=2) from e
 
     rehearsal_note = (
@@ -768,20 +777,75 @@ def deploy_apply(
 _VALID_DB_TYPES = ("greenplum", "postgres")
 
 
+def _resolve_source_db_type(source: Path, db_type: str | None) -> str:
+    """Resolve the source db_type for ``yaml generate`` (Phase 16.2).
+
+    Cascade: the RE manifest (``dbpm.manifest.json``) or an explicit
+    ``--db-type``. When both are present they must agree — a conflict is a
+    usage error instead of a silent preference for either side (a wrong db_type
+    picks the wrong SQL parser). Neither source available -> usage error.
+    """
+    manifest_db_type: str | None = None
+    if (source / MANIFEST_FILENAME).is_file():
+        try:
+            manifest_db_type = read_manifest(source).db_type
+        except ManifestError as e:
+            typer.secho(
+                f"Манифест игнорируется (не читается): {e}",
+                fg=typer.colors.YELLOW,
+                err=True,
+            )
+
+    if db_type is not None and manifest_db_type is not None and db_type != manifest_db_type:
+        typer.secho(
+            f"--db-type {db_type!r} противоречит манифесту ({manifest_db_type!r} в "
+            f"{source / MANIFEST_FILENAME}). Уберите флаг или передайте значение из манифеста.",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    resolved = db_type or manifest_db_type
+    if resolved is None:
+        typer.secho(
+            f"Не удалось определить тип БД: в '{source}' нет {MANIFEST_FILENAME} "
+            f"(выхода reverse-engineer) и не задан --db-type. "
+            f"Укажите --db-type: {', '.join(_VALID_DB_TYPES)}.",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    if resolved not in _VALID_DB_TYPES:
+        typer.secho(
+            f"Invalid --db-type: {resolved!r}. Must be one of: {', '.join(_VALID_DB_TYPES)}.",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    if manifest_db_type is not None and db_type is None:
+        typer.secho(f"Тип БД взят из манифеста: {resolved}")
+    return resolved
+
+
 @yaml_app.command("generate")
 def yaml_generate(
     source: Annotated[
         Path,
         typer.Option("--source", help="Directory with SQL files (reverse-engineer output)."),
     ],
-    db_type: Annotated[
-        str,
-        typer.Option("--db-type", help=f"Source database type: {', '.join(_VALID_DB_TYPES)}."),
-    ],
     output: Annotated[
         Path,
         typer.Option("--output", "-o", help="Output YAML file path."),
     ],
+    db_type: Annotated[
+        Optional[str],
+        typer.Option(
+            "--db-type",
+            help=f"Source database type: {', '.join(_VALID_DB_TYPES)}. "
+            "Optional when --source contains a reverse-engineer manifest "
+            f"({MANIFEST_FILENAME}); a conflict between the flag and the manifest is an error.",
+        ),
+    ] = None,
     source_version: Annotated[
         str,
         typer.Option("--source-version", help="Optional calver version string (e.g. 2026.08.27.01)."),
@@ -812,14 +876,14 @@ def yaml_generate(
     a ``.yaml`` file that can later be used to generate a full codebase via
     ``db-pm yaml apply``.
 
+    The source db_type is resolved from the reverse-engineer manifest
+    (``dbpm.manifest.json``) when it is present; ``--db-type`` is only needed
+    for manifest-less directories (Phase 16.2). A flag contradicting the
+    manifest is a usage error.
+
     Exit codes: 0 — ok; 1 — generation error (including --require-autodoc violations); 2 — usage error.
     """
-    if db_type not in _VALID_DB_TYPES:
-        typer.secho(
-            f"Invalid --db-type: {db_type!r}. Must be one of: {', '.join(_VALID_DB_TYPES)}.",
-            fg=typer.colors.RED, err=True,
-        )
-        raise typer.Exit(code=2)
+    db_type = _resolve_source_db_type(source, db_type)
 
     configure_logging()
 
@@ -858,14 +922,30 @@ def yaml_apply(
         Path,
         typer.Option("--yaml", help="YAML project file to apply."),
     ],
-    target_db_type: Annotated[
-        str,
-        typer.Option("--target-db-type", help=f"Target database type: {', '.join(_VALID_DB_TYPES)}."),
-    ],
     output: Annotated[
         Path,
         typer.Option("--output", "-o", help="Output directory for the generated codebase."),
     ],
+    target_db_type: Annotated[
+        Optional[str],
+        typer.Option(
+            "--target-db-type",
+            help=f"Target database type: {', '.join(_VALID_DB_TYPES)}. "
+            "Defaults to the YAML project's own db_type when omitted; pass explicitly "
+            "only for cross-type application (e.g. greenplum -> postgres).",
+        ),
+    ] = None,
+    convert_external_to_tables: Annotated[
+        bool,
+        typer.Option(
+            "--convert-external-to-tables",
+            help=(
+                "Конвертировать внешние таблицы (external_tables) в обычные: "
+                "колонки и имя 1:1, LOCATION/FORMAT отбрасываются. Также снимает "
+                "запрет greenplum->postgres на external-таблицы."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Generate a full codebase (SQL files + manifest + graph) from a YAML project.
 
@@ -875,11 +955,18 @@ def yaml_apply(
 
     For ``greenplum -> postgres``: external tables are skipped (Postgres has no
     writable external tables), ``DISTRIBUTED BY`` / ``WITH (...)`` options are
-    dropped. For ``postgres -> greenplum``: an error is raised.
+    dropped — unless ``--convert-external-to-tables`` converts them to regular
+    tables. For ``postgres -> greenplum``: an error is raised.
+
+    Greenplum targets: a table without ``distributed_by`` gets an explicit
+    ``DISTRIBUTED RANDOMLY`` (Phase 15.8).
+
+    ``--target-db-type`` defaults to the project's own ``db_type`` (Phase 16.2);
+    the explicit flag is only needed for cross-type application.
 
     Exit codes: 0 — ok; 1 — validation / generation error; 2 — target type incompatible.
     """
-    if target_db_type not in _VALID_DB_TYPES:
+    if target_db_type is not None and target_db_type not in _VALID_DB_TYPES:
         typer.secho(
             f"Invalid --target-db-type: {target_db_type!r}. Must be one of: {', '.join(_VALID_DB_TYPES)}.",
             fg=typer.colors.RED, err=True,
@@ -905,10 +992,14 @@ def yaml_apply(
         typer.secho(f"Failed to parse YAML: {e}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1) from e
 
+    if target_db_type is None:
+        target_db_type = project.db_type
+        typer.secho(f"--target-db-type не задан — используется тип проекта: {target_db_type}")
+
     try:
         cfg = load_cfg(None)
         service = YamlApplyService(service_schema=cfg.deploy.service_schema)
-        result = service.run(project, output, target_db_type)
+        result = service.run(project, output, target_db_type, convert_external_to_tables)
     except YamlApplyError as e:
         typer.secho(f"Apply error: {e}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1) from e
@@ -918,6 +1009,7 @@ def yaml_apply(
 
     typer.secho(
         f"Applied: schemas={result.schemas_count}, objects={result.objects_count}, "
+        f"converted_external={result.converted_external_tables}, "
         f"output={result.output_dir}",
         fg=typer.colors.GREEN,
     )

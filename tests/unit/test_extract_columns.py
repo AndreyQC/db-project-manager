@@ -68,7 +68,8 @@ COMMENT ON TABLE s.t IS 'x';"""
     assert cols is not None
     by_name = {c.name: c for c in cols}
     assert by_name["id"].nullable is False
-    assert by_name["amount"].type == "decimal(38,0)"
+    # Phase 16.9: explicit zero scale is collapsed by canonical_type.
+    assert by_name["amount"].type == "decimal(38)"
     assert by_name["amount"].default == "0"
 
 
@@ -397,3 +398,49 @@ def test_bare_serial_vs_re_roundtrip_no_diff():
         "(id int4 NOT NULL DEFAULT nextval('__deploy.schema_version_id_seq'::REGCLASS), version TEXT NOT NULL)"
     )
     assert diff_columns(src, tgt) == []
+
+
+# --- Greenplum tail clauses (Phase 16.8) ---
+
+
+def test_extract_columns_with_gp_tail():
+    """DISTRIBUTED/WITH must not degrade the parse to a Command node — the
+    live cis_zup_gp_dev run had columns=None → fail-safe BLOCKED (CD-11)."""
+    body = """CREATE TABLE "__deploy"."schema_version" (
+    "id" serial4 NOT NULL,
+    "version" text NOT NULL,
+    "applied_at" timestamptz NOT NULL DEFAULT now()
+)
+WITH (appendonly=true, orientation=column)
+DISTRIBUTED BY ("id");"""
+    cols = extract_columns(body)
+    assert cols is not None
+    assert [c.name for c in cols] == ["id", "version", "applied_at"]
+    assert cols[0].nullable is False
+
+
+def test_extract_columns_plain_pg_body_unchanged():
+    body = 'CREATE TABLE s.t ("id" int4 NOT NULL, "v" text NULL);'
+    assert extract_columns(body) == extract_columns(body)
+    cols = extract_columns(body)
+    assert [c.name for c in cols] == ["id", "v"]
+
+
+def test_canonical_type_zero_scale_collapsed():
+    """Phase 16.9: ``numeric(9,0)`` (catalog round-trip renders the default
+    scale explicitly) == ``decimal(9)`` (codebase spelling)."""
+    import sqlglot
+
+    a = canonical_type(sqlglot.parse_one("SELECT CAST(1 AS numeric(9,0))", read="postgres").expressions[0].this)
+    b = canonical_type(sqlglot.parse_one("SELECT CAST(1 AS decimal(9))", read="postgres").expressions[0].this)
+    assert a == b
+
+
+def test_extract_columns_numeric_scale_forms_equal():
+    """End-to-end: same column spelled decimal(9) vs numeric(9,0) must not
+    diff as type_changed (live finding: lu_limits_on_food_cards blocked)."""
+    body_a = 'CREATE TABLE s.t ("code" decimal(9) NULL);'
+    body_b = 'CREATE TABLE s.t ("code" numeric(9,0) NULL);'
+    ca, cb = extract_columns(body_a), extract_columns(body_b)
+    assert ca is not None and cb is not None
+    assert ca[0].type == cb[0].type

@@ -144,6 +144,10 @@ def test_plan_rejected_exit_one(monkeypatch, tmp_path) -> None:
     result = _invoke_plan(monkeypatch, tmp_path)
     assert result.exit_code == 1
     assert "app.orders" in (result.stderr or "") or "app.orders" in result.output
+    # Phase 16.11: a rejected run must point to its artifacts dir.
+    combined = result.output + (result.stderr or "")
+    assert "Артефакты прогона" in combined
+    assert str(tmp_path / "out") in combined
 
 
 def test_plan_hard_error_exit_two(monkeypatch, tmp_path) -> None:
@@ -197,6 +201,10 @@ def test_apply_rejected_exit_one(monkeypatch, tmp_path) -> None:
     result = _invoke_apply(monkeypatch, tmp_path)
     assert result.exit_code == 1
     assert "CD-11" in (result.stderr or "") or "CD-11" in result.output
+    # Phase 16.11: a rejected run must point to its artifacts dir.
+    combined = result.output + (result.stderr or "")
+    assert "Артефакты прогона" in combined
+    assert str(tmp_path / "out") in combined
 
 
 def test_apply_hard_error_exit_two(monkeypatch, tmp_path) -> None:

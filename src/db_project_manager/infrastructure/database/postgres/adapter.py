@@ -26,6 +26,24 @@ from db_project_manager.infrastructure.database.ssh_tunnel import SSHTunnelManag
 #: CREATE DATABASE / DROP DATABASE — see LESSONS_LEARNED §create_database).
 _DB_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
+#: Serial detection (Phase 16.7, LESSONS §67 family): a column whose default
+#: is nextval of the PG-default-named sequence ``<table>_<col>_seq`` renders
+#: as serialN — the codebase spelling. Bare ``serial`` is avoided on purpose:
+#: sqlglot normalizes it to IDENTITY, which would break the hash compare.
+#: The sequence itself is still emitted as a standalone object (pg_dump-style
+#: folding is a separate concern).
+_SERIAL_NEXTVAL_RE = re.compile(r"^nextval\('([^']+)'::regclass\)$", re.IGNORECASE)
+_SERIAL_BY_UDT = {"int2": "smallserial", "int4": "serial4", "int8": "serial8"}
+
+#: Greenplum administrative schemas — product-managed (gp_toolkit views read
+#: master/segment logs), never user objects. Excluded from RE only on
+#: greenplum connections: they are not extension-owned (pg_depend has no
+#: deptype='e' rows for them), so the schema list is the only filter point.
+#: ``gp_statistics``/``gp_statistics_history`` exist on GP 7 only — filtering
+#: by name is a no-op where they are absent. On PostgreSQL a same-name schema
+#: would be a user schema and is kept.
+GP_ADMIN_SCHEMAS = frozenset({"gp_toolkit", "gp_statistics", "gp_statistics_history"})
+
 
 def map_presence_row(
     schema: str,
@@ -115,6 +133,8 @@ class PGDatabaseAdapter(DatabaseAdapter):
         self._engine: Engine | None = None
         self._connection = None
         self._is_greenplum: bool = False
+        self._pg_sequence_available: bool | None = None
+        self._prokind_available: bool | None = None
         self._tunnel: SSHTunnelManager | None = None
         self._cfg: ConnectionConfig | None = None
 
@@ -127,6 +147,9 @@ class PGDatabaseAdapter(DatabaseAdapter):
         to the jump host and connects through it.
         """
         self._cfg = cfg
+        # Capability probes are per-connection (see _get_sequences, _supports_prokind).
+        self._pg_sequence_available = None
+        self._prokind_available = None
         if cfg.connection_type == ConnectionType.SSH_TUNNEL:
             self._connect_via_ssh_tunnel(cfg)
         else:
@@ -372,9 +395,11 @@ class PGDatabaseAdapter(DatabaseAdapter):
                 "enums": [],
             }
             schema_name = schema["name"]
+            gp_table_options = self._get_gp_table_options(schema_name)
 
             schema_info["tables"] = [
-                self._build_table(schema_name, table) for table in self._get_tables(schema_name)
+                self._build_table(schema_name, table, gp_table_options.get(table["name"]))
+                for table in self._get_tables(schema_name)
             ]
             schema_info["sequences"] = self._get_sequences(schema_name)
             schema_info["views"] = self._get_views(schema_name)
@@ -525,6 +550,11 @@ class PGDatabaseAdapter(DatabaseAdapter):
 
     def _get_schemas(self) -> list[dict[str, Any]]:
         rows = self._exec(q.GET_SCHEMAS)
+        if self._is_greenplum:
+            dropped = sorted(row[0] for row in rows if row[0] in GP_ADMIN_SCHEMAS)
+            if dropped:
+                logger.info(f"Админ-схемы GP исключены из RE: {', '.join(dropped)}")
+            rows = [row for row in rows if row[0] not in GP_ADMIN_SCHEMAS]
         infos = [{"name": row[0], "comment": row[1]} for row in rows]
         logger.info(f"Схем найдено: {len(infos)}")
         return infos
@@ -535,21 +565,63 @@ class PGDatabaseAdapter(DatabaseAdapter):
         logger.info(f"Таблиц в '{schema}': {len(infos)}")
         return infos
 
-    def _build_table(self, schema: str, table: dict[str, Any]) -> dict[str, Any]:
-        name = table["name"]
-        columns = [
-            {
-                "name": col[0],
-                "type": col[1],
-                "nullable": col[2] == "YES",
-                "default": _qualify_default_schema(col[3], schema),
-                "character_maximum_length": col[4],
-                "numeric_precision": col[5],
-                "numeric_scale": col[6],
-                "comment": col[7],
+    def _get_gp_table_options(self, schema: str) -> dict[str, dict[str, Any]]:
+        """Greenplum-only table properties: distribution + storage options.
+
+        Returns {} on PostgreSQL (gp_distribution_policy does not exist there;
+        a same-name catalog would be a user object — LESSONS §71-3). One query
+        per schema, not per table.
+        """
+        if not self._is_greenplum:
+            return {}
+        rows = self._exec(q.GET_TABLE_GP_OPTIONS, {"schema": schema})
+        options: dict[str, dict[str, Any]] = {}
+        for name, policytype, distkey_columns, reloptions in rows:
+            distribution: dict[str, Any] | None = None
+            if policytype == "r":
+                distribution = {"kind": "replicated", "columns": []}
+            elif distkey_columns:
+                distribution = {
+                    "kind": "by",
+                    "columns": [c.strip() for c in distkey_columns.split(",") if c.strip()],
+                }
+            else:
+                # policytype 'p' with an empty distkey — the cluster-wide
+                # default on cis_zup_gp_dev (196/196 tables).
+                distribution = {"kind": "randomly", "columns": []}
+            options[name] = {
+                "distribution": distribution,
+                "storage_options": list(reloptions) if reloptions else None,
             }
-            for col in self._exec(q.GET_COLUMNS, {"table_name": name, "schema": schema})
-        ]
+        return options
+
+    def _build_table(
+        self,
+        schema: str,
+        table: dict[str, Any],
+        gp_options: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        name = table["name"]
+        columns = []
+        for col in self._exec(q.GET_COLUMNS, {"table_name": name, "schema": schema}):
+            col_type, default = col[1], col[3]
+            serial = _SERIAL_BY_UDT.get(col_type)
+            if serial and default:
+                match = _SERIAL_NEXTVAL_RE.match(default.strip())
+                if match and match.group(1).lower() == f"{schema}.{name}_{col[0]}_seq".lower():
+                    col_type, default = serial, None
+            columns.append(
+                {
+                    "name": col[0],
+                    "type": col_type,
+                    "nullable": col[2] == "YES",
+                    "default": _qualify_default_schema(default, schema),
+                    "character_maximum_length": col[4],
+                    "numeric_precision": col[5],
+                    "numeric_scale": col[6],
+                    "comment": col[7],
+                }
+            )
         constraints = self._group_constraints(
             self._exec(q.GET_CONSTRAINTS, {"table_name": name, "schema": schema})
         )
@@ -573,6 +645,8 @@ class PGDatabaseAdapter(DatabaseAdapter):
             "constraints": constraints,
             "primary_keys": [],
             "indexes": indexes,
+            "distribution": (gp_options or {}).get("distribution"),
+            "storage_options": (gp_options or {}).get("storage_options"),
         }
 
     @staticmethod
@@ -628,12 +702,27 @@ class PGDatabaseAdapter(DatabaseAdapter):
         return list(grouped.values())
 
     def _get_sequences(self, schema: str) -> list[dict[str, Any]]:
-        try:
+        # pg_sequence exists in PG 10+ and Greenplum 7 (kernel PG 12) but not in
+        # Greenplum 6 (kernel PG 9.4) — hence a capability probe cached for the
+        # connection, not a branch on _is_greenplum: GP 7 must keep the richer
+        # pg_sequence query, GP 6 must not retry the doomed query per schema.
+        if self._pg_sequence_available is None:
+            try:
+                rows = self._exec(q.GET_SEQUENCES_POSTGRES, {"schema": schema})
+                self._pg_sequence_available = True
+            except Exception as e:
+                if not self._is_greenplum:
+                    raise
+                self._pg_sequence_available = False
+                reason = str(e).splitlines()[0]
+                logger.info(
+                    f"pg_sequence недоступен ({reason}) — ожидаемо для ядра GP < PG 10; "
+                    "далее используется Greenplum-фолбэк без повторных проб."
+                )
+                rows = self._exec(q.GET_SEQUENCES_GREENPLUM, {"schema": schema})
+        elif self._pg_sequence_available:
             rows = self._exec(q.GET_SEQUENCES_POSTGRES, {"schema": schema})
-        except Exception as e:
-            if not self._is_greenplum:
-                raise
-            logger.warning(f"pg_sequence недоступен ({e}), использую Greenplum-фолбэк")
+        else:
             rows = self._exec(q.GET_SEQUENCES_GREENPLUM, {"schema": schema})
         infos = [
             {
@@ -688,8 +777,31 @@ class PGDatabaseAdapter(DatabaseAdapter):
         logger.info(f"Мат. представлений в '{schema}': {len(grouped)}")
         return list(grouped.values())
 
+    def _supports_prokind(self) -> bool:
+        """Whether pg_proc.prokind is available (PG 11+ / Greenplum 7).
+
+        Probed once per connection and cached (same pattern as the pg_sequence
+        probe): Greenplum 6 (kernel PG 9.4) lacks the column and uses the
+        legacy proisagg/proiswindow queries instead.
+        """
+        if self._prokind_available is None:
+            try:
+                self._exec(q.PROKIND_PROBE)
+                self._prokind_available = True
+            except Exception as e:
+                if not self._is_greenplum:
+                    raise
+                self._prokind_available = False
+                reason = str(e).splitlines()[0]
+                logger.info(
+                    f"pg_proc.prokind недоступен ({reason}) — ожидаемо для ядра GP < PG 11; "
+                    "функции читаются legacy-запросом, процедуры ядром не поддерживаются."
+                )
+        return self._prokind_available
+
     def _get_functions(self, schema: str) -> list[dict[str, Any]]:
-        rows = self._exec(q.GET_FUNCTIONS, {"schema": schema})
+        query = q.GET_FUNCTIONS_POSTGRES if self._supports_prokind() else q.GET_FUNCTIONS_GREENPLUM
+        rows = self._exec(query, {"schema": schema})
         infos = [
             {
                 "name": r[0],
@@ -744,7 +856,12 @@ class PGDatabaseAdapter(DatabaseAdapter):
         return settings
 
     def _get_procedures(self, schema: str) -> list[dict[str, Any]]:
-        rows = self._exec(q.GET_PROCEDURES, {"schema": schema})
+        if not self._supports_prokind():
+            # Kernels without prokind (PG <= 10, Greenplum 6) have no CREATE
+            # PROCEDURE at all — prokind='p' has nothing to match.
+            logger.info(f"Процедур в '{schema}': 0 (ядро без CREATE PROCEDURE)")
+            return []
+        rows = self._exec(q.GET_PROCEDURES_POSTGRES, {"schema": schema})
         infos = [
             {
                 "name": r[0],

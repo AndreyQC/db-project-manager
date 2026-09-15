@@ -98,7 +98,9 @@ class YamlApplySettings(BaseModel):
 
     Reads a YAML file and generates a full codebase (SQL + manifest + graph)
     for a target DB type. GP → PG transformation: external tables are skipped,
-    DISTRIBUTED BY / WITH options are dropped.
+    DISTRIBUTED BY / WITH options are dropped. With
+    ``convert_external_to_tables`` (Phase 15.8) external tables become regular
+    tables instead.
     """
 
     model_config = ConfigDict(extra="ignore")
@@ -106,6 +108,7 @@ class YamlApplySettings(BaseModel):
     yaml_file: str = ""
     target_db_type: str = "postgres"  # greenplum | postgres
     output_dir: str = ""
+    convert_external_to_tables: bool = False  # Phase 15.8
 
 
 class DeployApplySettings(BaseModel):

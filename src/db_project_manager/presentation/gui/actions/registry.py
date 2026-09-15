@@ -201,6 +201,7 @@ def _make_yaml_apply_worker(store, settings: YamlApplySettings):
         settings.target_db_type,
         settings.output_dir,
         service_schema=load_cfg(None).deploy.service_schema,
+        convert_external_to_tables=settings.convert_external_to_tables,
     )
 
 

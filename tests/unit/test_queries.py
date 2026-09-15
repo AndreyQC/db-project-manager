@@ -127,9 +127,43 @@ def test_function_query_excludes_extension_owned() -> None:
     them as user objects causes 'cannot change name of input parameter' on
     deploy (the extension's own definition has different arg names).
     """
-    assert "deptype = 'e'" in queries.GET_FUNCTIONS
+    for query in (queries.GET_FUNCTIONS_POSTGRES, queries.GET_FUNCTIONS_GREENPLUM):
+        assert "deptype = 'e'" in query
 
 
 def test_procedure_query_excludes_extension_owned() -> None:
     """Same extension-ownership filter as for functions (see above)."""
-    assert "deptype = 'e'" in queries.GET_PROCEDURES
+    assert "deptype = 'e'" in queries.GET_PROCEDURES_POSTGRES
+
+
+def test_function_queries_split_by_prokind_availability() -> None:
+    """Regression (Phase 16.4): pg_proc.prokind exists only in PG 11+
+    (Greenplum 7); the GP 6 kernel (PG 9.4) uses proisagg/proiswindow, which
+    were REMOVED in PG 11 — the column sets are disjoint, so the pair of
+    queries is unavoidable (unlike the universal GET_INDEXES fix, §70).
+    """
+    assert "p.prokind = 'f'" in queries.GET_FUNCTIONS_POSTGRES
+    assert "prokind" not in queries.GET_FUNCTIONS_GREENPLUM
+    assert "NOT p.proisagg" in queries.GET_FUNCTIONS_GREENPLUM
+    assert "NOT p.proiswindow" in queries.GET_FUNCTIONS_GREENPLUM
+    assert "p.prokind = 'p'" in queries.GET_PROCEDURES_POSTGRES
+
+
+def test_createdb_check_accounts_for_superuser() -> None:
+    """Regression (Phase 15.9): a superuser bypasses the CREATE DATABASE
+    privilege check even with rolcreatedb=false (GP gpadmin cluster:
+    rolsuper=True, rolcreatedb=False). The preflight must OR both flags,
+    not look at rolcreatedb alone.
+    """
+    assert "rolsuper OR rolcreatedb" in queries.GET_CREATEDB_CHECK
+    assert "rolname = current_user" in queries.GET_CREATEDB_CHECK
+
+
+def test_indexes_query_avoids_pg95_array_position() -> None:
+    """Regression (Greenplum feedback 2026-09-09): array_position requires
+    PostgreSQL 9.5+, the Greenplum 6 kernel is PG 9.4.26 — reverse-engineer
+    died with UndefinedFunction on the first indexed table. The ORDER BY must
+    order columns via unnest(...) WITH ORDINALITY (available since PG 9.4).
+    """
+    assert "array_position" not in queries.GET_INDEXES
+    assert "WITH ORDINALITY" in queries.GET_INDEXES

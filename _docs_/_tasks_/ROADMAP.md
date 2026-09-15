@@ -61,8 +61,10 @@
 | 4 | **Phase 12** — ALTER + Delta | CD | Phase 11 (✓) | ✅ done (коммиты `d76d804`…`f55b5a7`) |
 | 5 | **Phase 13** — GP↔PG YAML Pipeline | CD | Phase 12 | ✅ done (`a5597c4`) |
 | 6 | **Phase 14** — Delta Viewer | DV | Phase 9 (✓) | ✅ done (коммиты `3649b0c`…`141e9fc`) |
-| 7 | **Phase 15** — Post-deploy + отчёты (CD-17..19) | CD | Phase 13 | не начата |
-| 8 | **AI track** (overlay) | AI | Phase 12 | не начата, опциональная надстройка |
+| 7 | **Phase 15** — GUI deploy plan/apply + Plan Viewer | CD | Phase 12, 13 | ✅ done |
+| 8 | **Phase 16** — Greenplum tuning (живой кластер GP 6.19, ядро PG 9.4) | CD | Phase 15 (✓) | ✓ завершена — `_phases_/Phase_16.md` |
+| 9 | **Phase 17** — Post-deploy, отчёты, полировка (CD-16..19) | CD | Phase 16 | не начата |
+| — | **AI track** (overlay) | AI | Phase 12 | не начата, опциональная надстройка |
 
 **Логика порядка:** Phase 8 чинит граф (топосорт деплоя) — **закрыта**, развязка для Phase 10
 получена. Затем CD-ядро (10→13) по пайплайну: фундамент → пред-анализ → генерация дельты →
@@ -133,7 +135,11 @@ AI-трек надстраивается над Phase 12 (нужен струк�
 | **CD-13a** | `db-pm yaml generate` — Greenplum/Postgres directory → portable YAML. | Рекурсивный обход `.sql`, autodoc-парсинг, regex-fallback для GP DDL | Must |
 | **CD-13b** | `db-pm yaml apply` — YAML → codebase (manifest + SQL + graph). | GP→PG трансформация: external tables пропускаются, `DISTRIBUTED BY`/`WITH` дропаются | Must |
 
-### Phase 15 — Post-deploy, отчёты, полировка
+### Phase 17 — Post-deploy, отчёты, полировка
+
+> Перенумерована с Phase 15: фактически реализованная Phase 15 — GUI deploy
+> plan/apply + Plan Viewer; post-deploy/отчёты сдвинуты за Phase 16 (Greenplum
+> tuning), которая блокировала живой деплой.
 
 | ID | User Story | Acceptance Criteria | Priority |
 |----|------------|---------------------|----------|

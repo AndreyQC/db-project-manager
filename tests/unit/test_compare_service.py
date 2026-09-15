@@ -112,9 +112,12 @@ def test_dir_vs_dir_identical_produces_all_unchanged(tmp_path):
     # -1 extension -1 database_setting = 18 diffed (15 non-schema + 3 schemas).
     # Phase 15.7: ``materialized_view routes`` has project.build=false in its
     # autodoc — excluded from the diff on BOTH sides → 18 - 1 = 17 unchanged.
-    assert '"unchanged": 17' in report_text
+    # Phase 16.8: the __deploy service schema (schema + 3 tables) is excluded
+    # on BOTH sides — tool-owned, never compared → 17 - 4 = 13.
+    assert '"unchanged": 13' in report_text
     assert '"added": 0' in report_text
     assert '"ignored_build_false": 1' in report_text
+    assert '"ignored_service_schema": 4' in report_text
 
 
 def test_dir_vs_dir_missing_manifest_raises(tmp_path):
@@ -291,3 +294,193 @@ def test_build_false_excluded_from_both_sides(tmp_path):
     assert not any("routes" in e["object_key"] for e in report["entries"])
     # The build=false object must not leak into the diff as removed.
     assert report["summary"]["removed"] == 0
+
+
+# --- service-schema exclusion + absence warning (Phase 16.8) ---
+
+
+def test_service_schema_absent_on_one_side_warns_but_never_diffs(tmp_path):
+    """A side without __deploy must not produce REMOVED/ADDED entries for the
+    service objects — and the absence must be warned about (user requirement:
+    the warning fires on every check run)."""
+    import shutil as _shutil
+
+    from loguru import logger
+
+    src = _copy_fixture_with_manifest(tmp_path / "src")
+    tgt = _copy_fixture_with_manifest(tmp_path / "tgt")
+    _shutil.rmtree(tgt / "__deploy")  # target side has no service schema
+
+    messages: list[str] = []
+    sink_id = logger.add(messages.append, level="DEBUG")
+    try:
+        service = CompareService()
+        service.run(
+            SideSpec(SnapshotSourceKind.DIR, str(src)),
+            SideSpec(SnapshotSourceKind.DIR, str(tgt)),
+            tmp_path / "report",
+        )
+    finally:
+        logger.remove(sink_id)
+
+    report_text = (tmp_path / "report" / DIFF_REPORT_FILENAME).read_text(encoding="utf-8")
+    assert '"removed": 0' in report_text
+    assert "__deploy" not in report_text
+    absence_warnings = [m for m in messages if "отсутствует на стороне target" in str(m)]
+    assert len(absence_warnings) == 1
+
+
+def test_service_schema_present_on_both_sides_no_absence_warning(tmp_path):
+    from loguru import logger
+
+    src = _copy_fixture_with_manifest(tmp_path / "src")
+    tgt = _copy_fixture_with_manifest(tmp_path / "tgt")
+
+    messages: list[str] = []
+    sink_id = logger.add(messages.append, level="DEBUG")
+    try:
+        service = CompareService()
+        service.run(
+            SideSpec(SnapshotSourceKind.DIR, str(src)),
+            SideSpec(SnapshotSourceKind.DIR, str(tgt)),
+            tmp_path / "report",
+        )
+    finally:
+        logger.remove(sink_id)
+
+    assert not [m for m in messages if "отсутствует на стороне" in str(m)]
+    # Exclusion still logged once with the object count.
+    assert any("исключена из сравнения: 4" in str(m) for m in messages)
+
+
+def test_custom_service_schema_name_honored(tmp_path):
+    """The service-schema name is constructor-configurable (mirrors
+    cfg.deploy.service_schema): with a non-default name the fixture's
+    __deploy objects are NOT excluded (and the absence of the custom
+    schema is warned about on both sides)."""
+    from loguru import logger
+
+    src = _copy_fixture_with_manifest(tmp_path / "src")
+    tgt = _copy_fixture_with_manifest(tmp_path / "tgt")
+
+    messages: list[str] = []
+    sink_id = logger.add(messages.append, level="DEBUG")
+    try:
+        service = CompareService(service_schema="srv_custom")
+        service.run(
+            SideSpec(SnapshotSourceKind.DIR, str(src)),
+            SideSpec(SnapshotSourceKind.DIR, str(tgt)),
+            tmp_path / "report",
+        )
+    finally:
+        logger.remove(sink_id)
+
+    report_text = (tmp_path / "report" / DIFF_REPORT_FILENAME).read_text(encoding="utf-8")
+    assert "ignored_service_schema" not in report_text
+    assert [m for m in messages if "отсутствует на стороне source" in str(m)]
+    assert [m for m in messages if "отсутствует на стороне target" in str(m)]
+
+
+# --- implicit serial-sequence folding (Phase 16.10) ---
+
+
+def _write_serial_pair(root: Path, *, with_sequence: bool) -> None:
+    """A table with an implicit serial column + (optionally) its default-named
+    sequence file — the cis_zup zup_process_log shape (table name contains
+    underscores, column name too)."""
+    (root / "app").mkdir(parents=True, exist_ok=True)
+    table = """/*====================================================================================
+[<[autodoc-yaml]]
+object:
+  object_catalog: demo
+  object_schema: app
+  object_type: table
+  object_name: zup_process_log
+  object_key: pg_database/demo/schema/app/type/table/name/zup_process_log
+project:
+  build: true
+[[autodoc-yaml]>]
+=====================================================================================*/
+
+CREATE TABLE "app"."zup_process_log" (
+    "process_log_id" serial4 NOT NULL,
+    "note" text NULL
+)
+DISTRIBUTED RANDOMLY;
+"""
+    (root / "app" / "tables").mkdir(exist_ok=True)
+    (root / "app" / "tables" / "table zup_process_log.sql").write_text(table, encoding="utf-8")
+    if with_sequence:
+        seq = """/*====================================================================================
+[<[autodoc-yaml]]
+object:
+  object_catalog: demo
+  object_schema: app
+  object_type: sequence
+  object_name: zup_process_log_process_log_id_seq
+  object_key: pg_database/demo/schema/app/type/sequence/name/zup_process_log_process_log_id_seq
+project:
+  build: true
+[[autodoc-yaml]>]
+=====================================================================================*/
+
+CREATE SEQUENCE "app"."zup_process_log_process_log_id_seq" START 1;
+"""
+        (root / "app" / "sequences").mkdir(exist_ok=True)
+        (root / "app" / "sequences" / "sequence zup_process_log_process_log_id_seq.sql").write_text(
+            seq, encoding="utf-8"
+        )
+
+
+def test_serial_sequence_folded_no_removed_no_blocked(tmp_path):
+    """DB side has the implicit sequence, codebase (serial4 spelling) does
+    not — must NOT appear as removed (the drop-then-fail deadlock)."""
+    src = _copy_fixture_with_manifest(tmp_path / "src")
+    tgt = _copy_fixture_with_manifest(tmp_path / "tgt")
+    _write_serial_pair(src, with_sequence=False)
+    _write_serial_pair(tgt, with_sequence=True)
+
+    service = CompareService()
+    service.run(
+        SideSpec(SnapshotSourceKind.DIR, str(src)),
+        SideSpec(SnapshotSourceKind.DIR, str(tgt)),
+        tmp_path / "report",
+    )
+    report_text = (tmp_path / "report" / DIFF_REPORT_FILENAME).read_text(encoding="utf-8")
+    assert '"removed": 0' in report_text
+    assert "zup_process_log_process_log_id_seq" not in report_text
+    assert '"ignored_serial_sequences": 1' in report_text
+
+
+def test_standalone_sequence_not_folded(tmp_path):
+    """A sequence whose name does not match <table>_<col>_seq stays diffed."""
+    src = _copy_fixture_with_manifest(tmp_path / "src")
+    tgt = _copy_fixture_with_manifest(tmp_path / "tgt")
+    _write_serial_pair(src, with_sequence=False)
+    _write_serial_pair(tgt, with_sequence=False)
+    seq = """/*====================================================================================
+[<[autodoc-yaml]]
+object:
+  object_catalog: demo
+  object_schema: app
+  object_type: sequence
+  object_name: custom_named_seq
+  object_key: pg_database/demo/schema/app/type/sequence/name/custom_named_seq
+project:
+  build: true
+[[autodoc-yaml]>]
+=====================================================================================*/
+
+CREATE SEQUENCE "app"."custom_named_seq" START 1;
+"""
+    (tgt / "app" / "sequences").mkdir(exist_ok=True)
+    (tgt / "app" / "sequences" / "sequence custom_named_seq.sql").write_text(seq, encoding="utf-8")
+
+    service = CompareService()
+    service.run(
+        SideSpec(SnapshotSourceKind.DIR, str(src)),
+        SideSpec(SnapshotSourceKind.DIR, str(tgt)),
+        tmp_path / "report",
+    )
+    report_text = (tmp_path / "report" / DIFF_REPORT_FILENAME).read_text(encoding="utf-8")
+    assert "custom_named_seq" in report_text

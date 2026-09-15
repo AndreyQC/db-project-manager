@@ -34,6 +34,8 @@ _NO_NUMERIC_MOD = frozenset({
     # size, not a meaningful type modifier.
     "int2", "int4", "int8", "smallint", "integer", "bigint",
     "smallserial", "serial", "bigserial",
+    # Suffixed spellings (Phase 16.7 serial detection) — same reason.
+    "serial2", "serial4", "serial8",
     # Floating-point — "precision" here is total bits, not decimal digits.
     "float4", "float8", "real", "double precision",
     # Date / time
@@ -42,6 +44,27 @@ _NO_NUMERIC_MOD = frozenset({
     "bool", "boolean", "bytea", "money", "oid", "uuid", "xml",
     "json", "jsonb", "text", "bpchar", "char", "name",
 })
+
+
+def gp_tail_sql(table: dict[str, Any]) -> str:
+    """Greenplum tail clauses of CREATE TABLE: WITH (...) + DISTRIBUTED ...
+
+    Empty on PostgreSQL RE output (no distribution/storage options there).
+    Values keep the catalog's spelling; compare-side normalization
+    (normalize_sql, Phase 16.7) makes option case/order hash-insensitive.
+    """
+    parts: list[str] = []
+    options = table.get("storage_options")
+    if options:
+        parts.append("WITH (" + ", ".join(options) + ")")
+    dist = table.get("distribution")
+    if dist:
+        if dist.get("kind") == "by" and dist.get("columns"):
+            cols = ", ".join('"' + c.replace('"', '""') + '"' for c in dist["columns"])
+            parts.append(f"DISTRIBUTED BY ({cols})")
+        elif dist.get("kind") in {"randomly", "replicated"}:
+            parts.append(f"DISTRIBUTED {dist['kind'].upper()}")
+    return ("\n" + "\n".join(parts)) if parts else ""
 
 
 def _template_helpers() -> dict[str, Any]:
@@ -371,6 +394,7 @@ class SQLGenerator:
             "constraints": [c for c in constraints if c.get("type") in {"PRIMARY KEY", "UNIQUE", "CHECK"}],
             "foreign_keys": [c for c in constraints if c.get("type") == "FOREIGN KEY"],
             "indexes": table.get("indexes") or [],
+            "gp_tail": gp_tail_sql(table),
         }
         return ctx, f"table {table['name']}.sql", ""
 

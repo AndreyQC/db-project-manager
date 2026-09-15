@@ -794,8 +794,9 @@ class TestApplyLayout:
                         distributed_by=["id"],
                         with_options={"appendoptimized": "TRUE", "orientation": "COLUMN"},
                     ),
-                    # WITH options without distributed_by (DISTRIBUTED RANDOMLY)
-                    # must still render the WITH clause.
+                    # WITH options without distributed_by must still render the
+                    # WITH clause; an empty distributed_by emits an explicit
+                    # DISTRIBUTED RANDOMLY (Phase 15.8, decision P-1).
                     YamlTable(
                         name="t2",
                         columns=[YamlColumn(name="c", type="text", nullable=True)],
@@ -811,7 +812,7 @@ class TestApplyLayout:
         assert " DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'utc')" in t1
 
         t2 = (tmp_path / "s" / "tables" / "table t2.sql").read_text(encoding="utf-8")
-        assert ")\nWITH (orientation=COLUMN);" in t2
+        assert ")\nWITH (orientation=COLUMN)\nDISTRIBUTED RANDOMLY;" in t2
 
     def test_view_and_function_written_verbatim(self, tmp_path: Path):
         """definition is a FULL statement body — it must be emitted verbatim.
@@ -847,6 +848,124 @@ class TestApplyLayout:
         s = {x.name: x for x in rt.schemas}["s"]
         assert s.views[0].definition.strip() == view_def
         assert s.functions[0].definition.strip() == func_def
+
+
+class TestConvertExternalTables:
+    """Phase 15.8: convert_external_to_tables turns external_tables into
+    regular tables — columns/name 1:1, LOCATION/FORMAT dropped, provenance
+    comment (P-4), explicit DISTRIBUTED RANDOMLY for an empty distributed_by
+    (P-1), and the flag lifts the GP→postgres ban (P-3)."""
+
+    @staticmethod
+    def _project() -> YamlProject:
+        return YamlProject(
+            db_type="greenplum",
+            database="d",
+            generated_at="2026-09-08T00:00:00+00:00",
+            schemas=[
+                YamlSchema(
+                    name="s",
+                    tables=[
+                        YamlTable(
+                            name="t1",
+                            columns=[YamlColumn(name="id", type="int4", nullable=False)],
+                            distributed_by=["id"],
+                        ),
+                    ],
+                    external_tables=[
+                        YamlExternalTable(
+                            name="ext_w_staging",
+                            columns=[
+                                YamlColumn(name="period_calc", type="date", nullable=True),
+                                YamlColumn(name="employee_id", type="text", nullable=True),
+                            ],
+                            location="pxf://staging_tr?PROFILE=JDBC&SERVER=ch_cis_zup",
+                            format_type="CUSTOM",
+                            format_options="FORMATTER='pxfwritable_export'",
+                            encoding="UTF8",
+                        ),
+                    ],
+                ),
+            ],
+        )
+
+    def test_convert_greenplum_writes_regular_table(self, tmp_path: Path):
+        service = YamlApplyService()
+        result = service.run(self._project(), tmp_path, "greenplum", convert_external_to_tables=True)
+
+        assert result.converted_external_tables == 1
+        assert result.skipped_external_tables == 0
+        # Converted table uses the RE table layout; external_tables/ is never created.
+        table_file = tmp_path / "s" / "tables" / "table ext_w_staging.sql"
+        assert table_file.exists()
+        assert not (tmp_path / "s" / "external_tables").exists()
+
+        sql = table_file.read_text(encoding="utf-8")
+        # Provenance comment (P-4)
+        assert (
+            "-- converted from external table; "
+            "source LOCATION: pxf://staging_tr?PROFILE=JDBC&SERVER=ch_cis_zup; FORMAT: CUSTOM" in sql
+        )
+        # External-specific clauses never leak into the DDL
+        assert "LOCATION (" not in sql
+        assert "FORMAT" not in sql.replace("FORMAT: CUSTOM", "")
+        # autodoc identifies the object as a regular table
+        assert "object_type: table" in sql
+        # Empty distributed_by -> explicit DISTRIBUTED RANDOMLY (P-1)
+        assert "DISTRIBUTED RANDOMLY;" in sql
+        # Columns survive 1:1 (completeness by fields, LESSONS §55)
+        assert '"period_calc" date NULL' in sql
+        assert '"employee_id" text NULL' in sql
+
+    def test_convert_postgres_no_error(self, tmp_path: Path):
+        """P-3: the flag lifts the GP→postgres ban on external tables."""
+        service = YamlApplyService()
+        result = service.run(self._project(), tmp_path, "postgres", convert_external_to_tables=True)
+
+        assert result.converted_external_tables == 1
+        sql = (tmp_path / "s" / "tables" / "table ext_w_staging.sql").read_text(encoding="utf-8")
+        # postgres target: no DISTRIBUTED clause at all (GP-only)
+        assert "DISTRIBUTED" not in sql
+
+    def test_no_flag_postgres_still_raises(self):
+        service = YamlApplyService()
+        with pytest.raises(YamlApplyError, match="external tables.*Postgres does not support"):
+            service.run(self._project(), Path("/tmp/out"), "postgres")
+
+    def test_no_flag_greenplum_keeps_external(self, tmp_path: Path):
+        service = YamlApplyService()
+        result = service.run(self._project(), tmp_path, "greenplum")
+
+        assert result.converted_external_tables == 0
+        assert (tmp_path / "s" / "external_tables" / "external_table ext_w_staging.sql").exists()
+        assert not (tmp_path / "s" / "tables" / "table ext_w_staging.sql").exists()
+
+    def test_name_collision_raises(self):
+        project = self._project()
+        project.schemas[0].tables.append(
+            YamlTable(name="ext_w_staging", columns=[YamlColumn(name="c", type="text")])
+        )
+        service = YamlApplyService()
+        with pytest.raises(YamlApplyError, match="same name already exists"):
+            service.run(project, Path("/tmp/out"), "greenplum", convert_external_to_tables=True)
+
+    def test_regular_table_without_distributed_by_gets_randomly(self, tmp_path: Path):
+        """P-1 (user extension): the explicit RANDOMLY rule applies to ANY
+        table with an empty distributed_by, not only converted ones."""
+        project = YamlProject(
+            db_type="greenplum",
+            database="d",
+            generated_at="2026-09-08T00:00:00+00:00",
+            schemas=[
+                YamlSchema(
+                    name="s",
+                    tables=[YamlTable(name="lu", columns=[YamlColumn(name="c", type="text")])],
+                ),
+            ],
+        )
+        YamlApplyService().run(project, tmp_path, "greenplum")
+        sql = (tmp_path / "s" / "tables" / "table lu.sql").read_text(encoding="utf-8")
+        assert "DISTRIBUTED RANDOMLY;" in sql
 
 
 class TestDeploySchemaSeeding:
