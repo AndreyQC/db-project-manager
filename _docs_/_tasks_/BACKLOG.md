@@ -843,3 +843,134 @@ RE-снапшот законно отражает БД, кодовая база 
 
 **Связано:** `application/safety_gate_service.py`, LESSONS §73-контекст,
 Phase 16 журнал §4 (16.11).
+
+---
+
+## P2. Исключение схемы `public` из compare — полное игнорирование
+
+**Контекст (пользователь, 2026-09-17):** схема `public` — «общая»: в ней живут
+объекты extension'ов (uuid-ossp, pg_trgm и т.п.), утилитные/административные
+функции и прочее окружение, которое кодовая база не управляет и не должна
+управлять. Текущее обращение с ней в проекте противоречиво:
+
+- **RE включает public целиком**: `GET_SCHEMAS`
+  (`infrastructure/database/postgres/queries.py`) фильтрует только `pg_%` и
+  `information_schema`; на GP дополнительно `GP_ADMIN_SCHEMAS`. Объекты public
+  читаются в кодовую базу как обычные пользовательские.
+- **Генератор делает половинчатую уступку**: `sql_generator.py::
+  _generate_schema` пропускает только `schema public.sql` («exists by
+  default»), но все таблицы/вью/функции внутри public рендерятся.
+- **Compare не имеет схемного фильтра для public**: исключаются только
+  сервис-схема `__deploy` (`_exclude_service_schema`, Phase 16.8),
+  `build=false` (Phase 15.7), имплицитные serial-последовательности
+  (Phase 16.10); `snapshot.py` фильтрует по типам (`DIFFED_TYPES`), не по
+  схемам. Итог: объекты public диффятся наравне с пользовательскими.
+- **Парсинг считает public дефолтом** для неквалифицированных имён
+  (`normalize.py`, `pg_sql_parser.py`) — т.е. схема «знаома» инструменту,
+  но не выведена из-под управления.
+
+Последствие: постоянный шум added/removed/changed по public между средами
+(в БД объекты есть, в кодовой базе их не ведут) и на дев-БД — false REMOVED
+с данными → safety-gate violations → заблокированные `deploy plan`/`apply`.
+
+**Решение (пользователь, 2026-09-17):** исключить `public` из сравнения
+**полностью** — инструмент не диффует эту схему, как уже не диффует
+собственное runtime-состояние (`__deploy`) и админ-схемы GP (LESSONS §71).
+
+**Действие:**
+
+1. В `CompareService` добавить шаг `_exclude_public_schema` по образцу
+   `_exclude_service_schema`: удаление объектов public из ОБЕИХ сторон
+   in-place + чистка рёбер, задействующих удалённые вершины; summary-ключ
+   `ignored_public_schema` (паритет с `ignored_service_schema`).
+2. Семантика распространяется на `deploy plan`/`apply`/`analyze` (все
+   переиспользуют CompareService): объекты public не попадают в дельту и
+   safety-gate — конструкторское намерение «инструмент не управляет public».
+3. Согласовать RE: сравнение игнорирует public в любом случае; вопрос,
+  читать ли public в кодовую базу при reverse-engineer (оставить как есть
+  — информационно — или исключить на уровне `GET_SCHEMAS`) — решить в плане
+   фазы. Исключение на уровне RE меняет структуру существующих кодовых баз
+   (каталог `public/` перестанет появляться) — учесть в миграции.
+4. Рассмотреть обобщение: единый ignore-list схем в CompareService
+   (`service_schema` + `public` [+ `GP_ADMIN_SCHEMAS` на GP]) вместо
+   точечных методов.
+
+**Открытый вопрос:** кейс «пользователь сознательно моделирует свои объекты
+в public» — полное игнорирование лишает такие объекты coverage в diff/deploy.
+Базовое решение безусловное (по фидбеку 2026-09-17); escape-hatch
+(например `compare.ignore_schemas` в config.yaml со значением по умолчанию
+`["public"]`) — опционально, если кейс проявится.
+
+**Триггер:** зафиксирован — фидбек пользователя от 2026-09-17 (дев-БД GP,
+шум/блокировки по public).
+
+**Связано:** `application/compare_service.py` (`_exclude_service_schema` —
+образец, Phase 16.8), `infrastructure/database/postgres/queries.py::
+GET_SCHEMAS`, `infrastructure/sql/sql_generator.py::_generate_schema`,
+`_docs_/_tasks_/2026-09-17/20260917_001_deploy_reset_draft.md` §7 (риск
+спец-обработки public при сбросе — решается совместно), LESSONS §71.
+
+**Не блокирует** деплой на схемах, управляемых кодовой базой; до закрытия
+даёт ложные блокировки на БД, где public содержит объекты/данные.
+
+---
+
+## P3. Захват ACL (прав/владельцев) в RE и кодовую базу — pg_dump-подход
+
+**Контекст (пользователь, 2026-09-17, из задачи deploy reset):** инструмент не
+знает о правах доступа вообще:
+
+- RE читает только структуру: `GET_SCHEMAS` возвращает `nspname` + комментарий;
+  объектные каталог-запросы тоже не читают `relacl`/`proacl`/`nspowner`;
+- рендер кодовой базы (`sql_generator.py` + `*.sql.j2`) — только структурный
+  DDL (`CREATE SCHEMA "<name>";`, `COMMENT ON SCHEMA`), без
+  `GRANT`/`REVOKE`/`ALTER … OWNER TO`/`ALTER DEFAULT PRIVILEGES`;
+- слот `"grant": 6` в `TYPE_PRIORITIES` (`infrastructure/graph/
+  topological_sort.py`) зарезервирован, но объекта с таким типом не существует.
+
+Последствие: любой деплой в «чистую» БД (validation temp-БД, rehearsal-БД,
+reset + повторный деплой, новый кластер) создаёт объекты «голыми» — владелец =
+deploy-пользователь, права прикладным ролям не выдаются. `deploy reset`
+(draft 2026-09-17) закрывает проблему частично (content-drop сохраняет
+schema-level ACL + артефакт `reset_acl_snapshot.sql`), но объектные GRANT'ы
+и исходные владельцы объектов всё равно теряются (D10 draft'а).
+
+**Цель:** как pg_dump — вычитывать привилегии из каталога и фиксировать их в
+кодовой базе как управляемые объекты, чтобы деплой воспроизводил ролевую
+модель в любой целевой БД.
+
+**Действие (эскиз, уточнить в плане фазы):**
+
+1. RE: читать `pg_namespace.nspowner`/`nspacl`, `pg_class.relacl`,
+   `pg_proc.proacl`, `pg_default_acl` (через `aclexplode`) и рендерить
+   per-schema файл вида `<schema>/grants.sql` (или `schema <name>.grants.sql`)
+   с `GRANT … ON SCHEMA`, объектными `GRANT …`, `ALTER … OWNER TO`,
+   `ALTER DEFAULT PRIVILEGES`. Per-schema файл проще и достаточен для MVP;
+   per-object — если понадобится точечный diff.
+2. Новый тип вершины `grant` (приоритет 6 уже зарезервирован — применяется
+   последним, когда все объекты созданы). По природе идемпотентен: повторный
+   GRANT/ALTER OWNER — no-op.
+3. Autodoc-заголовок как у остальных объектов (включая `project.build`).
+4. compare/diff: решить в плане — включать `grant` в `DIFFED_TYPES` или
+   исключить из сравнения на MVP (как extensions/database_settings); учесть
+   пересечение с ignore-списком схем (public, сервисная схема — см. запись
+   P2 «Исключение public из compare»).
+5. Роли: GRANT'ы ссылаются на кластерные роли (`pg_roles`), которые не
+   являются объектами БД и инструментом не управляются. Применение —
+   fail-soft: отсутствующая роль → WARN и пропуск statement'а, иначе деплой
+   на кластер без роли упадёт. Строгий режим — опцией позже.
+6. REVOKE-дрейф (право отозвали в БД, в кодовой базе осталось): MVP — не
+   обрабатывать; полный цикл требует diff'а grant-объектов и генерации REVOKE.
+
+**Триггер:** переход от дев-цикла к деплою в среды с ролевой моделью
+(app-роль с ограниченными правами, staging/prod), где «голые» объекты
+нарушают безопасность; либо перенос кодовой базы на новый кластер.
+
+**Связано:** `_docs_/_tasks_/2026-09-17/20260917_001_deploy_reset_draft.md`
+(D9/D10 — обходной путь reset'а), `infrastructure/graph/topological_sort.py`
+(`TYPE_PRIORITIES["grant"]`), `infrastructure/database/postgres/queries.py`
+(`GET_SCHEMAS`), `infrastructure/sql/sql_generator.py`,
+`infrastructure/diff/snapshot.py` (`DIFFED_TYPES`).
+
+**Не блокирует** деплой; до закрытия права восстанавливаются вручную
+(`reset_acl_snapshot.sql` при reset) либо внешними скриптами.
