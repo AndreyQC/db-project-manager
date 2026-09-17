@@ -99,6 +99,19 @@ db-pm deploy apply \
     --target-connection-file connections/prod.yaml \
     --output-dir ./sg_report
 
+# СБРОС пользовательских схем целевой БД (дев/тест; Phase 18, деструктивно):
+# content-drop схем из кодовой базы и public (оболочки и права сохраняются),
+# полный DROP для «мусорных» схем, которых нет в коде; журнал __deploy
+# очищается (pre/post перезапустятся), schema_version сохраняется. После
+# сброса deploy plan/apply идёт как первый деплой (все объекты ADDED, gate
+# CLEAN). Требует allow_drop_schemas: true в YAML подключения (чекбокс в GUI).
+# Флаги: --dry-run (план + артефакты без мутаций), --yes (CI, без ввода имени).
+db-pm deploy reset \
+    --dir ./output/mydb \
+    --target-connection-file connections/dev.yaml \
+    --output-dir ./reset_report
+# Артефакты: reset_report.{md,json} + reset_acl_snapshot.sql (страховка по правам)
+
 # Сравнение двух состояний (БД или каталог reverse-engineer) — Phase 9
 db-pm compare run \
     --output-dir ./diff_report \
@@ -121,7 +134,8 @@ db-pm yaml apply \
 ```
 
 > **Run-каталоги (Phase 15.7).** Команды `compare run`, `deploy analyze`,
-> `deploy plan`, `deploy apply` пишут артефакты в уникальный подкаталог
+> `deploy plan`, `deploy apply`, `deploy reset` пишут артефакты в уникальный
+> подкаталог
 > `<output-dir>/<имя-прогона>/` (имя вида `dancing-red-crazy-godzilla-45`
 > кодирует время), а DB-side RE-снапшот таргета сохраняется внутри в `target/`
 > (для отладки ложных «changed»). Флаг `--no-run-subdir` возвращает прежнюю
@@ -162,6 +176,13 @@ db-pm-gui
 - «Применить деплой к существующей БД» — запуск `deploy apply` с обязательным
   preflight-чекбоксом «Я понимаю последствия и хочу применить» (красный заголовок
   + гейт на OK). После успешного apply/plan в диалоге — кнопка «Открыть план»,
+
+**Phase 18 — deploy reset из GUI:**
+- «Сбросить пользовательские схемы БД (deploy reset, деструктивно)» — запуск
+  `deploy reset` с двойным префлайтом: флаг «Разрешить drop-схем» в диалоге
+  подключения (иначе сервис откажется до коннекта) + чекбокс-гейт в диалоге
+  действия; есть режим dry-run. Копируемая CLI-команда несёт `--yes` — в
+  консоли сработает родной ввод имени базы.
   Plan Viewer получает prefill (`target_connection`/`codebase_dir`/`output_dir`)
   и кнопка «Применить…» в тулбаре.
 - Меню «Вид → Plan Viewer…» — открыть любой `plan.json` отдельно.

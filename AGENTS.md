@@ -65,5 +65,6 @@ Marked `@pytest.mark.integration`, skipped by default. Require Docker Desktop ru
 
 ## Next Phase
 
-Phase 17 — post-deploy отчёты (CD-16..19); Phase 16 (Greenplum tuning) завершена —
-`_docs_/_phases_/Phase_16.md`
+Phase 17 — post-deploy отчёты (CD-16..19). Phase 18 (deploy reset — сброс
+пользовательских схем) реализована 2026-09-17 до Phase 17 по решению
+пользователя: `_docs_/_tasks_/2026-09-17/20260917_001_deploy_reset_final.md`.
