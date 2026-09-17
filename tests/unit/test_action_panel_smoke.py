@@ -30,6 +30,7 @@ from db_project_manager.presentation.gui.actions.dialogs import (  # noqa: E402
     DeployApplyDialog,
     DeployInitServiceSchemaDialog,
     DeployPlanDialog,
+    DeployResetDialog,
     DeployValidateDialog,
     GraphPrepareDialog,
     ReverseEngineerDialog,
@@ -39,6 +40,7 @@ from db_project_manager.presentation.gui.actions.models import (  # noqa: E402
     DeployAnalyzeSettings,
     DeployApplySettings,
     DeployInitServiceSchemaSettings,
+    DeployResetSettings,
     DeployValidateSettings,
     GraphPrepareSettings,
     ReverseEngineerSettings,
@@ -342,3 +344,35 @@ def test_init_service_schema_dialog_roundtrip_target_connection(qapp, tmp_path):
     assert s.target_connection == ""
     # Verify the field exists in the model (contract guard).
     assert "target_connection" in DeployInitServiceSchemaSettings.model_fields
+
+
+# --- Phase 18: deploy reset dialog (destructive preflight) ---
+
+
+def test_buttons_are_last_row_deploy_reset(qapp, tmp_path):
+    dlg = DeployResetDialog(ConnectionStore(tmp_path), DeployResetSettings())
+    assert isinstance(_last_form_widget(dlg), QDialogButtonBox)
+
+
+def test_reset_dialog_confirm_checkbox_gates_ok(qapp, tmp_path):
+    """Phase 18 preflight: OK disabled until the destructive-wipe box is
+    checked (same pattern as DeployApplyDialog, LESSONS §43)."""
+    dlg = DeployResetDialog(ConnectionStore(tmp_path), DeployResetSettings())
+    ok_button = dlg._button_box.button(QDialogButtonBox.StandardButton.Ok)
+    assert ok_button is not None
+    assert ok_button.isEnabled() is False, "OK must start disabled"
+    dlg._confirm.setChecked(True)
+    qapp.processEvents()
+    assert ok_button.isEnabled() is True
+    dlg._confirm.setChecked(False)
+    qapp.processEvents()
+    assert ok_button.isEnabled() is False
+
+
+def test_reset_dialog_settings_roundtrip(qapp, tmp_path):
+    dlg = DeployResetDialog(ConnectionStore(tmp_path), DeployResetSettings())
+    dlg._dry_run.setChecked(True)
+    dlg._confirm.setChecked(True)
+    s = dlg.settings()
+    assert s.dry_run is True
+    assert s.confirm_understands_risk is True

@@ -7,6 +7,7 @@ Layout:
     db-pm deploy    analyze                     --dir <dir> --target-connection-file <conn.yaml> [...]
     db-pm deploy    plan                        --dir <dir> --target-connection-file <conn.yaml> [...]
     db-pm deploy    apply                       --dir <dir> --target-connection-file <conn.yaml> [...]
+    db-pm deploy    reset                       --dir <dir> --target-connection-file <conn.yaml> [...]
 
 Connection management (create/edit) is UI-only; the CLI consumes a connection
 file produced in the GUI (see roadmap §8).
@@ -40,6 +41,11 @@ from db_project_manager.application.service_schema_initializer import (
 from db_project_manager.application.reverse_engineer import (
     ReverseEngineerError,
     build_default_service,
+)
+from db_project_manager.application.schema_reset_service import (
+    SchemaResetError,
+    SchemaResetRejected,
+    SchemaResetService,
 )
 from db_project_manager.domain.graph import CycleError
 from db_project_manager.infrastructure.config.app_config import load_cfg
@@ -769,6 +775,123 @@ def deploy_apply(
         f"версия {result.applied_version}{rehearsal_note}. Артефакты: {result.output_dir}",
         fg=typer.colors.GREEN,
     )
+
+
+@deploy_app.command("reset")
+def deploy_reset(
+    directory: Annotated[Path, typer.Option("--dir", help="Codebase root (db_type check + schema classification).")],
+    target_connection_file: Annotated[
+        Path,
+        typer.Option(
+            "--target-connection-file",
+            help="Connection YAML of the target DB (MUST have allow_drop_schemas: true).",
+        ),
+    ],
+    output_dir: Annotated[
+        Path,
+        typer.Option("--output-dir", help="Where to write reset_report.* and reset_acl_snapshot.sql."),
+    ],
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Print the wipe plan + write artifacts, mutate nothing."),
+    ] = False,
+    assume_yes: Annotated[
+        bool,
+        typer.Option("--yes", help="Skip the type-the-database-name confirmation (CI)."),
+    ] = False,
+    no_run_subdir: _NO_RUN_SUBDIR_OPTION = False,
+    config: Annotated[Optional[Path], typer.Option("--config", help="Path to config.yaml.")] = None,
+) -> None:
+    """DESTRUCTIVE: wipe ALL user schemas of the target DB (dev/reset-to-clean).
+
+    Content-drop for codebase schemas and public (schema shells, their ACLs,
+    owners and default privileges survive; the next deploy sees UNCHANGED
+    schemas and rebuilds contents); full DROP SCHEMA CASCADE for schemas
+    absent from the codebase. The __deploy journal tables are cleared so
+    pre/post scripts re-run; schema_version is kept. An ACL insurance snapshot
+    (reset_acl_snapshot.sql) is written before any mutation.
+
+    Requires allow_drop_schemas: true on the connection file.
+
+    Exit codes: 0 — ok; 1 — rejected (flag missing / not confirmed); 2 — hard error.
+    """
+    cfg = load_cfg(config if config is not None else None)
+    configure_logging(level=cfg.logging.level, console=True, logs_dir=cfg.paths.logs_dir)
+    conn_cfg = _load_connection(target_connection_file)
+
+    run_dir = create_run_dir(output_dir, enabled=not no_run_subdir)
+    service = SchemaResetService(service_schema=cfg.deploy.service_schema)
+
+    try:
+        plan = service.collect(directory, conn_cfg)
+    except SchemaResetRejected as e:
+        typer.secho(f"✗ Reset отклонён: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from e
+    except SchemaResetError as e:
+        typer.secho(f"✗ Reset: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from e
+
+    # Plan printout — everything the confirmation asks the human to verify.
+    typer.secho(
+        f"Цель: {conn_cfg.host}:{conn_cfg.port}/{conn_cfg.database} "
+        f"(user: {conn_cfg.username}, тип: {conn_cfg.type})",
+        fg=typer.colors.YELLOW,
+    )
+    typer.echo(f"Служебная схема (не тронута): {cfg.deploy.service_schema}")
+    if not plan.schemas:
+        typer.secho("Пользовательских схем нет — сброс не требуется.", fg=typer.colors.GREEN)
+        raise typer.Exit()
+    for schema in plan.schemas:
+        mode = "content-drop (права сохраняются)" if plan.is_content_drop(schema) else "DROP SCHEMA CASCADE"
+        origin = "в кодовой базе" if schema in plan.in_codebase else "только в БД (мусор)"
+        typer.echo(f"  - {schema}: {plan.object_counts.get(schema, '?')} объектов — {mode}; {origin}")
+    ext_victims = [e["name"] for e in plan.extensions if e.get("schema") in set(plan.schemas)]
+    if ext_victims:
+        typer.echo(f"  Extensions (DROP + пересоздание деплоем): {', '.join(sorted(ext_victims))}")
+    typer.echo(f"ACL-снапшот будет записан: {run_dir / 'reset_acl_snapshot.sql'}")
+
+    if dry_run:
+        typer.secho("Dry-run: мутаций не будет.", fg=typer.colors.YELLOW)
+    elif not assume_yes:
+        typed = typer.prompt("Введите ТОЧНОЕ имя базы данных для подтверждения сброса")
+        if typed != conn_cfg.database:
+            typer.secho(
+                f"✗ Введено {typed!r} — не совпадает с {conn_cfg.database!r}. Отказ.",
+                fg=typer.colors.RED,
+                err=True,
+            )
+            raise typer.Exit(code=1)
+
+    def progress(message: str, current: int, total: int) -> None:
+        if total:
+            typer.echo(f"[{current}/{total}] {message}")
+        else:
+            typer.echo(message)
+
+    try:
+        result = service.execute(plan, run_dir, dry_run=dry_run, progress=progress)
+    except SchemaResetRejected as e:
+        typer.secho(f"✗ Reset отклонён: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from e
+    except SchemaResetError as e:
+        typer.secho(f"✗ Reset прерван: {e}", fg=typer.colors.RED, err=True)
+        typer.secho(f"Артефакты прогона: {run_dir}", err=True)
+        raise typer.Exit(code=2) from e
+
+    mode_note = "Dry-run" if result.dry_run else "Сброс выполнен"
+    typer.secho(
+        f"✓ {mode_note}: content-drop {len(result.schemas_wiped)} схем, "
+        f"полных DROP {len(result.schemas_dropped)}, extensions "
+        f"{len(result.extensions_dropped)}, журнал __deploy "
+        f"{'очищен' if result.journal_truncated else 'не тронут'}. "
+        f"Отчёт: {run_dir / 'reset_report.md'}",
+        fg=typer.colors.GREEN,
+    )
+    if not result.dry_run:
+        typer.secho(
+            "Следующий шаг: db-pm deploy plan → apply (все объекты будут ADDED, gate CLEAN).",
+            fg=typer.colors.GREEN,
+        )
 
 
 # --- yaml subapp (Phase 13) ---

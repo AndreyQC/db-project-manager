@@ -297,6 +297,10 @@ class MainWindow(QMainWindow):
         elif action_id == "deploy_apply":
             # result is an ApplyResult (mutates target). Offer to open Plan Viewer.
             self._report_apply_result(result, settings)
+        elif action_id == "deploy_reset":
+            # result is a ResetResult (DESTRUCTIVE wipe). Readable summary,
+            # not the raw dataclass repr (user feedback 2026-09-17).
+            self._report_reset_result(result)
         elif action_id == "compare":
             # result is the report dir (Path). Open it in the viewer and show a summary.
             self._viewer.set_root(str(result))
@@ -328,6 +332,37 @@ class MainWindow(QMainWindow):
             )
         except Exception:  # noqa: BLE001 — best-effort summary, never fatal
             return f"Готово: {report_dir}"
+
+    def _report_reset_result(self, result) -> None:
+        """Phase 18: multi-line readable reset summary (deploy reset)."""
+        mode = "Dry-run" if result.dry_run else "Сброс выполнен"
+        lines = [f"✓ {mode}: {result.target}"]
+        if result.schemas_wiped:
+            lines.append(
+                f"  content-drop (права схем сохранены), {len(result.schemas_wiped)}: "
+                + ", ".join(sorted(result.schemas_wiped))
+            )
+        if result.schemas_dropped:
+            lines.append(
+                f"  удалены целиком, {len(result.schemas_dropped)}: "
+                + ", ".join(sorted(result.schemas_dropped))
+            )
+        ext_note = (
+            f" ({', '.join(sorted(result.extensions_dropped))})"
+            if result.extensions_dropped
+            else ""
+        )
+        lines.append(f"  extensions удалено: {len(result.extensions_dropped)}{ext_note}")
+        lines.append(
+            "  журнал __deploy: "
+            + ("очищен (pre/post/seed перезапустятся)" if result.journal_truncated else "не тронут")
+        )
+        report_md = next(
+            (p for p in (result.report_paths or []) if str(p).endswith(".md")), None
+        )
+        if report_md is not None:
+            lines.append(f"  Отчёт: {report_md}")
+        self._append_status("\n".join(lines))
 
     def _report_analyze_result(self, verdict, settings) -> None:
         """Show the safety-gate verdict + point to the report (Phase 11, SG-7)."""

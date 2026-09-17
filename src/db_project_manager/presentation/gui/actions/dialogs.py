@@ -32,6 +32,7 @@ from db_project_manager.presentation.gui.actions.models import (
     DeployAnalyzeSettings,
     DeployApplySettings,
     DeployInitServiceSchemaSettings,
+    DeployResetSettings,
     DeployValidateSettings,
     GraphPrepareSettings,
     ReverseEngineerSettings,
@@ -548,5 +549,77 @@ class DeployApplyDialog(BaseActionDialog):
             include_drops=self._include_drops.isChecked(),
             no_rehearsal=self._no_rehearsal.isChecked(),
             keep_rehearsal_db=self._keep_rehearsal_db.isChecked(),
+            confirm_understands_risk=self._confirm.isChecked(),
+        )
+
+
+class DeployResetDialog(BaseActionDialog):
+    """Settings for 'deploy reset' (Phase 18) — DESTRUCTIVE schema wipe.
+
+    Preflight-warning + confirmation gate (same pattern as DeployApplyDialog,
+    LESSONS §43): red bold warning, OK disabled until «Я понимаю…» is checked.
+    The GUI gate replaces the CLI's type-the-database-name prompt; the copied
+    CLI command carries ``--yes`` and relies on the prompt when run by hand.
+
+    The connection itself must still carry ``allow_drop_schemas: true`` — the
+    service refuses to connect otherwise (checkbox in ConnectionDialog).
+    """
+
+    def __init__(
+        self,
+        store: ConnectionStore,
+        settings: DeployResetSettings,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__("Deploy reset — настройки ⚠⚠", parent)
+        warning = QLabel(
+            "⚠⚠ ДЕСТРУКТИВНО: удаляет ВСЁ содержимое пользовательских схем БД "
+            "(права схем сохраняются, данные и объекты — нет). "
+            "Только дев/тест-подключения с флагом «Разрешить drop-схем»."
+        )
+        warning.setStyleSheet("color: red; font-weight: bold")
+        warning.setWordWrap(True)
+        self._form.addRow(warning)
+
+        self._codebase_dir = self._dir_row(settings.codebase_dir, "Каталог кодовой базы:")
+        self._target_connection = self._connections_combo(store, settings.target_connection)
+        self._form.addRow("Целевая БД (дев/тест):", self._target_connection)
+        self._output_dir = self._dir_row(
+            settings.output_dir,
+            "Каталог для артефактов:",
+            placeholder="reset_report.* / reset_acl_snapshot.sql",
+        )
+        self._dry_run = QCheckBox("Dry-run: только план и артефакты, без мутаций")
+        self._dry_run.setChecked(settings.dry_run)
+        self._form.addRow(self._dry_run)
+
+        self._confirm = QCheckBox("Я понимаю: данные пользовательских схем будут удалены")
+        self._confirm.setChecked(settings.confirm_understands_risk)
+        self._form.addRow(self._confirm)
+
+        self._add_buttons()
+        ok_button = self._button_box.button(QDialogButtonBox.StandardButton.Ok)
+        if ok_button is not None:
+            ok_button.setEnabled(self._confirm.isChecked())
+            self._confirm.stateChanged.connect(
+                lambda _state: ok_button.setEnabled(self._confirm.isChecked())
+            )
+
+    def _add_buttons(self) -> None:
+        """Keep a reference to the button box for the confirmation gate."""
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        self._form.addRow(buttons)
+        self._button_box = buttons
+
+    def settings(self) -> DeployResetSettings:
+        return DeployResetSettings(
+            codebase_dir=self._codebase_dir.text().strip(),
+            target_connection=self._target_connection.currentText(),
+            output_dir=self._output_dir.text().strip(),
+            dry_run=self._dry_run.isChecked(),
             confirm_understands_risk=self._confirm.isChecked(),
         )

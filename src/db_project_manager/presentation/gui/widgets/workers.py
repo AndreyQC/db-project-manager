@@ -638,3 +638,81 @@ class DeployInitServiceSchemaWorker(QRunnable):
             )
         self.signals.status.emit(summary)
         self.signals.finished.emit(result)
+
+
+class DeployResetWorker(QRunnable):
+    """Run ``db-pm deploy reset`` (DESTRUCTIVE schema wipe) off the UI thread.
+
+    Phase 18: collect (read-only inventory + flag gate) then execute in one go.
+    The GUI-side confirmation lives in ``DeployResetDialog`` (checkbox gate);
+    the CLI's type-the-database-name prompt is intentionally bypassed here —
+    a worker thread cannot answer interactive prompts. Emits ``ResetResult``
+    through ``finished``; ``SchemaResetRejected``/``SchemaResetError`` go via
+    ``signals.error`` with ``finished(None)``.
+    """
+
+    def __init__(
+        self,
+        conn_cfg: ConnectionConfig,
+        codebase_dir: str | Path,
+        output_dir: str | Path,
+        *,
+        dry_run: bool = False,
+        service_schema: str = DEFAULT_SERVICE_SCHEMA,
+    ) -> None:
+        super().__init__()
+        self.conn_cfg = conn_cfg
+        self.codebase_dir = Path(codebase_dir)
+        self.output_dir = Path(output_dir)
+        self.dry_run = dry_run
+        self.service_schema = service_schema
+        self.signals = WorkerSignals()
+
+    def run(self) -> None:
+        from db_project_manager.application.schema_reset_service import (
+            SchemaResetError,
+            SchemaResetRejected,
+            SchemaResetService,
+        )
+        from db_project_manager.infrastructure.config.app_config import load_cfg
+
+        if self.service_schema == DEFAULT_SERVICE_SCHEMA:
+            # Honour the dialog wiring, else pull the configured name (same
+            # pattern as DeployInitServiceSchemaWorker).
+            self.service_schema = load_cfg(None).deploy.service_schema
+
+        service = SchemaResetService(service_schema=self.service_schema)
+
+        def progress(message: str, current: int, total: int) -> None:
+            if total:
+                self.signals.progress.emit(message, current, total)
+            else:
+                self.signals.status.emit(message)
+
+        try:
+            plan = service.collect(self.codebase_dir, self.conn_cfg)
+            result = service.execute(
+                plan, create_run_dir(self.output_dir),
+                dry_run=self.dry_run, progress=progress,
+            )
+        except SchemaResetRejected as e:
+            self.signals.error.emit(f"Reset отклонён: {e}")
+            self.signals.finished.emit(None)
+            return
+        except SchemaResetError as e:
+            self.signals.error.emit(f"Reset: {e}")
+            self.signals.finished.emit(None)
+            return
+        except Exception as e:  # noqa: BLE001
+            self.signals.error.emit(f"Непредвиденная ошибка: {e}")
+            self.signals.finished.emit(None)
+            return
+
+        mode = "Dry-run" if result.dry_run else "Сброс выполнен"
+        self.signals.status.emit(
+            f"✓ {mode}: content-drop {len(result.schemas_wiped)}, полных DROP "
+            f"{len(result.schemas_dropped)}, extensions "
+            f"{len(result.extensions_dropped)}. Отчёт: "
+            f"{result.report_paths[-1] if result.report_paths else '—'}"
+        )
+        self.signals.finished.emit(result)

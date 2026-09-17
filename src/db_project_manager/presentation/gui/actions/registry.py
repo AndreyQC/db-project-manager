@@ -24,6 +24,7 @@ from db_project_manager.presentation.gui.actions.cli import (
     build_cli_deploy_apply,
     build_cli_deploy_init_service_schema,
     build_cli_deploy_plan,
+    build_cli_deploy_reset,
     build_cli_deploy_validate,
     build_cli_graph_prepare,
     build_cli_reverse_engineer,
@@ -35,6 +36,7 @@ from db_project_manager.presentation.gui.actions.models import (
     DeployAnalyzeSettings,
     DeployApplySettings,
     DeployInitServiceSchemaSettings,
+    DeployResetSettings,
     DeployValidateSettings,
     GraphPrepareSettings,
     ReverseEngineerSettings,
@@ -259,6 +261,23 @@ def _make_deploy_init_service_schema_worker(store, settings: DeployInitServiceSc
     )
 
 
+def _make_deploy_reset_dialog(store, settings, parent):
+    from db_project_manager.presentation.gui.actions.dialogs import DeployResetDialog
+
+    return DeployResetDialog(store, settings, parent)
+
+
+def _make_deploy_reset_worker(store, settings: DeployResetSettings):
+    from db_project_manager.presentation.gui.widgets.workers import DeployResetWorker
+
+    return DeployResetWorker(
+        store.load_by_name(settings.target_connection),
+        settings.codebase_dir,
+        settings.output_dir,
+        dry_run=settings.dry_run,
+    )
+
+
 ACTIONS: list[ActionSpec] = [
     ActionSpec(
         action_id="reverse_engineer",
@@ -349,6 +368,15 @@ ACTIONS: list[ActionSpec] = [
         make_worker=_make_deploy_init_service_schema_worker,
         build_cli=build_cli_deploy_init_service_schema,
         required_fields=("target_connection",),
+    ),
+    ActionSpec(
+        action_id="deploy_reset",
+        title="Сбросить пользовательские схемы БД (deploy reset, деструктивно)",
+        settings_model=DeployResetSettings,
+        make_dialog=_make_deploy_reset_dialog,
+        make_worker=_make_deploy_reset_worker,
+        build_cli=build_cli_deploy_reset,
+        required_fields=("codebase_dir", "target_connection", "output_dir"),
     ),
 ]
 

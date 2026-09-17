@@ -15,6 +15,7 @@ from db_project_manager.presentation.gui.actions.models import (
     DeployAnalyzeSettings,
     DeployApplySettings,
     DeployInitServiceSchemaSettings,
+    DeployResetSettings,
     DeployValidateSettings,
     GraphPrepareSettings,
     ReverseEngineerSettings,
@@ -184,3 +185,24 @@ def build_cli_deploy_init_service_schema(
         f"db-pm deploy init-service-schema "
         f"--target-connection-file {_quote(str(conn_file))}"
     )
+
+
+def build_cli_deploy_reset(settings: DeployResetSettings, store: ConnectionStore) -> str:
+    """Build ``db-pm deploy reset ...`` from GUI settings (Phase 18).
+
+    Mirrors ``presentation/cli/main.py:deploy_reset``. ``--yes`` is always
+    included: the GUI-side checkbox gate replaces the CLI's type-the-database-
+    name prompt, and a worker thread cannot answer an interactive prompt.
+    ``confirm_understands_risk`` is a GUI-only flag and never appears here.
+    """
+    conn_file = store.path_for(settings.target_connection)
+    parts = [
+        "db-pm deploy reset",
+        f"--dir {_quote(settings.codebase_dir)}",
+        f"--target-connection-file {_quote(str(conn_file))}",
+        f"--output-dir {_quote(settings.output_dir)}",
+        "--yes",
+    ]
+    if settings.dry_run:
+        parts.append("--dry-run")
+    return " ".join(parts)

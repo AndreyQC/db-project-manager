@@ -22,6 +22,7 @@ from db_project_manager.presentation.gui.actions.cli import (
     build_cli_deploy_apply,
     build_cli_deploy_init_service_schema,
     build_cli_deploy_plan,
+    build_cli_deploy_reset,
     build_cli_deploy_validate,
     build_cli_graph_prepare,
     build_cli_reverse_engineer,
@@ -32,6 +33,7 @@ from db_project_manager.presentation.gui.actions.models import (
     DeployAnalyzeSettings,
     DeployApplySettings,
     DeployInitServiceSchemaSettings,
+    DeployResetSettings,
     DeployValidateSettings,
     GraphPrepareSettings,
     ReverseEngineerSettings,
@@ -698,3 +700,40 @@ def test_contract_yaml_apply_convert_flag(tmp_path, monkeypatch):
     result = runner.invoke(cli_main.app, _argv(cmd))
     assert result.exit_code == 0, result.output
     assert received["convert"] is True
+
+
+def test_deploy_reset_cli_string_always_yes_and_dry_run_flag(tmp_path):
+    """build_cli_deploy_reset (Phase 18): --yes always (GUI gate replaces the
+    CLI prompt), --dry-run only when set, confirm flag never leaks."""
+    store = _store(tmp_path)
+    s = DeployResetSettings(
+        codebase_dir=str(tmp_path / "code"),
+        target_connection="dev",
+        output_dir=str(tmp_path / "out"),
+        dry_run=True,
+        confirm_understands_risk=True,  # GUI-side gate; must NOT appear in CLI
+    )
+    cmd = build_cli_deploy_reset(s, store)
+    assert cmd.startswith("db-pm deploy reset")
+    assert "--yes" in cmd
+    assert "--dry-run" in cmd
+    assert "confirm_understands_risk" not in cmd
+
+
+def test_deploy_reset_cli_string_dry_run_omitted_when_off(tmp_path):
+    store = _store(tmp_path)
+    s = DeployResetSettings(
+        codebase_dir=str(tmp_path / "code"),
+        target_connection="dev",
+        output_dir=str(tmp_path / "out"),
+    )
+    cmd = build_cli_deploy_reset(s, store)
+    assert "--dry-run" not in cmd
+    assert "--yes" in cmd
+
+
+def test_deploy_reset_settings_extra_ignored():
+    """DeployResetSettings keeps the extra='ignore' forward-compat contract."""
+    s = DeployResetSettings.model_validate({"unknown_field": "ignored"})
+    assert s.dry_run is False
+    assert s.confirm_understands_risk is False

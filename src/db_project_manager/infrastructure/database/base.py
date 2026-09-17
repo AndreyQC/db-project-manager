@@ -169,3 +169,82 @@ class DatabaseAdapter(ABC):
           of every attempt, carrying ``deploy_version``/``deploy_source`` so
           reports (Phase 13 CD-17) can JOIN executions to a specific deploy.
         """
+
+    # --- Phase 18: deploy reset (schema wipe) surface ---
+
+    @abstractmethod
+    def list_schemas(self) -> list[str]:
+        """Return user-visible schema names (system/admin schemas excluded).
+
+        PG/Greenplum: everything except ``pg_*``, ``information_schema`` and —
+        on GP connections — the GP admin schemas; the same filter RE applies.
+        The service schema (``__deploy``) is NOT excluded here: it is excluded
+        by the caller (application layer), which knows its configured name.
+        """
+
+    @abstractmethod
+    def get_schema_object_counts(self) -> dict[str, int]:
+        """Approximate object count per schema (report/confirmation aid).
+
+        Advisory precision only — the reset confirmation prints these numbers
+        so the human sees the scale of what is about to be dropped.
+        """
+
+    @abstractmethod
+    def drop_schema(self, name: str) -> None:
+        """``DROP SCHEMA ... CASCADE`` — remove the schema entirely.
+
+        Refuses system/admin schema names (defense in depth on top of the
+        service-level guard). Used only for schemas absent from the codebase
+        (Phase 18 D9 "junk" schemas).
+        """
+
+    @abstractmethod
+    def drop_schema_contents(self, schema: str) -> None:
+        """Drop every user object inside ``schema``, keep the schema shell.
+
+        The shell survives with its ACLs, owner and default privileges intact
+        (Phase 18 D9); a subsequent deploy sees the schema as UNCHANGED and
+        rebuilds the contents. Enumerates ALL droppable object kinds of the
+        concrete DBMS (PG/GP: incl. external/foreign tables) with per-object
+        ``DROP ... CASCADE``; internal dependencies (indexes, constraints,
+        triggers) resolve via cascade.
+        """
+
+    @abstractmethod
+    def snapshot_schema_acls(self, schemas: list[str]) -> str:
+        """Render an executable SQL snapshot of schema-level privileges.
+
+        Returns dialect SQL (PG/GP: ``ALTER SCHEMA ... OWNER TO`` / ``GRANT``
+        / ``ALTER DEFAULT PRIVILEGES``) restoring owner, schema ACLs and
+        default privileges of the listed schemas. Insurance artifact written
+        BEFORE any reset mutation (Phase 18 D9); rendering belongs to the
+        adapter so future DBMS speak their own GRANT dialect.
+        """
+
+    @abstractmethod
+    def truncate_table(self, schema: str, name: str) -> None:
+        """``TRUNCATE TABLE schema.name`` — deploy journal reset (Phase 18 D2).
+
+        Raises :class:`DatabaseError` when the table does not exist (missing
+        ``__deploy`` is a legal state the caller reports as a warning).
+        """
+
+    @abstractmethod
+    def drop_extension(self, name: str) -> None:
+        """``DROP EXTENSION ... CASCADE`` (Phase 18 reset pre-step).
+
+        Extension-member objects cannot be dropped individually (PG refuses
+        even with CASCADE), so extensions residing in wiped schemas must go
+        first; the codebase recreates them via ``CREATE EXTENSION IF NOT
+        EXISTS``.
+        """
+
+    @abstractmethod
+    def list_extensions(self) -> list[dict[str, Any]]:
+        """Extensions with the schema their objects live in.
+
+        Shape: ``[{"name", "schema", "version", "comment"}, ...]``. Adapters
+        of DBMS without the extension concept return ``[]`` — the reset's
+        extension step degrades to a no-op (Phase 18 D11).
+        """

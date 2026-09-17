@@ -97,6 +97,31 @@ class FakeApplyAdapter(DatabaseAdapter):
                 raise DatabaseError(f"simulated failure on {token!r}")
         self.calls.append(("execute_script", self.database or "", script))
 
+    # --- Phase 18 reset surface (unused by apply; stubbed for the ABC) ---
+    def list_schemas(self) -> list[str]:
+        return []
+
+    def get_schema_object_counts(self) -> dict[str, int]:
+        return {}
+
+    def drop_schema(self, name: str) -> None:
+        raise DatabaseError(f"reset not supported by fake: {name}")
+
+    def drop_schema_contents(self, schema: str) -> None:
+        raise DatabaseError(f"reset not supported by fake: {schema}")
+
+    def snapshot_schema_acls(self, schemas: list[str]) -> str:
+        return ""
+
+    def truncate_table(self, schema: str, name: str) -> None:
+        raise DatabaseError(f"reset not supported by fake: {schema}.{name}")
+
+    def drop_extension(self, name: str) -> None:
+        raise DatabaseError(f"reset not supported by fake: {name}")
+
+    def list_extensions(self) -> list[dict[str, Any]]:
+        return []
+
 
 class NewerVersionAdapter(FakeApplyAdapter):
     """Target already carries a newer calver version (forward-only check)."""
