@@ -208,7 +208,9 @@ class DatabaseAdapter(ABC):
         rebuilds the contents. Enumerates ALL droppable object kinds of the
         concrete DBMS (PG/GP: incl. external/foreign tables) with per-object
         ``DROP ... CASCADE``; internal dependencies (indexes, constraints,
-        triggers) resolve via cascade.
+        triggers) resolve via cascade. Routine drops render the argument
+        list even for zero-arg routines — kernels < PG 10 (Greenplum 6)
+        require it in the DROP grammar.
         """
 
     @abstractmethod

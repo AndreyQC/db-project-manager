@@ -591,9 +591,12 @@ class PGDatabaseAdapter(DatabaseAdapter):
 
     def drop_schema_contents(self, schema: str) -> None:
         """Content-drop (Phase 18 D9): objects go, the schema shell and its
-        ACLs/owner/default privileges stay. Every object drops with CASCADE in
-        its own AUTOCOMMIT statement; the first failure stops the wipe
-        (stop-on-error) so the reset report shows exactly where it broke.
+        ACLs/owner/default privileges stay. Every object drops with CASCADE
+        in its own AUTOCOMMIT statement. Routine identities always carry the
+        argument list — ``()`` for zero-arg — because kernels < PG 10
+        (Greenplum 6) make it mandatory in the DROP FUNCTION/PROCEDURE
+        grammar. The first failure stops the wipe (stop-on-error) so the
+        reset report shows exactly where it broke.
         """
         self._require_connection()
         self._assert_reset_allowed_schema(schema)
@@ -623,9 +626,11 @@ class PGDatabaseAdapter(DatabaseAdapter):
                 dropped += 1
             for name, args, prokind in routines:
                 verb = {"p": "PROCEDURE", "a": "AGGREGATE"}.get(prokind, "FUNCTION")
-                ident = f"{quoted_schema}.{self._quote_identifier(name)}"
-                if args:
-                    ident = f"{ident}({args})"
+                # The argument list is mandatory on kernels < PG 10 (GP 6),
+                # even when empty: `name;` is a syntax error there, `name()`
+                # is not. CASCADE is legal on every kernel once the parens
+                # are in place.
+                ident = f"{quoted_schema}.{self._quote_identifier(name)}({args})"
                 self._connection.execute(text(f"DROP {verb} IF EXISTS {ident} CASCADE;"))
                 dropped += 1
         except Exception as e:
