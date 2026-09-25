@@ -8,7 +8,7 @@ SQL text lives in queries.py. The adapter also serves Greenplum connections
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, ClassVar
 
 from loguru import logger
 from sqlalchemy import create_engine, text
@@ -540,6 +540,183 @@ class PGDatabaseAdapter(DatabaseAdapter):
                     )
         except Exception as e:
             raise DatabaseError(f"Не удалось записать script execution: {e}") from e
+
+    # --- Phase 18: deploy reset (schema wipe) surface ---
+
+    #: relkind -> DROP verb for content-drop (Phase 18 D9). 'r'/'p' tables and
+    #: partitioned tables, GP external tables ('x'), foreign tables ('f').
+    _RELKIND_DROP: ClassVar[dict[str, str]] = {
+        "r": "TABLE",
+        "p": "TABLE",
+        "v": "VIEW",
+        "m": "MATERIALIZED VIEW",
+        "S": "SEQUENCE",
+        "f": "FOREIGN TABLE",
+        "x": "EXTERNAL TABLE",
+    }
+
+    def _assert_reset_allowed_schema(self, schema: str) -> None:
+        """Refuse system/GP-admin schemas in any reset DDL (defense in depth).
+
+        The service layer guards the configured service schema; this adapter
+        guard covers everything the platform itself owns.
+        """
+        if schema.startswith("pg_") or schema == "information_schema":
+            raise DatabaseError(f"Отказ: системная схема не может быть сброшена: {schema!r}")
+        if schema in GP_ADMIN_SCHEMAS:
+            raise DatabaseError(f"Отказ: админ-схема GP не может быть сброшена: {schema!r}")
+
+    def list_schemas(self) -> list[str]:
+        """User-visible schema names (RE filter: pg_*/information_schema/GP admin)."""
+        self._require_connection()
+        return [s["name"] for s in self._get_schemas()]
+
+    def get_schema_object_counts(self) -> dict[str, int]:
+        self._require_connection()
+        try:
+            rows = self._exec(q.GET_SCHEMA_OBJECT_COUNTS)
+        except Exception as e:
+            raise DatabaseError(f"Не удалось получить счётчики объектов схем: {e}") from e
+        return {str(name): int(count or 0) for name, count in rows}
+
+    def drop_schema(self, name: str) -> None:
+        self._require_connection()
+        self._assert_reset_allowed_schema(name)
+        quoted = self._quote_identifier(name)
+        try:
+            self._connection.execute(text(f"DROP SCHEMA IF EXISTS {quoted} CASCADE;"))
+            logger.info(f"Схема удалена (DROP SCHEMA CASCADE): {name}")
+        except Exception as e:
+            raise DatabaseError(f"Не удалось удалить схему {name!r}: {e}") from e
+
+    def drop_schema_contents(self, schema: str) -> None:
+        """Content-drop (Phase 18 D9): objects go, the schema shell and its
+        ACLs/owner/default privileges stay. Every object drops with CASCADE
+        in its own AUTOCOMMIT statement. Routine identities always carry the
+        argument list — ``()`` for zero-arg — because kernels < PG 10
+        (Greenplum 6) make it mandatory in the DROP FUNCTION/PROCEDURE
+        grammar. The first failure stops the wipe (stop-on-error) so the
+        reset report shows exactly where it broke.
+        """
+        self._require_connection()
+        self._assert_reset_allowed_schema(schema)
+        quoted_schema = self._quote_identifier(schema)
+        try:
+            objects = self._exec(q.GET_SCHEMA_DROPPABLE_OBJECTS, {"schema": schema})
+        except Exception as e:
+            raise DatabaseError(f"Не удалось прочитать объекты схемы {schema!r}: {e}") from e
+        routines_query = (
+            q.GET_SCHEMA_ROUTINES_POSTGRES if self._supports_prokind()
+            else q.GET_SCHEMA_ROUTINES_GREENPLUM
+        )
+        try:
+            routines = self._exec(routines_query, {"schema": schema})
+        except Exception as e:
+            raise DatabaseError(f"Не удалось прочитать функции схемы {schema!r}: {e}") from e
+
+        dropped = 0
+        try:
+            for name, relkind in objects:
+                verb = self._RELKIND_DROP.get(relkind)
+                if verb is None:  # defensive: query filters to known relkinds
+                    logger.warning(f"Пропущен объект {schema}.{name} с relkind={relkind!r}")
+                    continue
+                ident = f"{quoted_schema}.{self._quote_identifier(name)}"
+                self._connection.execute(text(f"DROP {verb} IF EXISTS {ident} CASCADE;"))
+                dropped += 1
+            for name, args, prokind in routines:
+                verb = {"p": "PROCEDURE", "a": "AGGREGATE"}.get(prokind, "FUNCTION")
+                # The argument list is mandatory on kernels < PG 10 (GP 6),
+                # even when empty: `name;` is a syntax error there, `name()`
+                # is not. CASCADE is legal on every kernel once the parens
+                # are in place.
+                ident = f"{quoted_schema}.{self._quote_identifier(name)}({args})"
+                self._connection.execute(text(f"DROP {verb} IF EXISTS {ident} CASCADE;"))
+                dropped += 1
+        except Exception as e:
+            raise DatabaseError(
+                f"Сброс содержимого схемы {schema!r} прерван на объекте №{dropped + 1}: {e}"
+            ) from e
+        logger.info(f"Content-drop схемы '{schema}': удалено объектов {dropped}.")
+
+    def snapshot_schema_acls(self, schemas: list[str]) -> str:
+        """Render owner/GRANT/ALTER DEFAULT PRIVILEGES for ``schemas`` (D9).
+
+        Insurance artifact, not executed by the tool: written next to the
+        reset report so a human can restore privileges by hand if a wipe went
+        further than intended. Role names are not tool-controlled, so they are
+        escaped (doubled quotes) rather than whitelist-validated.
+        """
+        self._require_connection()
+        header = (
+            "-- db-pm deploy reset: ACL snapshot (schema owner / grants /\n"
+            "-- default privileges). Insurance artifact — restore manually if\n"
+            "-- needed. Generated for schemas: " + ", ".join(schemas) + "\n"
+        )
+        if not schemas:
+            return header + "-- (нет схем)\n"
+        try:
+            acl_rows = self._exec(q.GET_SCHEMA_ACL_SNAPSHOT, {"schemas": list(schemas)})
+            defacl_rows = self._exec(q.GET_DEFAULT_ACL_SNAPSHOT, {"schemas": list(schemas)})
+        except Exception as e:
+            raise DatabaseError(f"Не удалось прочитать ACL схем: {e}") from e
+
+        def _quote_role(role: str | None) -> str:
+            return '"' + str(role).replace('"', '""') + '"'
+
+        lines: list[str] = [header]
+        seen: set[str] = set()
+        for schema_name, owner, privilege, grantee_oid, grantee_name in acl_rows:
+            if schema_name not in seen:
+                seen.add(schema_name)
+                lines.append(f'\n-- Schema "{schema_name}"')
+                lines.append(f"ALTER SCHEMA {self._quote_identifier(schema_name)} "
+                             f"OWNER TO {_quote_role(owner)};")
+            if privilege is None:  # nspacl NULL/empty — owner-only entry
+                continue
+            grantee = "PUBLIC" if not grantee_oid else _quote_role(grantee_name)
+            lines.append(
+                f"GRANT {privilege} ON SCHEMA "
+                f"{self._quote_identifier(schema_name)} TO {grantee};"
+            )
+        objtype_map = {"r": "TABLES", "S": "SEQUENCES", "f": "FUNCTIONS", "T": "TYPES"}
+        for schema_name, role_name, objtype, privilege, grantee_oid, grantee_name in defacl_rows:
+            target = objtype_map.get(objtype)
+            if target is None:
+                lines.append(f"-- неизвестный defaclobjtype={objtype!r} (schema "
+                             f"{schema_name}, role {role_name}) — пропущен")
+                continue
+            grantee = "PUBLIC" if not grantee_oid else _quote_role(grantee_name)
+            lines.append(
+                f"ALTER DEFAULT PRIVILEGES FOR ROLE {_quote_role(role_name)} "
+                f"IN SCHEMA {self._quote_identifier(schema_name)} "
+                f"GRANT {privilege or 'USAGE'} ON {target} TO {grantee};"
+            )
+        if not acl_rows and not defacl_rows:
+            lines.append("-- (права не найдены)\n")
+        return "\n".join(lines) + "\n"
+
+    def truncate_table(self, schema: str, name: str) -> None:
+        self._require_connection()
+        ident = f"{self._quote_identifier(schema)}.{self._quote_identifier(name)}"
+        try:
+            self._connection.execute(text(f"TRUNCATE TABLE {ident};"))
+            logger.info(f"Таблица очищена: {schema}.{name}")
+        except Exception as e:
+            raise DatabaseError(f"Не удалось очистить таблицу {schema}.{name}: {e}") from e
+
+    def drop_extension(self, name: str) -> None:
+        self._require_connection()
+        quoted = self._quote_identifier(name)
+        try:
+            self._connection.execute(text(f"DROP EXTENSION IF EXISTS {quoted} CASCADE;"))
+            logger.info(f"Extension удалён (CASCADE): {name}")
+        except Exception as e:
+            raise DatabaseError(f"Не удалось удалить extension {name!r}: {e}") from e
+
+    def list_extensions(self) -> list[dict[str, Any]]:
+        self._require_connection()
+        return self._get_extensions()
 
     # --- helpers: low-level readers (kept close to the POC result shape) ---
 

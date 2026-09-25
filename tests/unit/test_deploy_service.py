@@ -140,6 +140,31 @@ class DeployFakeAdapter(DatabaseAdapter):
             }
         )
 
+    # Phase 18 reset surface (unused by validation deploy; stubbed for the ABC).
+    def list_schemas(self) -> list[str]:
+        return []
+
+    def get_schema_object_counts(self) -> dict[str, int]:
+        return {}
+
+    def drop_schema(self, name: str) -> None:
+        raise DatabaseError(f"reset not supported by fake: {name}")
+
+    def drop_schema_contents(self, schema: str) -> None:
+        raise DatabaseError(f"reset not supported by fake: {schema}")
+
+    def snapshot_schema_acls(self, schemas: list[str]) -> str:
+        return ""
+
+    def truncate_table(self, schema: str, name: str) -> None:
+        raise DatabaseError(f"reset not supported by fake: {schema}.{name}")
+
+    def drop_extension(self, name: str) -> None:
+        raise DatabaseError(f"reset not supported by fake: {name}")
+
+    def list_extensions(self) -> list[dict[str, Any]]:
+        return []
+
     @staticmethod
     def _extract_qualified_name(script: str) -> str:
         """Best-effort: find the first 'schema.name' identifier in the body."""

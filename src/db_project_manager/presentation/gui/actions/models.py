@@ -146,3 +146,25 @@ class DeployInitServiceSchemaSettings(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     target_connection: str = ""
+
+
+class DeployResetSettings(BaseModel):
+    """Settings for ``db-pm deploy reset`` (Phase 18 / GUI action).
+
+    DESTRUCTIVE: wipes the user schemas of the target DB so the next deploy
+    runs as a first deploy (all objects ADDED, safety gate CLEAN). The target
+    connection MUST carry ``allow_drop_schemas: true`` — the service refuses
+    to connect otherwise.
+
+    ``confirm_understands_risk`` is the GUI-side gate (LESSONS §43 preflight
+    pattern): OK stays disabled until checked. The CLI builder ignores it —
+    the CLI itself asks the user to type the database name instead.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    codebase_dir: str = ""
+    target_connection: str = ""
+    output_dir: str = ""
+    dry_run: bool = False
+    confirm_understands_risk: bool = False  # GUI gate, never sent to CLI

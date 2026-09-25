@@ -65,6 +65,14 @@ class ConnectionConfig(BaseModel):
     name: str | None = None
     options: dict[str, Any] = Field(default_factory=dict)
 
+    # Phase 18 (deploy reset): destructive-schema-reset gate. Must stay a
+    # top-level field — ``options`` goes straight into psycopg connect_args
+    # and cannot carry tool flags.
+    allow_drop_schemas: bool = Field(
+        default=False,
+        description="Разрешить destructive-команду deploy reset для этого подключения",
+    )
+
     # SSH tunnel configuration
     connection_type: ConnectionType = Field(
         default=ConnectionType.DIRECT,

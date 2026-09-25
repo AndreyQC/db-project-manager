@@ -108,3 +108,50 @@ def test_delete(crypto_env: str, tmp_path) -> None:
 def test_token_is_cipher_format() -> None:
     assert _is_cipher_token("crypto__ENV__payload") is True
     assert _is_cipher_token("plain") is False
+
+
+# --- Phase 18: allow_drop_schemas flag round-trip ---
+
+
+def test_allow_drop_schemas_roundtrip_true(crypto_env: str, tmp_path) -> None:
+    store = ConnectionStore(tmp_path)
+    cfg = _make_cfg(allow_drop_schemas=True)
+
+    path = store.save(cfg, name="dev", crypto_env=crypto_env)
+
+    text = path.read_text(encoding="utf-8")
+    assert "allow_drop_schemas: true" in text
+    loaded = store.load_by_name("dev")
+    assert loaded.allow_drop_schemas is True
+
+
+def test_allow_drop_schemas_defaults_false_when_absent(
+    crypto_env: str, tmp_path
+) -> None:
+    """Old YAML files without the field must parse as False (backwards compat)."""
+    store = ConnectionStore(tmp_path)
+    cfg = _make_cfg()
+    path = store.save(cfg, name="legacy", crypto_env=crypto_env)
+
+    # Strip the flag to simulate a pre-Phase-18 connection file.
+    lines = [
+        line for line in path.read_text(encoding="utf-8").splitlines()
+        if not line.startswith("allow_drop_schemas")
+    ]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    loaded = store.load_by_name("legacy")
+    assert loaded.allow_drop_schemas is False
+
+
+def test_allow_drop_schemas_not_in_connect_options(crypto_env: str, tmp_path) -> None:
+    """The flag is a top-level field, never inside ``options`` (which psycopg
+    receives as connect_args — a tool flag there would break connections)."""
+    store = ConnectionStore(tmp_path)
+    cfg = _make_cfg(allow_drop_schemas=True, options={"connect_timeout": 5})
+
+    store.save(cfg, name="dev", crypto_env=crypto_env)
+    loaded = store.load_by_name("dev")
+
+    assert loaded.options == {"connect_timeout": 5}
+    assert "allow_drop_schemas" not in loaded.options

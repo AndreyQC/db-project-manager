@@ -22,6 +22,7 @@ def test_expected_actions_present():
         "graph_prepare", "compare", "yaml_generate", "yaml_apply",
         "deploy_plan", "deploy_apply",  # Phase 15
         "deploy_init_service_schema",  # Phase 15.5.2
+        "deploy_reset",  # Phase 18
     }
 
 

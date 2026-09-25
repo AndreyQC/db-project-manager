@@ -10,6 +10,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -135,6 +136,19 @@ class ConnectionDialog(QDialog):
 
         ssh_layout.addLayout(ssh_form)
 
+        # Phase 18 (deploy reset): destructive-schema-reset permission flag.
+        # Top-level ConnectionConfig field — NOT in options (options go to
+        # psycopg connect_args and cannot carry tool flags).
+        self.allow_drop_schemas_check = QCheckBox(
+            "Разрешить drop-схем (команда сброса deploy reset)"
+        )
+        self.allow_drop_schemas_check.setToolTip(
+            "Разрешает деструктивную команду db-pm deploy reset для этого "
+            "подключения: удаляет всё содержимое пользовательских схем БД "
+            "(права схем сохраняются, данные и объекты — нет).\n"
+            "Включайте ТОЛЬКО для дев/тест-подключений!"
+        )
+
         # Add rows to form
         form.addRow("Название:", self.name_edit)
         form.addRow("Тип подключения:", self.connection_type_combo)
@@ -144,6 +158,7 @@ class ConnectionDialog(QDialog):
         form.addRow("База данных:", self.database_edit)
         form.addRow("Пользователь:", self.username_edit)
         form.addRow("Пароль:", password_row)
+        form.addRow(self.allow_drop_schemas_check)
 
         form.addRow(QLabel())  # Spacer
         form.addRow("SSH туннель:", self.ssh_group)
@@ -211,6 +226,7 @@ class ConnectionDialog(QDialog):
         self.database_edit.setText(cfg.database)
         self.username_edit.setText(cfg.username)
         self.password_edit.setText(cfg.password)
+        self.allow_drop_schemas_check.setChecked(cfg.allow_drop_schemas)
 
         # Load connection type and SSH tunnel settings
         self.connection_type_combo.setCurrentIndex(
@@ -270,6 +286,7 @@ class ConnectionDialog(QDialog):
             password=self.password_edit.text(),
             connection_type=conn_type,
             ssh_tunnel=ssh_tunnel,
+            allow_drop_schemas=self.allow_drop_schemas_check.isChecked(),
         )
 
     def _on_test(self) -> None:

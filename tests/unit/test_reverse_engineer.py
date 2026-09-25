@@ -63,6 +63,31 @@ class FakeAdapter(DatabaseAdapter):
     def get_table_row_counts(self) -> list[dict[str, Any]]:
         return []
 
+    # Phase 18 reset surface (unused by reverse-engineer; stubbed for ABC).
+    def list_schemas(self) -> list[str]:
+        return []
+
+    def get_schema_object_counts(self) -> dict[str, int]:
+        return {}
+
+    def drop_schema(self, name: str) -> None:  # noqa: ARG002
+        raise DatabaseError("reset not supported by fake")
+
+    def drop_schema_contents(self, schema: str) -> None:  # noqa: ARG002
+        raise DatabaseError("reset not supported by fake")
+
+    def snapshot_schema_acls(self, schemas: list[str]) -> str:  # noqa: ARG002
+        return ""
+
+    def truncate_table(self, schema: str, name: str) -> None:  # noqa: ARG002
+        raise DatabaseError("reset not supported by fake")
+
+    def drop_extension(self, name: str) -> None:  # noqa: ARG002
+        raise DatabaseError("reset not supported by fake")
+
+    def list_extensions(self) -> list[dict[str, Any]]:
+        return []
+
     # Phase 11 Safety Gate surface (unused by reverse-engineer; stubbed for ABC).
     def get_table_presence_stats(self) -> list[TablePresenceStats]:
         return []

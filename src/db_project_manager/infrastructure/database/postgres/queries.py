@@ -527,3 +527,102 @@ INSERT_SCRIPT_AUDIT_LOG = """
         (:script_name, :script_type, :checksum, :success, :error_message,
          :duration_ms, :executed_at, :deploy_version, :deploy_source)
 """
+
+
+# --- Phase 18: deploy reset (schema wipe) surface ---
+
+# Approximate object count per schema (report / confirmation aid only).
+# Mirrors the relkinds drop_schema_contents enumerates, plus routines.
+GET_SCHEMA_OBJECT_COUNTS = """
+    SELECT schema_name, sum(cnt) AS objects
+    FROM (
+        SELECT n.nspname AS schema_name, count(c.oid) AS cnt
+        FROM pg_catalog.pg_namespace n
+        JOIN pg_catalog.pg_class c ON c.relnamespace = n.oid
+        WHERE c.relkind IN ('r', 'p', 'v', 'm', 'S', 'f', 'x')
+        GROUP BY n.nspname
+        UNION ALL
+        SELECT n.nspname AS schema_name, count(p.oid) AS cnt
+        FROM pg_catalog.pg_namespace n
+        JOIN pg_catalog.pg_proc p ON p.pronamespace = n.oid
+        GROUP BY n.nspname
+    ) AS per_kind
+    WHERE schema_name NOT LIKE 'pg_%'
+      AND schema_name != 'information_schema'
+    GROUP BY schema_name
+    ORDER BY schema_name
+"""
+
+# Top-level droppable objects of one schema (Phase 18 D9 content-drop).
+# Includes relkinds the RE structure reader does NOT see today: GP external
+# tables (relkind 'x') and foreign tables ('f') must not survive a reset.
+# Indexes/constraints/triggers are deliberately absent — they drop with their
+# owning table via CASCADE.
+GET_SCHEMA_DROPPABLE_OBJECTS = """
+    SELECT c.relname AS name, c.relkind
+    FROM pg_catalog.pg_class c
+    JOIN pg_catalog.pg_namespace n ON c.relnamespace = n.oid
+    WHERE n.nspname = :schema
+      AND c.relkind IN ('r', 'p', 'v', 'm', 'S', 'f', 'x')
+    ORDER BY c.relkind, c.relname
+"""
+
+# Routine identities for content-drop. pg_get_function_identity_arguments
+# renders exactly the argument list DROP needs (types only) and exists since
+# PG 8.4, so the GP 6 kernel (9.4) has it. prokind drives the DROP verb:
+# 'p' -> DROP PROCEDURE, 'a' -> DROP AGGREGATE, 'f'/'w' -> DROP FUNCTION.
+GET_SCHEMA_ROUTINES_POSTGRES = """
+    SELECT p.proname AS name,
+           pg_catalog.pg_get_function_identity_arguments(p.oid) AS args,
+           p.prokind
+    FROM pg_catalog.pg_proc p
+    JOIN pg_catalog.pg_namespace n ON p.pronamespace = n.oid
+    WHERE n.nspname = :schema
+    ORDER BY p.proname
+"""
+
+# Legacy kernel (GP 6, PG 9.4): no prokind column; aggregates via proisagg.
+GET_SCHEMA_ROUTINES_GREENPLUM = """
+    SELECT p.proname AS name,
+           pg_catalog.pg_get_function_identity_arguments(p.oid) AS args,
+           CASE WHEN p.proisagg THEN 'a' ELSE 'f' END AS prokind
+    FROM pg_catalog.pg_proc p
+    JOIN pg_catalog.pg_namespace n ON p.pronamespace = n.oid
+    WHERE n.nspname = :schema
+    ORDER BY p.proname
+"""
+
+# Schema-level privilege snapshot (Phase 18 D9 insurance artifact). nspacl may
+# be NULL (defaults) — LATERAL aclexplode then yields no rows and only the
+# owner line is rendered. grantee oid 0 means PUBLIC (no matching pg_roles row).
+GET_SCHEMA_ACL_SNAPSHOT = """
+    SELECT n.nspname AS schema_name,
+           own.rolname AS owner,
+           acl.privilege_type,
+           acl.grantee,
+           ge.rolname AS grantee_name
+    FROM pg_catalog.pg_namespace n
+    JOIN pg_catalog.pg_roles own ON own.oid = n.nspowner
+    LEFT JOIN LATERAL pg_catalog.aclexplode(n.nspacl) acl ON TRUE
+    LEFT JOIN pg_catalog.pg_roles ge ON ge.oid = acl.grantee
+    WHERE n.nspname = ANY(:schemas)
+    ORDER BY n.nspname, acl.privilege_type, ge.rolname
+"""
+
+# ALTER DEFAULT PRIVILEGES state per schema. defaclobjtype: r=TABLES,
+# S=SEQUENCES, f=FUNCTIONS, T=TYPES (unknown codes fall back to a comment).
+GET_DEFAULT_ACL_SNAPSHOT = """
+    SELECT n.nspname AS schema_name,
+           r.rolname AS role_name,
+           d.defaclobjtype,
+           acl.privilege_type,
+           acl.grantee,
+           ge.rolname AS grantee_name
+    FROM pg_catalog.pg_default_acl d
+    JOIN pg_catalog.pg_namespace n ON n.oid = d.defaclnamespace
+    JOIN pg_catalog.pg_roles r ON r.oid = d.defaclrole
+    LEFT JOIN LATERAL pg_catalog.aclexplode(d.defaclacl) acl ON TRUE
+    LEFT JOIN pg_catalog.pg_roles ge ON ge.oid = acl.grantee
+    WHERE n.nspname = ANY(:schemas)
+    ORDER BY n.nspname, r.rolname, d.defaclobjtype
+"""
