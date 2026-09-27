@@ -76,6 +76,52 @@ def test_query_policy_reaches_tool(box):
         box.query("ro_conn", "DROP TABLE t")
 
 
+# --- query logging (Phase 19.1) ---
+
+
+@pytest.fixture()
+def log_events(monkeypatch):
+    events: list[dict] = []
+    monkeypatch.setattr(tools_module, "log_db_call", events.append)
+    return events
+
+
+def test_query_logged_with_sql_and_response(box, log_events):
+    result = box.query("ro_conn", "SELECT 1")
+    assert len(log_events) == 1
+    event = log_events[0]
+    assert event["tool"] == "query"
+    assert event["connection"] == "ro_conn"
+    assert event["sql"] == "SELECT 1"
+    assert event["row_count"] == result.row_count
+    assert event["response"]["rows"] == [{"x": 1}]
+
+
+def test_refused_query_logged_as_error(box, log_events):
+    with pytest.raises(MCPPermissionError):
+        box.query("ro_conn", "DROP TABLE t")
+    assert len(log_events) == 1
+    assert "MCPPermissionError" in log_events[0]["error"]
+    assert log_events[0]["sql"] == "DROP TABLE t"
+
+
+def test_run_script_logged_with_text(box, log_events):
+    # ro_conn has no allow_writes -> the call is refused, but still logged
+    with pytest.raises(MCPPermissionError):
+        box.run_script("ro_conn", "SELECT 1")
+    assert log_events[0]["tool"] == "run_script"
+    assert log_events[0]["sql"] == "SELECT 1"
+    assert "allow_writes" in log_events[0]["error"]
+
+
+def test_explain_logged_with_plan(box, log_events):
+    box.explain("ro_conn", "SELECT 1")
+    event = log_events[0]
+    assert event["tool"] == "explain"
+    assert event["fmt"] == "text"
+    assert event["response"]["plan"] == "Seq Scan"
+
+
 # --- deploy_plan ---
 
 

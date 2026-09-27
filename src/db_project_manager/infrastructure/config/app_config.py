@@ -30,6 +30,11 @@ class LoggingConfig(BaseModel):
     level: str = "INFO"
     console: bool = True
     file_name: str = "app.log"
+    # Phase 19.1: MCP query/response JSONL log (logs/mcp_queries.log, daily
+    # rotation into dated files, retention below). Carries SQL text and full
+    # DB responses — disable if the log must not contain data literals.
+    log_queries: bool = True
+    queries_retention_days: int = Field(default=14, ge=1, le=3650)
 
 
 class DeployConfig(BaseModel):

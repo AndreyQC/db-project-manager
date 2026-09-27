@@ -11,6 +11,7 @@ progress callbacks) so an MCP-driven deploy behaves identically to
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +39,7 @@ from db_project_manager.domain.connection import ConnectionConfig
 from db_project_manager.domain.query import ExplainResult, QueryResult
 from db_project_manager.infrastructure.config.app_config import CFG
 from db_project_manager.infrastructure.files.run_naming import create_run_dir
+from db_project_manager.infrastructure.query_log import log_db_call
 
 #: How many progress lines travel back to the LLM (deploy runs are long).
 PROGRESS_TAIL = 50
@@ -92,6 +94,49 @@ class MCPToolBox:
 
     # --- data & plans (read-only, MCP-2/3) ---
 
+    @staticmethod
+    def _result_to_jsonable(result: Any) -> Any:
+        """Full DB response for the query log (jsonb values are already JSON-safe)."""
+        if isinstance(result, (QueryResult, ExplainResult)):
+            return result.model_dump()
+        return result
+
+    def _logged(self, tool: str, connection: str, sql: str | None, call) -> Any:
+        """Run a DB call, emitting its SQL text and full response to the query log.
+
+        Refusals and errors are logged too (``error`` field) — the log is the
+        complete audit trail of what the LLM asked the database.
+        """
+        started = time.perf_counter()
+        try:
+            result = call()
+        except Exception as e:
+            log_db_call(
+                {
+                    "tool": tool,
+                    "connection": connection,
+                    "sql": sql,
+                    "error": f"{type(e).__name__}: {e}",
+                    "duration_ms": int((time.perf_counter() - started) * 1000),
+                }
+            )
+            raise
+        event: dict[str, Any] = {
+            "tool": tool,
+            "connection": connection,
+            "sql": sql,
+            "duration_ms": int((time.perf_counter() - started) * 1000),
+            "response": self._result_to_jsonable(result),
+        }
+        if isinstance(result, QueryResult):
+            event["row_count"] = result.row_count
+            event["truncated"] = result.truncated
+        if isinstance(result, ExplainResult):
+            event["fmt"] = result.fmt
+            event["analyzed"] = result.analyzed
+        log_db_call(event)
+        return result
+
     def query(
         self,
         connection: str,
@@ -100,8 +145,12 @@ class MCPToolBox:
         timeout_s: int | None = None,
     ) -> QueryResult:
         """Read-only SELECT (один стейтмент) с лимитом строк и таймаутом."""
-        with self.manager.connection(connection) as conn:
-            return self.queries.query(conn, sql, max_rows=max_rows, timeout_s=timeout_s)
+
+        def call() -> QueryResult:
+            with self.manager.connection(connection) as conn:
+                return self.queries.query(conn, sql, max_rows=max_rows, timeout_s=timeout_s)
+
+        return self._logged("query", connection, sql, call)
 
     def explain(
         self,
@@ -111,13 +160,21 @@ class MCPToolBox:
         fmt: str = "auto",
     ) -> ExplainResult:
         """План выполнения стейтмента. analyze=true исполняет запрос (только read-only)."""
-        with self.manager.connection(connection) as conn:
-            return self.queries.explain(conn, sql, analyze=analyze, fmt=fmt)
+
+        def call() -> ExplainResult:
+            with self.manager.connection(connection) as conn:
+                return self.queries.explain(conn, sql, analyze=analyze, fmt=fmt)
+
+        return self._logged("explain", connection, sql, call)
 
     def get_top_queries(self, connection: str, sort_by: str = "resources", limit: int = 10) -> list[dict[str, Any]]:
         """Топ запросов по pg_stat_statements. sort_by: resources|total|mean."""
-        with self.manager.connection(connection) as conn:
-            return conn.adapter.get_top_queries(sort_by=sort_by, limit=limit)
+
+        def call() -> list[dict[str, Any]]:
+            with self.manager.connection(connection) as conn:
+                return conn.adapter.get_top_queries(sort_by=sort_by, limit=limit)
+
+        return self._logged("get_top_queries", connection, None, call)
 
     # --- scripts (mutating, MCP-4) ---
 
@@ -125,8 +182,12 @@ class MCPToolBox:
         self, connection: str, script: str, confirm_destructive: bool = False
     ) -> dict[str, Any]:
         """Исполнить SQL-скрипт. Требует mcp.allow_writes; DROP/TRUNCATE — ещё и confirm_destructive=true."""
-        with self.manager.connection(connection) as conn:
-            return self.queries.run_script(conn, script, confirm_destructive=confirm_destructive)
+
+        def call() -> dict[str, Any]:
+            with self.manager.connection(connection) as conn:
+                return self.queries.run_script(conn, script, confirm_destructive=confirm_destructive)
+
+        return self._logged("run_script", connection, script, call)
 
     # --- deploy pipeline (MCP-6) ---
 

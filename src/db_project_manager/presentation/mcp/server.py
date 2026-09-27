@@ -164,10 +164,18 @@ def run_server(connections_dir: str, config: Any = None) -> None:
     """Configure logging (stderr!) and serve stdio until the client disconnects."""
     from db_project_manager.infrastructure.config.app_config import load_cfg
     from db_project_manager.infrastructure.logging_setup import configure as configure_logging
+    from db_project_manager.infrastructure.query_log import configure_query_log
 
     cfg = load_cfg(config)
     # stdout carries the MCP protocol; loguru's console sink is stderr-based.
     configure_logging(level=cfg.logging.level, console=True, logs_dir=cfg.paths.logs_dir, file_name="mcp.log")
+    # AFTER configure_logging: that call does logger.remove() and would drop
+    # this sink. SQL text + full DB responses -> logs/mcp_queries.log (JSONL).
+    configure_query_log(
+        cfg.paths.logs_dir,
+        enabled=cfg.logging.log_queries,
+        retention_days=cfg.logging.queries_retention_days,
+    )
 
     manager = ConnectionManager(connections_dir)
     mcp = create_server(manager, cfg)
