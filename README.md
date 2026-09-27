@@ -187,6 +187,94 @@ db-pm-gui
   и кнопка «Применить…» в тулбаре.
 - Меню «Вид → Plan Viewer…» — открыть любой `plan.json` отдельно.
 
+## MCP-сервер (Phase 19)
+
+`db-pm-mcp` — локальный MCP-сервер (Model Context Protocol, транспорт stdio),
+открывающий LLM-агенту (ZCode, Claude Desktop, Cursor) доступ к базам через
+именованные подключения из `connections/*.yaml`: ответы на вопросы по данным,
+анализ планов выполнения, запуск скриптов и полный деплой-цикл.
+
+```bash
+uv sync --extra mcp      # ставит официальны MCP SDK (optional-dependencies)
+```
+
+### Клиенты
+
+ZCode — `.mcp.json` в корне проекта:
+
+```json
+{
+  "mcpServers": {
+    "db-pm": {
+      "command": "uv",
+      "args": ["run", "db-pm-mcp"],
+      "cwd": "C:/path/to/db-project-manager",
+      "env": { "ENVOS_CRYPTO_01": "<Fernet-ключ>" }
+    }
+  }
+}
+```
+
+Claude Desktop — `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "db-pm": {
+      "command": "uv",
+      "args": ["--directory", "C:/path/to/db-project-manager", "run", "db-pm-mcp"],
+      "env": { "ENVOS_CRYPTO_01": "<Fernet-ключ>" }
+    }
+  }
+}
+```
+
+Bootstrap-аргументы сервера: `--connections-dir` (по умолчанию `connections`,
+env `DBPM_CONNECTIONS_DIR`) и `--config` (config.yaml — логирование,
+`deploy.service_schema`). Поведенческих флагов нет — **вся политика в файлах
+подключений** (блок `mcp:`, см. `connections/example.yaml`).
+
+### Инструменты
+
+| Инструмент | Назначение | Гейт |
+|---|---|---|
+| `list_connections` | подключения + эффективные права (без секретов) | — |
+| `list_schemas` / `list_objects` / `get_object_details` | пошаговая инспекция схемы | — |
+| `query` | read-only SELECT (один стейтмент), лимит строк/таймаут | классификация + RO-транзакция |
+| `explain` | план выполнения (text/JSON; `analyze` исполняет запрос) | analyze — только read-only стейтмент |
+| `get_top_queries` | топ запросов из pg_stat_statements | расширение должно быть установлено |
+| `run_script` | произвольный SQL-скрипт (AUTOCOMMIT) | `mcp.allow_writes`; DROP/TRUNCATE — ещё и `confirm_destructive=true` |
+| `deploy_plan` / `deploy_analyze` | dry-run деплоя и safety gate | — (read-only) |
+| `deploy_apply` / `deploy_reset` | применение/сброс (деструктивно) | `mcp.allow_deploy` + штатные предохранители |
+
+### Модель безопасности
+
+Двухслойный read-only (идея из [crystaldba/postgres-mcp](https://github.com/crystaldba/postgres-mcp)):
+
+1. **Классификатор** (sqlglot, диалект подключения): каждый оператор до
+   исполнения относится к `read_only` / `write` / `destructive` / `unknown`.
+   Нераспарсенное = `unknown` = fail-safe как деструктивное. Запрещённые
+   функции в read-only запросах: `dblink`, `pg_read_file`, `pg_sleep`,
+   `lo_import`/`lo_export`, `nextval`/`setval` (RO-транзакция от них не
+   защищает — dblink открывает своё соединение).
+2. **Серверный backstop**: `query` исполняется в `BEGIN TRANSACTION READ ONLY
+   … ROLLBACK` — запись, проскочившая мимо классификатора, отклоняется самим
+   PostgreSQL. `EXPLAIN ANALYZE` обёрнут в ту же транзакцию.
+
+Деплой-инструменты повторяют проводку CLI без изменений: rehearsal на temp-БД,
+Safety Gate, `allow_drop_schemas`, подтверждение именем БД (`confirm_database`).
+Долгие операции (`deploy_apply`) — увеличивайте таймаут MCP-вызовов в клиенте
+(в ответе возвращаются последние строки прогресса).
+
+### Добавление нового движка (MCP-8)
+
+Контракт MCP-слоя диалект-агностичен (`supports_readonly_txn`,
+`supports_statement_timeout`; `ExplainResult.fmt` допускает `xml`/`tabular`).
+Рецепт: пакет `infrastructure/database/<engine>/` (adapter + queries) →
+запись в `registry.get_adapter` → значение в `SUPPORTED_DB_TYPES` → драйвер
+как optional extra → диалект sqlglot в `classify.py:DB_TYPE_DIALECT`.
+MCP-слой править не нужно.
+
 ## Разработка
 
 ```bash
@@ -197,7 +285,7 @@ uv run pytest --cov=db_project_manager   # с покрытием
 uv run ruff check .     # линтер
 ```
 
-Структура пакетов: `domain` (модели) → `infrastructure` (БД, файлы, crypto) → `application` (сервисы) → `presentation` (CLI/GUI). Подробности: `_tasks_/`.
+Структура пакетов: `domain` (модели) → `infrastructure` (БД, файлы, crypto) → `application` (сервисы) → `presentation` (CLI/GUI/MCP). Подробности: `_tasks_/`.
 
 ## Лицензия
 

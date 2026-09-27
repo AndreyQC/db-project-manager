@@ -17,9 +17,10 @@ uv run pytest               # unit tests only (integration skipped by default)
 uv run pytest -m integration # integration tests (requires Docker)
 uv run ruff check .         # linter
 
-# Run CLI/GUI
+# Run CLI/GUI/MCP
 uv run db-pm --help
 uv run db-pm-gui
+uv run db-pm-mcp        # MCP-сервер (stdio); требует: uv sync --extra mcp
 ```
 
 ## Critical: TLS Proxy
@@ -41,8 +42,8 @@ unset SSL_CERT_FILE REQUESTS_CA_BUNDLE CURL_CA_BUNDLE && uv sync
 `src/db_project_manager/`
 - `domain/` — models (Vertex, Edge, DeltaPlan, etc.)
 - `infrastructure/` — DB adapters, queries, diff, deploy logic
-- `application/` — services (ReverseEngineer, GraphService, DeltaService, DeployApplyService, SafetyGateService)
-- `presentation/` — CLI (`cli/`) and GUI (`gui/`)
+- `application/` — services (ReverseEngineer, GraphService, DeltaService, DeployApplyService, SafetyGateService, MCPQueryService)
+- `presentation/` — CLI (`cli/`), GUI (`gui/`), MCP server (`mcp/`, Phase 19)
 
 ## Files Outside Git
 
@@ -68,3 +69,4 @@ Marked `@pytest.mark.integration`, skipped by default. Require Docker Desktop ru
 Phase 17 — post-deploy отчёты (CD-16..19). Phase 18 (deploy reset — сброс
 пользовательских схем) реализована 2026-09-17 до Phase 17 по решению
 пользователя: `_docs_/_tasks_/2026-09-17/20260917_001_deploy_reset_final.md`.
+Phase 19 (MCP-сервер `db-pm-mcp`) — план `_docs_/_tasks_/2026-09-27/20260927_001_mcp_server_plan.md`.

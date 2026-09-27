@@ -38,3 +38,22 @@
 #   ssh_pass: crypto__ENVOS_CRYPTO_01__gAAAAABm...your-token...
 #   remote_bind_host: 127.0.0.1  # DB host as seen from jump host
 #   remote_bind_port: 5432
+
+# =============================================================================
+# MCP SERVER POLICY (Phase 19, db-pm-mcp)
+# =============================================================================
+# Optional block. All settings live here — the MCP server takes no behavioral
+# flags. Fail-safe defaults: everything mutating stays off.
+#
+# mcp:
+#   allow_writes: false      # run_script (any INSERT/UPDATE/DELETE/DDL)
+#   allow_deploy: false      # deploy_apply / deploy_reset (implies writes)
+#   row_limit: 50            # max rows returned by the `query` tool
+#   query_timeout_s: 60      # statement_timeout for query/explain (seconds)
+#
+# Example — a dev database where the LLM agent may run scripts and deploy:
+# mcp:
+#   allow_writes: true
+#   allow_deploy: true
+#   row_limit: 200
+#   query_timeout_s: 120
