@@ -13,6 +13,7 @@ from db_project_manager.application.reverse_engineer import (
     ReverseEngineerService,
 )
 from db_project_manager.domain.connection import ConnectionConfig
+from db_project_manager.domain.query import ExplainResult, QueryResult
 from db_project_manager.domain.safety import TablePresenceStats
 from db_project_manager.infrastructure.database.base import DatabaseAdapter, DatabaseError
 
@@ -84,6 +85,13 @@ class FakeAdapter(DatabaseAdapter):
 
     def drop_extension(self, name: str) -> None:  # noqa: ARG002
         raise DatabaseError("reset not supported by fake")
+
+    # --- Phase 19: MCP surface (unused by these tests; stubbed for ABC)
+    def run_query(self, sql, *, max_rows=50, timeout_s=60, readonly=True):
+        return QueryResult(columns=[], rows=[], row_count=0)
+
+    def explain(self, sql, *, analyze=False, fmt="auto", timeout_s=60):
+        return ExplainResult(fmt="text", plan="fake plan", analyzed=analyze)
 
     def list_extensions(self) -> list[dict[str, Any]]:
         return []

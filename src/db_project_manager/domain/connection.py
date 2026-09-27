@@ -45,6 +45,43 @@ class SSH_TunnelConfig(BaseModel):
     )
 
 
+class McpSettings(BaseModel):
+    """Per-connection MCP server policy (Phase 19).
+
+    Stored under the ``mcp:`` key of a connection YAML file. Fail-safe by
+    design: everything mutating stays off until explicitly enabled. The block
+    carries no secrets, so it needs no encryption (the connection-store
+    decrypt pass is a no-op for plain values).
+
+    Effective policy is always an McpSettings instance — unconfigured
+    connections resolve to the defaults via
+    :attr:`ConnectionConfig.mcp_settings`.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    allow_writes: bool = Field(
+        default=False,
+        description="Разрешить MCP-инструменту run_script изменять данные/схему",
+    )
+    allow_deploy: bool = Field(
+        default=False,
+        description="Разрешить MCP-инструменты deploy_apply / deploy_reset (включая запись)",
+    )
+    row_limit: int = Field(
+        default=50,
+        ge=1,
+        le=1000,
+        description="Лимит строк ответа инструмента query (верхняя граница max_rows)",
+    )
+    query_timeout_s: int = Field(
+        default=60,
+        ge=1,
+        le=3600,
+        description="statement_timeout (секунды) для query/explain этого подключения",
+    )
+
+
 class ConnectionConfig(BaseModel):
     """Parameters needed to connect to a database.
 
@@ -71,6 +108,13 @@ class ConnectionConfig(BaseModel):
     allow_drop_schemas: bool = Field(
         default=False,
         description="Разрешить destructive-команду deploy reset для этого подключения",
+    )
+
+    # Phase 19 (MCP server): per-connection tool policy. None = block absent,
+    # callers resolve defaults via the mcp_settings property.
+    mcp: McpSettings | None = Field(
+        default=None,
+        description="Политика MCP-сервера для этого подключения (блок mcp: в yaml)",
     )
 
     # SSH tunnel configuration
@@ -101,3 +145,8 @@ class ConnectionConfig(BaseModel):
     def is_greenplum(self) -> bool:
         """Whether this connection targets a Greenplum cluster."""
         return self.type.lower() == "greenplum"
+
+    @property
+    def mcp_settings(self) -> McpSettings:
+        """Effective MCP policy: configured block or fail-safe defaults."""
+        return self.mcp if self.mcp is not None else McpSettings()

@@ -7,7 +7,12 @@ SQL text lives in queries.py. The adapter also serves Greenplum connections
 
 from __future__ import annotations
 
+import json
 import re
+import time
+import uuid
+from datetime import date, datetime, time as dt_time
+from decimal import Decimal
 from typing import Any, ClassVar
 
 from loguru import logger
@@ -16,8 +21,13 @@ from sqlalchemy.engine import Engine
 
 from db_project_manager.domain.connection import ConnectionConfig, ConnectionType
 from db_project_manager.domain.deploy import ScriptRecord
+from db_project_manager.domain.query import ExplainResult, QueryResult
 from db_project_manager.domain.safety import StatsConfidence, TablePresenceStats
-from db_project_manager.infrastructure.database.base import DatabaseAdapter, DatabaseError
+from db_project_manager.infrastructure.database.base import (
+    DatabaseAdapter,
+    DatabaseError,
+    NotSupportedError,
+)
 from db_project_manager.infrastructure.database.postgres import queries as q
 from db_project_manager.infrastructure.database.postgres.keywords import get_reserved
 from db_project_manager.infrastructure.database.ssh_tunnel import SSHTunnelManager
@@ -126,8 +136,43 @@ def _qualify_default_schema(default: Any, schema: str) -> Any:
     )
 
 
+def _jsonify(value: Any) -> Any:
+    """Coerce a driver value into a JSON-serializable one (Phase 19, MCP-2).
+
+    Decimal stays a string (exact numeric text beats float rounding for
+    money/ids); temporal values become ISO-8601; binary decodes best-effort.
+    """
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, (datetime, date, dt_time)):
+        return value.isoformat()
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, uuid.UUID):
+        return str(value)
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return bytes(value).decode("utf-8", errors="replace")
+    if isinstance(value, (list, tuple)):
+        return [_jsonify(v) for v in value]
+    if isinstance(value, dict):
+        return {str(k): _jsonify(v) for k, v in value.items()}
+    return str(value)
+
+
+def _plan_payload(payload: Any) -> Any:
+    """Normalize an EXPLAIN (FORMAT JSON) cell to a Python structure."""
+    if isinstance(payload, str):
+        return json.loads(payload)
+    return payload
+
+
 class PGDatabaseAdapter(DatabaseAdapter):
     """Adapter for PostgreSQL (and Greenplum) catalogs."""
+
+    # Phase 19 (MCP surface): both engines enforce read-only transactions and
+    # statement timeouts server-side.
+    supports_readonly_txn: ClassVar[bool] = True
+    supports_statement_timeout: ClassVar[bool] = True
 
     def __init__(self) -> None:
         self._engine: Engine | None = None
@@ -135,6 +180,9 @@ class PGDatabaseAdapter(DatabaseAdapter):
         self._is_greenplum: bool = False
         self._pg_sequence_available: bool | None = None
         self._prokind_available: bool | None = None
+        # pg_stat_statements column generation: PG 13+ renamed total_time to
+        # total_exec_time; Greenplum 6 (kernel PG 9.4) keeps the legacy names.
+        self._pss_modern_columns: bool | None = None
         self._tunnel: SSHTunnelManager | None = None
         self._cfg: ConnectionConfig | None = None
 
@@ -150,6 +198,7 @@ class PGDatabaseAdapter(DatabaseAdapter):
         # Capability probes are per-connection (see _get_sequences, _supports_prokind).
         self._pg_sequence_available = None
         self._prokind_available = None
+        self._pss_modern_columns = None
         if cfg.connection_type == ConnectionType.SSH_TUNNEL:
             self._connect_via_ssh_tunnel(cfg)
         else:
@@ -717,6 +766,175 @@ class PGDatabaseAdapter(DatabaseAdapter):
     def list_extensions(self) -> list[dict[str, Any]]:
         self._require_connection()
         return self._get_extensions()
+
+    # --- Phase 19: MCP server surface ---
+
+    def run_query(
+        self,
+        sql: str,
+        *,
+        max_rows: int = 50,
+        timeout_s: int = 60,
+        readonly: bool = True,
+    ) -> QueryResult:
+        """Execute one statement on a private pooled connection (MCP-2).
+
+        A connection off the engine (not the shared ``self._connection``)
+        keeps session state isolated: ``SET statement_timeout`` and the
+        read-only transaction never leak into deploy operations. AUTOCOMMIT
+        mode means BEGIN/ROLLBACK are explicit protocol calls — the
+        read-only transaction ends with ROLLBACK whatever the statement did,
+        so a write that slipped past classification still cannot commit.
+        """
+        self._require_connection()
+        assert self._engine is not None
+        started = time.perf_counter()
+        notices: list[str] = []
+        columns: list[str] = []
+        fetched: list = []
+        try:
+            with self._engine.connect() as conn:
+                conn.execute(text(f"SET statement_timeout = {int(timeout_s) * 1000}"))
+                try:
+                    if readonly:
+                        conn.execute(text("BEGIN TRANSACTION READ ONLY"))
+                    result = conn.execute(text(sql))
+                    columns = [str(k) for k in result.keys()]
+                    fetched = result.mappings().fetchmany(max_rows + 1)
+                finally:
+                    if readonly:
+                        try:
+                            conn.execute(text("ROLLBACK"))
+                        except Exception as e:  # pragma: no cover - driver-level edge
+                            logger.debug(f"ROLLBACK read-only транзакции не выполнен: {e}")
+                conn.execute(text("RESET statement_timeout"))
+        except Exception as e:
+            message = str(e)
+            if "statement timeout" in message.lower() or "canceling statement" in message.lower():
+                raise DatabaseError(f"Превышен statement_timeout ({timeout_s} c): {message}") from e
+            raise DatabaseError(f"Ошибка выполнения запроса: {message}") from e
+        truncated = len(fetched) > max_rows
+        rows = [{k: _jsonify(v) for k, v in row.items()} for row in fetched[:max_rows]]
+        duration_ms = int((time.perf_counter() - started) * 1000)
+        logger.info(f"run_query: строк={len(rows)} (truncated={truncated}), {duration_ms} мс, readonly={readonly}")
+        return QueryResult(
+            columns=columns,
+            rows=rows,
+            row_count=len(rows),
+            truncated=truncated,
+            duration_ms=duration_ms,
+            notices=notices,
+        )
+
+    def explain(
+        self,
+        sql: str,
+        *,
+        analyze: bool = False,
+        fmt: str = "auto",
+        timeout_s: int = 60,
+    ) -> ExplainResult:
+        """Render the execution plan; ANALYZE runs inside a read-only tx.
+
+        ``fmt="auto"`` tries JSON first and falls back to text on error —
+        Greenplum 6 plan nodes (Motion, ShareInputScan, ...) may fail to
+        serialize to JSON even though the kernel nominally supports the
+        format. The read-only wrapper makes EXPLAIN ANALYZE of anything but
+        a read statement fail server-side (the classifier gates it earlier;
+        this is the backstop).
+        """
+        self._require_connection()
+        assert self._engine is not None
+        requested = "json" if fmt == "auto" else fmt
+        try:
+            if requested == "json":
+                options = ("ANALYZE, " if analyze else "") + "FORMAT JSON"
+                plan_sql = f"EXPLAIN ({options}) {sql}"
+            else:
+                plan_sql = ("EXPLAIN ANALYZE " if analyze else "EXPLAIN ") + sql
+            with self._engine.connect() as conn:
+                conn.execute(text(f"SET statement_timeout = {int(timeout_s) * 1000}"))
+                try:
+                    conn.execute(text("BEGIN TRANSACTION READ ONLY"))
+                    result = conn.execute(text(plan_sql))
+                    if requested == "json":
+                        payload = _plan_payload(result.scalar())
+                        plan: str | dict[str, Any] = payload[0] if isinstance(payload, list) and payload else payload
+                    else:
+                        plan = "\n".join(str(row[0]) for row in result.fetchall())
+                finally:
+                    try:
+                        conn.execute(text("ROLLBACK"))
+                    except Exception as e:  # pragma: no cover - driver-level edge
+                        logger.debug(f"ROLLBACK read-only транзакции не выполнен: {e}")
+                conn.execute(text("RESET statement_timeout"))
+        except Exception as e:
+            if fmt == "auto" and requested == "json":
+                reason = str(e).splitlines()[0]
+                logger.info(f"EXPLAIN FORMAT JSON не сработал ({reason}) — fallback на text")
+                return self.explain(sql, analyze=analyze, fmt="text", timeout_s=timeout_s)
+            raise DatabaseError(f"Ошибка получения плана выполнения: {e}") from e
+        return ExplainResult(fmt=requested, plan=plan, analyzed=analyze)
+
+    #: pg_stat_statements ORDER BY whitelist (Phase 19, MCP-3) — values are
+    #: interpolated into queries via .format(), so only these literals pass.
+    _TOP_QUERIES_ORDER: ClassVar[dict[str, dict[str, str]]] = {
+        "resources": {
+            "modern": "(shared_blks_hit + shared_blks_read)",
+            "legacy": "(shared_blks_hit + shared_blks_read)",
+        },
+        "total": {"modern": "total_exec_time", "legacy": "total_time"},
+        "mean": {"modern": "mean_exec_time", "legacy": "mean_time"},
+    }
+
+    def _pss_uses_modern_columns(self) -> bool:
+        """Probe pg_stat_statements once per connection (PG 13+ column names).
+
+        Missing extension surfaces as NotSupportedError — the tool reports a
+        soft limitation instead of a hard failure.
+        """
+        if self._pss_modern_columns is None:
+            try:
+                self._exec("SELECT total_exec_time FROM pg_stat_statements LIMIT 0")
+                self._pss_modern_columns = True
+            except Exception as e:
+                low = str(e).lower()
+                if "pg_stat_statements" in low and ("does not exist" in low or "не существует" in low):
+                    raise NotSupportedError(
+                        "Расширение pg_stat_statements не установлено в БД — "
+                        "get_top_queries недоступен для этого подключения"
+                    ) from e
+                self._pss_modern_columns = False
+        return self._pss_modern_columns
+
+    def get_top_queries(self, *, sort_by: str = "resources", limit: int = 10) -> list[dict[str, Any]]:
+        """Top statements from pg_stat_statements (MCP-3)."""
+        self._require_connection()
+        order = self._TOP_QUERIES_ORDER.get(sort_by)
+        if order is None:
+            raise DatabaseError(
+                f"Недопустимый sort_by: {sort_by!r}. Допустимо: {', '.join(sorted(self._TOP_QUERIES_ORDER))}."
+            )
+        modern = self._pss_uses_modern_columns()
+        template = q.GET_TOP_QUERIES_MODERN if modern else q.GET_TOP_QUERIES_LEGACY
+        try:
+            rows = self._exec(template.format(order=order["modern" if modern else "legacy"]), {"limit": limit})
+        except NotSupportedError:
+            raise
+        except Exception as e:
+            raise DatabaseError(f"Не удалось получить топ запросов: {e}") from e
+        return [
+            {
+                "query": r[0],
+                "calls": int(r[1]),
+                "total_ms": float(r[2]),
+                "mean_ms": float(r[3]),
+                "rows": int(r[4]),
+                "shared_blks_hit": int(r[5]),
+                "shared_blks_read": int(r[6]),
+            }
+            for r in rows
+        ]
 
     # --- helpers: low-level readers (kept close to the POC result shape) ---
 
