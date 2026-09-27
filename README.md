@@ -229,6 +229,26 @@ Claude Desktop — `claude_desktop_config.json`:
 }
 ```
 
+OpenCode — `opencode.json` (глобальный или в корне проекта):
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "db-pm": {
+      "type": "local",
+      "command": ["uv", "--directory", "C:/path/to/db-project-manager", "run", "db-pm-mcp"],
+      "enabled": true,
+      "environment": { "ENVOS_CRYPTO_01": "<Fernet-ключ>" },
+      "timeout": 600000
+    }
+  }
+}
+```
+
+`timeout` (мс, по умолчанию 5000) стоит поднять — `deploy_apply`/`deploy_reset`
+выполняются дольше дефолта.
+
 Bootstrap-аргументы сервера: `--connections-dir` (по умолчанию `connections`,
 env `DBPM_CONNECTIONS_DIR`) и `--config` (config.yaml — логирование,
 `deploy.service_schema`). Поведенческих флагов нет — **вся политика в файлах
