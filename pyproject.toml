@@ -26,6 +26,11 @@ dependencies = [
 [project.scripts]
 db-pm = "db_project_manager.presentation.cli.main:app"
 db-pm-gui = "db_project_manager.presentation.gui.main:main"
+db-pm-mcp = "db_project_manager.presentation.mcp.main:main"
+
+[project.optional-dependencies]
+# Phase 19: local MCP server (stdio). Install with: uv sync --extra mcp
+mcp = ["mcp>=1.2,<2"]
 
 [dependency-groups]
 dev = [
@@ -33,6 +38,9 @@ dev = [
     "pytest-cov~=6.0.0",
     "ruff~=0.11.4",
     "testcontainers~=4.14",
+    # Phase 19: dev env mirrors the [mcp] extra so tool-registration tests run
+    # under plain `uv run pytest`.
+    "mcp>=1.2,<2",
 ]
 
 [build-system]
