@@ -9,6 +9,12 @@ logging:
   level: "INFO"                    # DEBUG | INFO | WARNING | ERROR
   console: true
   file_name: "app.log"
+  # Phase 19.1 (MCP): полный лог запросов — текст SQL + ответ БД (включая jsonb),
+  # JSONL в logs/mcp_queries.log; ротация ежедневно в полночь (файлы с датой в
+  # имени), устаревшие удаляются. В лог попадают литералы данных — при
+  # необходимости отключите log_queries.
+  log_queries: true
+  queries_retention_days: 14
 
 # Optional: connection file used by default in GUI (path to connections/*.yaml).
 # CLI always requires explicit --connection-file.

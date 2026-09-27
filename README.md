@@ -302,6 +302,38 @@ query(connection="local-PG-18_DB__cis_zup_dev_U_postgres",
 | `deploy_plan` / `deploy_analyze` | dry-run деплоя и safety gate | — (read-only) |
 | `deploy_apply` / `deploy_reset` | применение/сброс (деструктивно) | `mcp.allow_deploy` + штатные предохранители |
 
+### Логирование запросов
+
+Каждый вызов инструментов работы с данными (`query`, `explain`,
+`get_top_queries`, `run_script`) пишется в **`logs/mcp_queries.log`** — одна
+JSON-строка (JSONL) на вызов:
+
+```json
+{"ts": "2026-09-27T22:41:03.120", "tool": "query", "connection": "local-PG-18...",
+ "sql": "SELECT id, doc FROM public.payload", "duration_ms": 42,
+ "row_count": 2, "truncated": false,
+ "response": {"columns": ["id", "doc"], "rows": [{"id": 1, "doc": {"a": 1}}]}}
+```
+
+- Логируется **текст SQL и полный ответ БД** — включая jsonb-значения (адаптер
+  заранее приводит их к JSON-безопасным типам: Decimal → строка, даты → ISO).
+  Отказы policy-гейтов и ошибки тоже пишутся (поле `error`) — лог является
+  полным аудитом того, что LLM спрашивал у базы.
+- **Ротация по дате**: в полночь активный файл переименовывается с датой в
+  имени (`mcp_queries.2026-09-27_00-00-00.log`) и начинается новый;
+  устаревшие файлы удаляются автоматически.
+- Настройка — `config.yaml` (по умолчанию включено):
+
+  ```yaml
+  logging:
+    log_queries: true            # false — полностью выключить sink
+    queries_retention_days: 14   # сколько дней хранить датированные файлы
+  ```
+
+- В лог попадают литералы данных (`WHERE name = '...'`, значения INSERT) —
+  держите `logs/` вне git (уже в `.gitignore`) и отключайте `log_queries`,
+  если это неприемлемо.
+
 ### Модель безопасности
 
 Двухслойный read-only (идея из [crystaldba/postgres-mcp](https://github.com/crystaldba/postgres-mcp)):
