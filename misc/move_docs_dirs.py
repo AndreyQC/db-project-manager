@@ -284,7 +284,6 @@ def step_update_files(root: Path, apply: bool, show_diff: bool) -> int:
 
         if show_diff:
             for name, lines in examples.items():
-                replacement = f"{NEW_PARENT}/{name}"
                 for line in lines:
                     # покажем обрезанную строку с маркером новой ссылки
                     snippet = line if len(line) <= 140 else line[:137] + "..."
@@ -319,7 +318,6 @@ def step_move_dirs(root: Path, do_move: bool) -> None:
 
     for name in DIRS_TO_MOVE:
         src = root / name
-        dest = dest_parent / name
         if not src.exists():
             status = f"нет источника: {src.name}"
         elif not do_move:

@@ -24,7 +24,6 @@ from pathlib import Path
 RENAME_MAP = {
     "_checkpoints_": "_checkpoints_",
     "_phases_": "_phases_",
-    "_phases_": "_phases_",
     "_tasks_": "_tasks_",
     "_docs_": "_docs_",
 }
