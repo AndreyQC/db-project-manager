@@ -8,6 +8,7 @@ Layout:
     db-pm deploy    plan                        --dir <dir> --target-connection-file <conn.yaml> [...]
     db-pm deploy    apply                       --dir <dir> --target-connection-file <conn.yaml> [...]
     db-pm deploy    reset                       --dir <dir> --target-connection-file <conn.yaml> [...]
+    db-pm crypto    keygen|encrypt              (секреты для connections/*.yaml)
 
 Connection management (create/edit) is UI-only; the CLI consumes a connection
 file produced in the GUI (see roadmap §8).
@@ -15,6 +16,8 @@ file produced in the GUI (see roadmap §8).
 
 from __future__ import annotations
 
+import os
+import sys
 from pathlib import Path
 from typing import Annotated, Optional
 
@@ -58,6 +61,10 @@ from db_project_manager.infrastructure.config.connection_store import (
     ConnectionStore,
     ConnectionStoreError,
 )
+from db_project_manager.infrastructure.crypto.crypto_util import (
+    generate_fernet_key,
+    get_encrypted_text,
+)
 from db_project_manager.infrastructure.files.run_naming import create_run_dir
 from db_project_manager.infrastructure.deploy.safety_report import rows_phrase
 from db_project_manager.infrastructure.graph import graph_store
@@ -69,10 +76,12 @@ graph_app = typer.Typer(no_args_is_help=True, help="Граф зависимос�
 deploy_app = typer.Typer(no_args_is_help=True, help="Деплой кодовой базы в базу данных.")
 compare_app = typer.Typer(no_args_is_help=True, help="Сравнение состояния БД и кодовой базы.")
 yaml_app = typer.Typer(no_args_is_help=True, help="YAML project: generate from directory or apply to target.")
+crypto_app = typer.Typer(no_args_is_help=True, help="Шифрование секретов (Fernet, формат crypto__ENV__токен).")
 app.add_typer(graph_app, name="graph")
 app.add_typer(deploy_app, name="deploy")
 app.add_typer(compare_app, name="compare")
 app.add_typer(yaml_app, name="yaml")
+app.add_typer(crypto_app, name="crypto")
 
 
 @app.callback()
@@ -1136,6 +1145,67 @@ def yaml_apply(
         f"output={result.output_dir}",
         fg=typer.colors.GREEN,
     )
+
+
+# --- crypto: secrets for connection files (Fernet, crypto__ENV__token) ---
+
+
+@crypto_app.command("keygen")
+def crypto_keygen() -> None:
+    """Сгенерировать новый Fernet-ключ для переменной окружения (например, ENVOS_CRYPTO_01).
+
+    Ключ генерируется один раз и живёт в переменной окружения машины/CI;
+    все пароли подключений шифруются им (GUI делает это автоматически).
+    """
+    typer.echo(generate_fernet_key())
+
+
+@crypto_app.command("encrypt")
+def crypto_encrypt(
+    env_var: Annotated[
+        str,
+        typer.Argument(help="Имя переменной окружения с Fernet-ключом (например, ENVOS_CRYPTO_01)."),
+    ],
+) -> None:
+    """Зашифровать значение ключом из ENV_VAR и напечатать токен для yaml.
+
+    Значение читается со stdin: в интерактивном терминале — скрытый ввод с
+    подтверждением, в пайпе — первая строка stdin (можно использовать в
+    скриптах). Вывод — единственная строка crypto__<ENV_VAR>__<ciphertext>:
+    вставьте её в connections/*.yaml (поле password или ssh_tunnel.ssh_pass).
+
+    Примеры:
+      db-pm crypto encrypt ENVOS_CRYPTO_01
+      echo 'my-secret' | db-pm crypto encrypt ENVOS_CRYPTO_01
+    """
+    if sys.stdin.isatty():
+        value = typer.prompt("Значение для шифрования", hide_input=True)
+        confirmation = typer.prompt("Повторите значение", hide_input=True)
+        if value != confirmation:
+            typer.secho("✗ Значения не совпадают.", fg=typer.colors.RED, err=True)
+            raise typer.Exit(code=1)
+    else:
+        value = sys.stdin.readline().strip()
+    if not value:
+        typer.secho("✗ Пустое значение — нечего шифровать.", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+    if env_var not in os.environ:
+        typer.secho(
+            f"✗ Переменная окружения {env_var} не задана. Сгенерируйте ключ: db-pm crypto keygen",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    try:
+        token = get_encrypted_text(value, env_var)
+    except Exception as e:  # noqa: BLE001 — any crypto failure is a hard error
+        typer.secho(
+            f"✗ Не удалось зашифровать (проверьте ключ в {env_var}): {e}",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=2) from e
+    typer.echo(token)
 
 
 if __name__ == "__main__":
