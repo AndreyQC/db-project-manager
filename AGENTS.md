@@ -34,7 +34,9 @@ unset SSL_CERT_FILE REQUESTS_CA_BUNDLE CURL_CA_BUNDLE && uv sync
 
 - `ENVOS_CRYPTO_01` — Fernet key for connection password encryption. Generate once:
   ```bash
-  uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+  uv run db-pm crypto keygen
+  # encrypt a secret for connections/*.yaml (prints crypto__ENV__token):
+  echo 'secret' | uv run db-pm crypto encrypt ENVOS_CRYPTO_01
   ```
 
 ## Package Structure

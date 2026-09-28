@@ -5,7 +5,9 @@
 # The password field uses the crypto__<ENV_VAR>__<token> format:
 #   - <ENV_VAR> is an environment variable name holding the Fernet key (set on your machine / CI secrets).
 #   - <token> is the Fernet ciphertext.
-# To produce an encrypted password, run: db-pm crypto encrypt <ENV_VAR>   (reads password from stdin)
+# To produce an encrypted password:
+#   db-pm crypto keygen                        # generate a Fernet key (once) -> put into the env var
+#   db-pm crypto encrypt <ENV_VAR>             # hidden prompt in a terminal, or first stdin line in a pipe
 # or use the GUI connection dialog (encrypts automatically on save).
 #
 # =============================================================================

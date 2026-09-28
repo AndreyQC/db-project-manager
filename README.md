@@ -35,14 +35,22 @@ uv sync --system-certs
 ## Настройка
 
 1. **Конфиг приложения**: скопируйте `config.example.yaml` → `config.yaml` (в `.gitignore`) и задайте пути.
-2. **Ключ шифрования**: задайте переменную окружения с Fernet-ключом (сгенерируйте однажды):
+2. **Ключ шифрования**: сгенерируйте однажды Fernet-ключ и положите в переменную окружения:
    ```bash
+   uv run db-pm crypto keygen          # печатает ключ
    # Linux/macOS
-   export ENVOS_CRYPTO_01=$(uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
-   # Windows (PowerShell)
-   $env:ENVOS_CRYPTO_01 = ...ключ...
+   export ENVOS_CRYPTO_01=<ключ>
+   # Windows (PowerShell, постоянная)
+   setx ENVOS_CRYPTO_01 "<ключ>"
    ```
-3. **Подключение**: создайте его в GUI (рекомендуется) — пароль зашифруется автоматически. Либо вручную по образцу `connections/example.yaml`.
+3. **Подключение**: создайте его в GUI (рекомендуется) — пароль зашифруется автоматически. Либо вручную по образцу `connections/example.yaml`; секрет зашифруйте командой:
+   ```bash
+   # интерактивно (ввод скрыт, с подтверждением)
+   uv run db-pm crypto encrypt ENVOS_CRYPTO_01
+   # или из пайпа/скрипта (первая строка stdin)
+   echo 'my-secret' | uv run db-pm crypto encrypt ENVOS_CRYPTO_01
+   ```
+   Вывод — единственная строка вида `crypto__ENVOS_CRYPTO_01__gAAAAAB...`; вставьте её в поле `password` (или `ssh_tunnel.ssh_pass`) yaml-файла подключения. Расшифровка при чтении происходит автоматически по имени переменной из токена.
 
 ## Использование
 
