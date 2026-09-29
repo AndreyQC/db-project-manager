@@ -46,9 +46,10 @@ def test_encrypt_empty_input_rejected(monkeypatch):
     assert "Пустое значение" in result.output
 
 
-def test_encrypt_missing_env_var_rejected(monkeypatch):
+def test_encrypt_missing_env_var_rejected_before_asking_secret(monkeypatch):
     monkeypatch.delenv("ENVOS_CRYPTO_01", raising=False)
     result = runner.invoke(cli_main.app, ["crypto", "encrypt", "ENVOS_CRYPTO_01"], input="s3cret\n")
     assert result.exit_code == 2
     assert "не задана" in result.output
-    assert "keygen" in result.output  # hint how to fix
+    assert "перезапустите терминал" in result.output  # Windows setx/UI gotcha hint
+    assert "keygen" in result.output

@@ -1178,6 +1178,18 @@ def crypto_encrypt(
       db-pm crypto encrypt ENVOS_CRYPTO_01
       echo 'my-secret' | db-pm crypto encrypt ENVOS_CRYPTO_01
     """
+    # Key check FIRST: asking for a secret and only then failing on a missing
+    # key wastes the user's input (Windows gotcha: setx/UI vars appear only
+    # in terminals started AFTER the change).
+    if env_var not in os.environ:
+        typer.secho(
+            f"✗ Переменная окружения {env_var} не задана в этой сессии. Если вы добавили "
+            "её недавно (setx / интерфейс Windows) — перезапустите терминал. "
+            "Сгенерировать новый ключ: db-pm crypto keygen",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=2)
     if sys.stdin.isatty():
         value = typer.prompt("Значение для шифрования", hide_input=True)
         confirmation = typer.prompt("Повторите значение", hide_input=True)
@@ -1189,13 +1201,6 @@ def crypto_encrypt(
     if not value:
         typer.secho("✗ Пустое значение — нечего шифровать.", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1)
-    if env_var not in os.environ:
-        typer.secho(
-            f"✗ Переменная окружения {env_var} не задана. Сгенерируйте ключ: db-pm crypto keygen",
-            fg=typer.colors.RED,
-            err=True,
-        )
-        raise typer.Exit(code=2)
     try:
         token = get_encrypted_text(value, env_var)
     except Exception as e:  # noqa: BLE001 — any crypto failure is a hard error
