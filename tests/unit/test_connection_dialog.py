@@ -19,10 +19,11 @@ import pytest  # noqa: E402
 from cryptography.fernet import Fernet  # noqa: E402
 from PySide6.QtWidgets import QApplication, QDialog, QMessageBox  # noqa: E402
 
-from db_project_manager.domain.connection import ConnectionConfig  # noqa: E402
+from db_project_manager.domain.connection import ConnectionConfig, SSH_TunnelConfig  # noqa: E402
 from db_project_manager.infrastructure.config.connection_store import (  # noqa: E402
     ConnectionStore,
 )
+from db_project_manager.infrastructure.crypto.crypto_util import get_encrypted_text  # noqa: E402
 from db_project_manager.presentation.gui.widgets.connection_dialog import (  # noqa: E402
     ConnectionDialog,
 )
@@ -159,3 +160,61 @@ def test_edit_prefills_stored_env(qapp, tmp_path, two_keys) -> None:
     dlg = ConnectionDialog(store, name="prod", crypto_env=ENV_PRIMARY)
 
     assert dlg.selected_crypto_env() == ENV_SECONDARY
+
+
+# --- conditional key validation: unset env var is OK when nothing to encrypt ---
+
+
+def test_needs_encryption_variants(two_keys) -> None:
+    token = get_encrypted_text("pw", ENV_SECONDARY)
+
+    assert ConnectionDialog._needs_encryption(_make_cfg()) is True  # plaintext password
+    assert ConnectionDialog._needs_encryption(_make_cfg(password="")) is False
+    assert ConnectionDialog._needs_encryption(_make_cfg(password=token)) is False
+    # Token DB password but a plaintext SSH secret still needs the key.
+    with_ssh = _make_cfg(password=token)
+    with_ssh.ssh_tunnel = SSH_TunnelConfig(
+        ssh_host="bastion", ssh_port=22, ssh_user="u", ssh_pass="plain-ssh"
+    )
+    assert ConnectionDialog._needs_encryption(with_ssh) is True
+
+
+def test_accept_allows_unset_env_when_secrets_already_tokens(
+    qapp, tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ENVOS_CRYPTO_KUBER_01 set only in the target env (e.g. Kubernetes):
+    a token password round-trips locally without the key — the var name is
+    just recorded, and the token is kept as-is on save."""
+    monkeypatch.setenv("ENVOS_CRYPTO_KUBER_01", KEY_SECONDARY)
+    token = get_encrypted_text("plain-secret", "ENVOS_CRYPTO_KUBER_01")
+    monkeypatch.delenv("ENVOS_CRYPTO_KUBER_01", raising=False)
+
+    store = ConnectionStore(tmp_path)
+    dlg = ConnectionDialog(store, crypto_env=ENV_PRIMARY)
+    _fill_required(dlg)
+    dlg.password_edit.setText(token)
+    dlg.crypto_env_combo.setCurrentText("ENVOS_CRYPTO_KUBER_01")
+
+    dlg._on_accept()
+
+    assert dlg.result() == QDialog.DialogCode.Accepted
+    text = (tmp_path / "prod.yaml").read_text(encoding="utf-8")
+    assert token in text  # kept byte-for-byte, not re-encrypted
+
+
+def test_accept_still_blocks_plaintext_when_env_unset(
+    qapp, tmp_path, monkeypatch: pytest.MonkeyPatch, critical_calls
+) -> None:
+    """A plaintext password MUST be encrypted on save — an unset var is a hard
+    error no matter the name (encryption needs the key material locally)."""
+    monkeypatch.delenv("ENVOS_CRYPTO_KUBER_01", raising=False)
+    monkeypatch.setenv(ENV_PRIMARY, KEY_PRIMARY)
+
+    dlg = ConnectionDialog(ConnectionStore(tmp_path), crypto_env=ENV_PRIMARY)
+    _fill_required(dlg)
+    dlg.crypto_env_combo.setCurrentText("ENVOS_CRYPTO_KUBER_01")
+
+    dlg._on_accept()
+
+    assert dlg.result() != QDialog.DialogCode.Accepted
+    assert len(critical_calls) == 1

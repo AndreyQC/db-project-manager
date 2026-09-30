@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
 
 from db_project_manager.domain.connection import ConnectionConfig, ConnectionType, SSH_TunnelConfig
 from db_project_manager.infrastructure.config.connection_store import ConnectionStore
+from db_project_manager.infrastructure.crypto.crypto_util import get_cipher_env
 
 
 class ConnectionDialog(QDialog):
@@ -111,12 +112,16 @@ class ConnectionDialog(QDialog):
         self.crypto_env_combo.setCurrentText(self.crypto_env)
         self.crypto_env_combo.setToolTip(
             "Имя переменной окружения, в которой лежит Fernet-ключ для шифрования "
-            "пароля (и SSH-полей) этого подключения.\n"
+            "пароля (и SSH-полей) этого подключения. Может быть любым — например, "
+            "ENVOS_CRYPTO_KUBER_01.\n"
             "Имя переменной записывается в сам токен — при использовании подключения "
             "достаточно, чтобы эта переменная была задана в окружении.\n"
             "Список автозаполнен переменными с именем *CRYPTO*, значение которых — "
             "валидный Fernet-ключ; можно ввести любое имя вручную "
-            "(ключ: db-pm crypto keygen)."
+            "(ключ: db-pm crypto keygen).\n"
+            "Если все секреты уже зашифрованы (в полях токены crypto__...), ключ "
+            "локально не нужен: токены сохраняются как есть, а переменная должна "
+            "быть задана только там, где подключение используется."
         )
 
         # SSH Tunnel fields (visible only when SSH Tunnel is selected)
@@ -237,10 +242,33 @@ class ConnectionDialog(QDialog):
             self.crypto_env_combo.addItem(env_name)
         self.crypto_env_combo.setCurrentText(env_name)
 
-    def _validate_crypto_env(self, env_name: str) -> str | None:
-        """Return an error message for the chosen key var, or None if valid."""
+    @staticmethod
+    def _needs_encryption(cfg: ConnectionConfig) -> bool:
+        """Whether saving this config must encrypt something.
+
+        True while any secret is plaintext (not a crypto__ token yet) — the
+        save then needs the key locally. When every secret is already a
+        token (or empty) the key var is only recorded, never used, so it
+        may be a variable that exists solely in the target environment
+        (e.g. ENVOS_CRYPTO_KUBER_01 inside a Kubernetes deployment).
+        """
+        secrets: list[str | None] = [cfg.password]
+        if cfg.ssh_tunnel is not None:
+            secrets += [cfg.ssh_tunnel.ssh_host, cfg.ssh_tunnel.ssh_user, cfg.ssh_tunnel.ssh_pass]
+        return any(value and get_cipher_env(value) is None for value in secrets)
+
+    def _validate_crypto_env(self, env_name: str, needs_key: bool) -> str | None:
+        """Return an error message for the chosen key var, or None if valid.
+
+        The var must exist locally with a valid Fernet key only when there
+        is a secret to encrypt (``needs_key``). Otherwise any name passes:
+        the token carries its own var name, and the key itself is required
+        only where the connection is actually decrypted.
+        """
         if not env_name:
             return "Укажите имя переменной окружения с Fernet-ключом шифрования."
+        if not needs_key:
+            return None
         raw_key = os.environ.get(env_name)
         if raw_key is None:
             return (
@@ -376,7 +404,7 @@ class ConnectionDialog(QDialog):
         if cfg is None:
             return
         crypto_env = self.selected_crypto_env()
-        key_error = self._validate_crypto_env(crypto_env)
+        key_error = self._validate_crypto_env(crypto_env, self._needs_encryption(cfg))
         if key_error:
             QMessageBox.critical(self, "Ключ шифрования", key_error)
             return
