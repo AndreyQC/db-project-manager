@@ -14,6 +14,7 @@ import yaml
 from db_project_manager.domain.connection import ConnectionConfig
 from db_project_manager.infrastructure.crypto.crypto_util import (
     _is_cipher_token,
+    get_cipher_env,
     get_decrypted_nested_dict,
     get_encrypted_text,
 )
@@ -122,6 +123,41 @@ class ConnectionStore:
     def load_by_name(self, name: str) -> ConnectionConfig:
         """Load a connection by its name within the connections directory."""
         return self.load(self.path_for(name), name=name)
+
+    def crypto_env_for(self, name: str) -> str | None:
+        """Имя env-переменной, которой зашифрован файл подключения.
+
+        Читает сырой YAML (без расшифровки) и берёт переменную из первого
+        найденного crypto-токена (password, затем ssh-поля). Нужно, чтобы
+        диалог редактирования подставил тот же ключ, с которым файл был
+        сохранён, а не пересохранил его ключом по умолчанию.
+        """
+        path = self.path_for(name)
+        if not path.exists():
+            return None
+        try:
+            with path.open("r", encoding="utf-8") as f:
+                raw = yaml.safe_load(f)
+        except Exception:  # noqa: BLE001 — corrupt file is not a dialog-blocking error
+            return None
+        if not isinstance(raw, dict):
+            return None
+
+        password = raw.get("password")
+        if isinstance(password, str):
+            env = get_cipher_env(password)
+            if env:
+                return env
+
+        ssh_tunnel = raw.get("ssh_tunnel")
+        if isinstance(ssh_tunnel, dict):
+            for field in ("ssh_pass", "ssh_user", "ssh_host"):
+                value = ssh_tunnel.get(field)
+                if isinstance(value, str):
+                    env = get_cipher_env(value)
+                    if env:
+                        return env
+        return None
 
     # --- listing ---
 

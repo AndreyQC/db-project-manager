@@ -19,6 +19,18 @@ def _is_cipher_token(s: str) -> bool:
     return len(parts) == 3 and parts[0] == CIPHER_PREFIX
 
 
+def get_cipher_env(value: str) -> str | None:
+    """Имя переменной окружения, зашитое в токен ``crypto__<ENV>__<token>``.
+
+    Returns:
+        Имя env-переменной с ключом, либо ``None`` — если строка не токен.
+    """
+    stripped = value.strip() if isinstance(value, str) else ""
+    if not _is_cipher_token(stripped):
+        return None
+    return stripped.split("__")[1]
+
+
 def get_decrypted_text(encrypted_data: str) -> str:
     """
     Расшифровывает строку вида ``crypto__<ИМЯ_ПЕРЕМЕННОЙ>__<ciphertext>``.

@@ -7,6 +7,7 @@ import pytest
 from db_project_manager.infrastructure.crypto.crypto_util import (
     format_cipher_token,
     generate_fernet_key,
+    get_cipher_env,
     get_decrypted_nested_dict,
     get_decrypted_text,
     get_encrypted_text,
@@ -35,6 +36,17 @@ def test_is_cipher_token() -> None:
     assert _is_cipher_token("crypto__ENV__payload") is True
     assert _is_cipher_token("plain-password") is False
     assert _is_cipher_token("crypto__only_one_part") is False
+
+
+def test_get_cipher_env_extracts_env_name(crypto_env: str) -> None:
+    token = get_encrypted_text("s3cret", crypto_env)
+    assert get_cipher_env(token) == crypto_env
+
+
+def test_get_cipher_env_non_token_returns_none() -> None:
+    assert get_cipher_env("plain-password") is None
+    assert get_cipher_env("crypto__only_one_part") is None
+    assert get_cipher_env("") is None
 
 
 # --- nested dict ---

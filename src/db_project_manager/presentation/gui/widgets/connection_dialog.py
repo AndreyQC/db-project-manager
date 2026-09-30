@@ -7,6 +7,9 @@ without persisting anything.
 
 from __future__ import annotations
 
+import os
+
+from cryptography.fernet import Fernet
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
@@ -99,6 +102,23 @@ class ConnectionDialog(QDialog):
         password_layout.addWidget(self.password_edit)
         password_layout.addWidget(self.password_toggle)
 
+        # Fernet key selector: which env variable the (re)save encrypts with.
+        # Editable — the name can be any env var, not only the auto-detected ones.
+        self.crypto_env_combo = QComboBox()
+        self.crypto_env_combo.setEditable(True)
+        for env in self._detect_crypto_envs():
+            self.crypto_env_combo.addItem(env)
+        self.crypto_env_combo.setCurrentText(self.crypto_env)
+        self.crypto_env_combo.setToolTip(
+            "Имя переменной окружения, в которой лежит Fernet-ключ для шифрования "
+            "пароля (и SSH-полей) этого подключения.\n"
+            "Имя переменной записывается в сам токен — при использовании подключения "
+            "достаточно, чтобы эта переменная была задана в окружении.\n"
+            "Список автозаполнен переменными с именем *CRYPTO*, значение которых — "
+            "валидный Fernet-ключ; можно ввести любое имя вручную "
+            "(ключ: db-pm crypto keygen)."
+        )
+
         # SSH Tunnel fields (visible only when SSH Tunnel is selected)
         self.ssh_group = QWidget()
         ssh_layout = QVBoxLayout(self.ssh_group)
@@ -158,6 +178,7 @@ class ConnectionDialog(QDialog):
         form.addRow("База данных:", self.database_edit)
         form.addRow("Пользователь:", self.username_edit)
         form.addRow("Пароль:", password_row)
+        form.addRow("Ключ шифрования (env):", self.crypto_env_combo)
         form.addRow(self.allow_drop_schemas_check)
 
         form.addRow(QLabel())  # Spacer
@@ -187,6 +208,51 @@ class ConnectionDialog(QDialog):
         """Show/hide SSH tunnel fields based on connection type."""
         conn_type = self.connection_type_combo.currentData()
         self.ssh_group.setVisible(conn_type == "ssh_tunnel")
+
+    @staticmethod
+    def _detect_crypto_envs() -> list[str]:
+        """Env vars with *CRYPTO* in the name whose value is a valid Fernet key.
+
+        DBPM_CRYPTO_ENV (holds a var NAME, not a key) is filtered out
+        automatically: its value fails the Fernet constructor.
+        """
+        found: list[str] = []
+        for name, value in os.environ.items():
+            if "CRYPTO" not in name.upper() or not isinstance(value, str):
+                continue
+            try:
+                Fernet(value.strip())
+            except Exception:  # noqa: BLE001 — not a key, skip silently
+                continue
+            found.append(name)
+        return sorted(set(found))
+
+    def selected_crypto_env(self) -> str:
+        """Env variable name currently chosen in the key selector."""
+        return self.crypto_env_combo.currentText().strip()
+
+    def _set_crypto_env(self, env_name: str) -> None:
+        """Select an env var in the combo, adding it to the list if missing."""
+        if self.crypto_env_combo.findText(env_name) < 0:
+            self.crypto_env_combo.addItem(env_name)
+        self.crypto_env_combo.setCurrentText(env_name)
+
+    def _validate_crypto_env(self, env_name: str) -> str | None:
+        """Return an error message for the chosen key var, or None if valid."""
+        if not env_name:
+            return "Укажите имя переменной окружения с Fernet-ключом шифрования."
+        raw_key = os.environ.get(env_name)
+        if raw_key is None:
+            return (
+                f"Переменная окружения {env_name} не задана.\n"
+                "Сгенерируйте ключ (uv run db-pm crypto keygen) и задайте её, "
+                "например: setx " + env_name + " \"<ключ>\" (затем перезапустите GUI)."
+            )
+        try:
+            Fernet(raw_key.strip())
+        except Exception:  # noqa: BLE001 — any constructor failure means "not a key"
+            return f"Переменная окружения {env_name} не содержит корректный Fernet-ключ."
+        return None
 
     def _set_password_visible(self, visible: bool) -> None:
         """Toggle password echo mode and the eye button appearance."""
@@ -227,6 +293,12 @@ class ConnectionDialog(QDialog):
         self.username_edit.setText(cfg.username)
         self.password_edit.setText(cfg.password)
         self.allow_drop_schemas_check.setChecked(cfg.allow_drop_schemas)
+
+        # Prefill the key var the file was actually encrypted with — so a
+        # re-save does not silently switch the connection to another key.
+        stored_env = self.store.crypto_env_for(name)
+        if stored_env:
+            self._set_crypto_env(stored_env)
 
         # Load connection type and SSH tunnel settings
         self.connection_type_combo.setCurrentIndex(
@@ -303,11 +375,16 @@ class ConnectionDialog(QDialog):
         cfg = self._build_config()
         if cfg is None:
             return
+        crypto_env = self.selected_crypto_env()
+        key_error = self._validate_crypto_env(crypto_env)
+        if key_error:
+            QMessageBox.critical(self, "Ключ шифрования", key_error)
+            return
         try:
             # When editing and the name changed, remove the old file.
             if self.original_name and self.original_name != cfg.name:
                 self.store.delete(self.original_name)
-            self.store.save(cfg, name=cfg.name, crypto_env=self.crypto_env)
+            self.store.save(cfg, name=cfg.name, crypto_env=crypto_env)
         except Exception as e:  # noqa: BLE001
             QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить подключение: {e}")
             return
