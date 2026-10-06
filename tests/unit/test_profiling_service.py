@@ -205,3 +205,21 @@ def test_parse_qualified() -> None:
         parse_qualified("nodot")
     with pytest.raises(ProfilingError, match="квалифицированным"):
         parse_qualified("a.")
+    with pytest.raises(ProfilingError, match="квалифицированным"):
+        parse_qualified("a.b.c")
+    with pytest.raises(ProfilingError, match="кавычка"):
+        parse_qualified('"unclosed.t')
+
+
+def test_parse_quoted_identifiers() -> None:
+    # кавычки снимаются, регистр квотированной части сохраняется
+    assert parse_qualified('"public"."My Table"') == ("public", "My Table")
+    assert parse_qualified('public."Tbl"') == ("public", "Tbl")
+    # точка внутри кавычек не делит имя
+    assert parse_qualified('"my.schema".tbl') == ("my.schema", "tbl")
+    assert parse_qualified('"My Schema"."My.Table"') == ("My Schema", "My.Table")
+    # "" внутри кавычек — экранирование литеральной кавычки
+    assert parse_qualified('"a""b".t') == ('a"b', "t")
+    # неквотированные части фолдятся в нижний регистр, как планировщик
+    assert parse_qualified("Public.Orders") == ("public", "orders")
+    assert parse_qualified('"Public".Orders') == ("Public", "orders")

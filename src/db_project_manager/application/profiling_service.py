@@ -283,14 +283,62 @@ def get_profiler_or_error(cfg: ConnectionConfig) -> ProfilingSQLGenerator:
 
 
 def parse_qualified(raw: str) -> tuple[str, str]:
-    """``schema.table`` → (schema, table); dotted identifiers are not supported."""
+    """``schema.table`` → (schema, table) с поддержкой квотированных имён.
+
+    Правила идентификаторов PostgreSQL: двойные кавычки снимаются, ``""``
+    внутри кавычек — экранирование литеральной кавычки, точка внутри кавычек
+    не делит имя (``"my.schema".tbl``), неквотированные части приводятся к
+    нижнему регистру (фолдинг планировщика). Неквотированный второй разделитель
+    (три и более частей) — ошибка: точка в неквотированном имени не поддерживается.
+    """
     name = (raw or "").strip()
-    if "." not in name:
-        raise ProfilingError(f"имя таблицы {raw!r} должно быть квалифицированным: schema.table")
-    schema, table = (part.strip() for part in name.split(".", 1))
-    if not schema or not table:
-        raise ProfilingError(f"имя таблицы {raw!r} должно быть квалифицированным: schema.table")
-    return schema, table
+    if not name:
+        raise ProfilingError("имя таблицы пусто; ожидается schema.table")
+    parts = _split_identifiers(name)
+    if len(parts) != 2 or not parts[0] or not parts[1]:
+        raise ProfilingError(
+            f"имя таблицы {raw!r} должно быть квалифицированным: schema.table "
+            '(поддерживаются "квотированные" идентификаторы: "My Schema"."My.Table")'
+        )
+    return parts[0], parts[1]
+
+
+def _split_identifiers(name: str) -> list[str]:
+    """Разбирает qualified-имя на части, уважая двойные кавычки (стандарт SQL).
+
+    Квотированная часть сохраняет регистр и пробелы; неквотированная —
+    strip + нижний регистр (фолдинг планировщика PostgreSQL).
+    """
+    parts: list[str] = []
+    buf: list[str] = []
+    in_quotes = False
+    was_quoted = False
+    i = 0
+    while i < len(name):
+        ch = name[i]
+        if in_quotes:
+            if ch == '"':
+                if name[i + 1: i + 2] == '"':
+                    buf.append('"')
+                    i += 2
+                    continue
+                in_quotes = False
+            else:
+                buf.append(ch)
+        elif ch == '"':
+            in_quotes = True
+            was_quoted = True
+        elif ch == ".":
+            parts.append("".join(buf) if was_quoted else "".join(buf).strip().lower())
+            buf = []
+            was_quoted = False
+        else:
+            buf.append(ch)
+        i += 1
+    if in_quotes:
+        raise ProfilingError(f"незакрытая двойная кавычка в имени {name!r}")
+    parts.append("".join(buf) if was_quoted else "".join(buf).strip().lower())
+    return parts
 
 
 def _opt_bool(value: Any) -> bool | None:
