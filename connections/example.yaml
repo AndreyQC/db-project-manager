@@ -59,3 +59,21 @@
 #   allow_deploy: true
 #   row_limit: 200
 #   query_timeout_s: 120
+
+# =============================================================================
+# TABLE PROFILING POLICY (Phase 20, db-pm profile / MCP profile_tables)
+# =============================================================================
+# Optional block. Fail-safe default: profiling is OFF until enabled — a
+# connection without this block rejects profiling before a single query.
+# Queries are read-only aggregates (RO transaction + statement_timeout);
+# ANALYZE is never run by the profiler — reports suggest running it manually.
+#
+# profiling:
+#   enabled: true                  # opt-in gate
+#   full_size_threshold_bytes: 1073741824   # tables above 1 GiB are sampled
+#   sample_rows: 100000            # target sample size (rows) for big tables
+#   default_sample_fraction: 0.01  # fraction when reltuples is unknown
+#   statement_timeout_ms: 300000   # 5 minutes per query
+#   top_n: 10                      # top-N frequent values
+#   histogram_buckets: 20          # width_bucket buckets
+#   column_chunk_size: 50          # columns per aggregate query
