@@ -14,6 +14,17 @@ CIPHER_PREFIX = SMGR_CIPHER_PREFIX
 logger = logging.getLogger(__name__)
 
 
+class CryptoKeyMissing(KeyError):
+    """Расшифровка невозможна: env-переменная с Fernet-ключом не задана.
+
+    Наследник KeyError — прежние ``except KeyError`` продолжают работать.
+    """
+
+    def __init__(self, env_var: str) -> None:
+        super().__init__(f"Для расшифровки нужна переменная окружения {env_var}")
+        self.env_var = env_var
+
+
 def _is_cipher_token(s: str) -> bool:
     # Токен режется строго на ПЕРВЫЕ два разделителя: Fernet-ciphertext в
     # base64url может сам содержать "__" (~2% токенов), поэтому хвост после
@@ -50,9 +61,7 @@ def get_decrypted_text(encrypted_data: str) -> str:
     try:
         raw_key = os.environ[key_env_variable]
     except KeyError as exc:
-        raise KeyError(
-            f"Для расшифровки нужна переменная окружения {key_env_variable}"
-        ) from exc
+        raise CryptoKeyMissing(key_env_variable) from exc
 
     key_material: bytes | str
     if isinstance(raw_key, str):

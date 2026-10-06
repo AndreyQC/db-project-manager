@@ -52,8 +52,10 @@ class ConnectionManager:
         self,
         connections_dir: str | Path = "connections",
         adapter_factory: AdapterFactory | None = None,
+        *,
+        password_prompt: Callable[[str], str] | None = None,
     ) -> None:
-        self._store = ConnectionStore(connections_dir)
+        self._store = ConnectionStore(connections_dir, password_prompt=password_prompt)
         self._adapter_factory = adapter_factory or get_adapter
         self._managed: dict[str, ManagedConnection] = {}
         self._registry_lock = threading.Lock()

@@ -223,3 +223,18 @@ def test_parse_quoted_identifiers() -> None:
     # неквотированные части фолдятся в нижний регистр, как планировщик
     assert parse_qualified("Public.Orders") == ("public", "orders")
     assert parse_qualified('"Public".Orders') == ("Public", "orders")
+
+
+def test_connection_failure_becomes_profiling_error() -> None:
+    """Неверный пароль/недоступная БД → ProfilingError, а не traceback."""
+    from db_project_manager.infrastructure.database.base import DatabaseError
+
+    class FailingManager(FakeManager):
+        @contextmanager
+        def connection(self, name: str):
+            raise DatabaseError("password authentication failed")
+            yield  # pragma: no cover
+
+    service = ProfilingService(manager=FailingManager(enabled_cfg()))
+    with pytest.raises(ProfilingError, match="не удалось подключиться"):
+        service.profile_tables("conn", ["public.t"])
