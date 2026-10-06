@@ -111,3 +111,52 @@ Spike (read-only пробы, demo + dev): `percentile_cont WITHIN GROUP` — OK;
 «полностью согласен со стартом фазы двадцать». Вариант 1 зафиксирован как
 утверждённый, фаза стартовала. План фазы синхронизирован (порог
 reltuples → байты); final 20261006_001 не правится (история решений).
+
+## 4. Приёмка: вызов profile_tables из командной строки (2026-10-06)
+
+### Запрос пользователя
+
+Показать пример, как вызывать MCP-инструмент `profile_tables` из командной
+строки, по GP-подключению, использованному для тестирования
+(`IVSD00258.reksoft.com_GP__DB__cis_zup_gp_dev__U_gpadmin`).
+
+### Что сделано
+
+- В файл подключения добавлен блок (гейт фазы; без него инструмент
+  отклоняет вызов до первого запроса к БД):
+
+  ```yaml
+  profiling:
+    enabled: true
+  ```
+
+- Вызов через stdio JSON-RPC (репозиторий, Git Bash):
+
+  ```bash
+  printf '%s\n' \
+    '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"cli-demo","version":"0.0.0"}}}' \
+    '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+    '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"profile_tables","arguments":{"connection":"IVSD00258.reksoft.com_GP__DB__cis_zup_gp_dev__U_gpadmin","tables":["src_ods_hn_trade_zup.ext_department"]}}}' \
+    | uv run db-pm-mcp 2>/dev/null
+  ```
+
+- Строки stdin: 1) `initialize` (рукопожатие), 2) `notifications/initialized`
+  (без ответа), 3) `tools/call` — сам вызов; `connection` = имя yaml-файла
+  из `connections/` без расширения, `tables` — список `schema.table`.
+- Ответ: последняя строка stdout; `result.content` содержит по одному
+  блоку `text` на каждую таблицу (JSON `TableProfile` целиком) — FastMCP
+  сериализует список по элементам.
+
+### Результат живого прогона
+
+`src_ods_hn_trade_zup.ext_department`: rows=0 (оценка reltuples=1 —
+расхождение видно честно), size=98304B, stats_fresh=true, 10 колонок,
+759 мс; `isError: false`.
+
+### Примечания
+
+- `2>/dev/null` прячет stderr-логи сервера (в протоколе stdout только
+  JSON-RPC); полный аудит — `logs/mcp_queries.log` (Phase 19.1).
+- В реальном MCP-клиенте (ZCode/OpenCode, конфиги в README раздела MCP)
+  handshake делает клиент: вызывающий просто передаёт `connection` и
+  `tables`. Printf-вариант — для проверки из консоли/CI без клиента.
