@@ -9,6 +9,7 @@ Layout:
     db-pm deploy    apply                       --dir <dir> --target-connection-file <conn.yaml> [...]
     db-pm deploy    reset                       --dir <dir> --target-connection-file <conn.yaml> [...]
     db-pm crypto    keygen|encrypt              (секреты для connections/*.yaml)
+    db-pm profile   <connection> --tables ...   (профайлинг таблиц, Phase 20)
 
 Connection management (create/edit) is UI-only; the CLI consumes a connection
 file produced in the GUI (see roadmap §8).
@@ -16,7 +17,9 @@ file produced in the GUI (see roadmap §8).
 
 from __future__ import annotations
 
+import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Annotated, Optional
@@ -33,6 +36,7 @@ from db_project_manager.application.deploy_service import (
     DeployValidateService,
 )
 from db_project_manager.application.graph_service import BuildGraphService
+from db_project_manager.application.profiling_service import ProfilingError, ProfilingService
 from db_project_manager.application.safety_gate_service import (
     SafetyGateError,
     SafetyGateService,
@@ -107,6 +111,74 @@ _NO_RUN_SUBDIR_OPTION = Annotated[
         "без уникального подкаталога прогона.",
     ),
 ]
+
+
+# --- profile (Phase 20) ---
+
+
+def _safe_path_part(name: str) -> str:
+    """Имя подключения/схемы/таблицы → безопасный фрагмент пути."""
+    return re.sub(r"[^A-Za-z0-9_.\-]", "_", name) or "_"
+
+
+@app.command("profile")
+def profile(
+    connection: Annotated[
+        str,
+        typer.Argument(help="Имя подключения из каталога connections/ (как в GUI/MCP)."),
+    ],
+    tables: Annotated[
+        str,
+        typer.Option(
+            "--tables",
+            help="Квалифицированные имена таблиц через запятую: schema.table,schema2.table2",
+        ),
+    ],
+    output: Annotated[
+        Optional[Path],
+        typer.Option("--output", help="Каталог отчётов (по умолчанию reports/)."),
+    ] = None,
+    connections_dir: Annotated[
+        Path,
+        typer.Option("--connections-dir", help="Каталог подключений (по умолчанию connections/)."),
+    ] = Path("connections"),
+) -> None:
+    """Профайлинг таблиц: JSON-профили в reports/<connection>/ (Phase 20).
+
+    Только read-only агрегаты (ANALYZE не запускается); таблицы выше порога
+    pg_total_relation_size считаются по сэмплу. Требует блока
+    profiling: enabled=true в файле подключения.
+    """
+    configure_logging()
+    table_names = [part.strip() for part in tables.split(",") if part.strip()]
+    if not table_names:
+        typer.secho("Ошибка: --tables пуст (пример: --tables public.bookings,app.orders)", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
+
+    service = ProfilingService(connections_dir=str(connections_dir))
+    try:
+        profiles = service.profile_tables(connection, table_names)
+    except ProfilingError as e:
+        typer.secho(f"Ошибка: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from e
+    except ConnectionStoreError as e:
+        typer.secho(f"Ошибка загрузки подключения: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from e
+
+    out_dir = (output if output is not None else Path("reports")) / _safe_path_part(connection)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for tp in profiles:
+        target = out_dir / f"{_safe_path_part(tp.schema_name)}.{_safe_path_part(tp.table_name)}.json"
+        target.write_text(json.dumps(tp.model_dump(), ensure_ascii=False, indent=2), encoding="utf-8")
+        size = f"{tp.size_bytes / 1048576:.1f} MB" if tp.size_bytes else "n/a"
+        typer.echo(
+            f"✓ {tp.schema_name}.{tp.table_name}: строк={tp.row_count}, размер={size}, "
+            f"сэмпл={'да' if tp.sampled else 'нет'}, предупреждений={len(tp.warnings)}"
+        )
+        for warning in tp.warnings:
+            typer.echo(f"  ! {warning}")
+        typer.secho(f"  → {target}", fg=typer.colors.CYAN)
+    typer.secho(f"Готово: {len(profiles)} профил(я) → {out_dir}", fg=typer.colors.GREEN)
 
 
 # --- reverse-engineer (Phase 1) ---

@@ -29,6 +29,7 @@ from db_project_manager.application.mcp_service import (
     extract_object_details,
     extract_objects,
 )
+from db_project_manager.application.profiling_service import ProfilingService
 from db_project_manager.application.safety_gate_service import SafetyGateError, SafetyGateService
 from db_project_manager.application.schema_reset_service import (
     SchemaResetError,
@@ -66,6 +67,7 @@ class MCPToolBox:
         self.manager = manager
         self.cfg = cfg
         self.queries = MCPQueryService()
+        self.profiles = ProfilingService(manager=manager)
 
     # --- introspection (read-only, MCP-5) ---
 
@@ -175,6 +177,15 @@ class MCPToolBox:
                 return conn.adapter.get_top_queries(sort_by=sort_by, limit=limit)
 
         return self._logged("get_top_queries", connection, None, call)
+
+    def profile_tables(self, connection: str, tables: list[str]) -> list[dict[str, Any]]:
+        """Профайлинг таблиц (read-only). Требует profiling.enabled=true в блоке
+        profiling: файла подключения; ANALYZE не запускается."""
+
+        def call() -> list[dict[str, Any]]:
+            return [tp.model_dump() for tp in self.profiles.profile_tables(connection, tables)]
+
+        return self._logged("profile_tables", connection, None, call)
 
     # --- scripts (mutating, MCP-4) ---
 

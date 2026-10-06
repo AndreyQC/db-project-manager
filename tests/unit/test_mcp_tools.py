@@ -305,6 +305,7 @@ def test_server_registers_all_tools(box):
         "query",
         "explain",
         "get_top_queries",
+        "profile_tables",
         "run_script",
         "deploy_plan",
         "deploy_analyze",
@@ -316,3 +317,40 @@ def test_server_registers_all_tools(box):
     assert annotations["query"].readOnlyHint is True
     assert annotations["run_script"].destructiveHint is False
     assert annotations["deploy_reset"].destructiveHint is True
+    assert annotations["profile_tables"].readOnlyHint is True
+
+
+# --- profile_tables (Phase 20) ---
+
+
+def test_profile_tables_requires_enabled(box):
+    from db_project_manager.application.profiling_service import ProfilingError
+
+    with pytest.raises(ProfilingError, match="profiling"):
+        box.profile_tables("ro_conn", ["public.t"])
+
+
+def test_profile_tables_returns_profiles_and_logs(box):
+    from db_project_manager.domain.profiling import TableProfile
+
+    class FakeProfiles:
+        def profile_tables(self, connection, tables):
+            assert connection == "ro_conn"
+            assert tables == ["public.t"]
+            return [
+                TableProfile(
+                    connection=connection,
+                    schema_name="public",
+                    table_name="t",
+                    generated_at="2026-10-06T00:00:00+00:00",
+                    row_count=10,
+                )
+            ]
+
+    original = box.profiles
+    box.profiles = FakeProfiles()
+    try:
+        result = box.profile_tables("ro_conn", ["public.t"])
+    finally:
+        box.profiles = original
+    assert result[0]["table_name"] == "t"

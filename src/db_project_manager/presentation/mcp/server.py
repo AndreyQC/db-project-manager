@@ -99,6 +99,16 @@ def create_server(manager: ConnectionManager, cfg: CFG) -> Any:
         или нераспознанных операторов — повторный вызов с confirm_destructive=true."""
         return box.run_script(connection, script, confirm_destructive=confirm_destructive)
 
+    @mcp.tool(name="profile_tables", annotations=read_only)
+    def profile_tables(connection: str, tables: list[str]) -> list[dict[str, Any]]:
+        """Профайлинг таблиц по списку (read-only): count, NULL-доли, кардинальность,
+        min/max, перцентили, гистограммы, top-N частот — на каждую schema.table.
+        Требует profiling.enabled=true в блоке profiling: файла подключения.
+        Таблицы выше порога размера считаются по сэмплу (sampled=true); ANALYZE
+        не запускается. Пример: profile_tables(connection="local",
+        tables=["public.bookings", "app.orders"])."""
+        return box.profile_tables(connection, tables)
+
     @mcp.tool(name="deploy_plan", annotations=read_only)
     def deploy_plan(
         connection: str, codebase_dir: str = ".", include_drops: bool = False, output_dir: str | None = None
