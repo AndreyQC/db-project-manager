@@ -63,8 +63,10 @@
 | 6 | **Phase 14** — Delta Viewer | DV | Phase 9 (✓) | ✅ done (коммиты `3649b0c`…`141e9fc`) |
 | 7 | **Phase 15** — GUI deploy plan/apply + Plan Viewer | CD | Phase 12, 13 | ✅ done |
 | 8 | **Phase 16** — Greenplum tuning (живой кластер GP 6.19, ядро PG 9.4) | CD | Phase 15 (✓) | ✓ завершена — `_phases_/Phase_16.md` |
-| 9 | **Phase 17** — Post-deploy, отчёты, полировка (CD-16..19) | CD | Phase 16 | не начата |
-| 10 | **Phase 19** — MCP Server (LLM-доступ к БД) | MCP | Phase 10–13 (✓), 18 (✓) | не начата — план `_tasks_/2026-09-27/20260927_001_mcp_server_plan.md` |
+| 9 | **Phase 18** — deploy reset (сброс пользовательских схем) | CD | Phase 12, 16 | ✅ done 2026-09-17 — `_tasks_/2026-09-17/20260917_001_deploy_reset_final.md` |
+| 10 | **Phase 17** — Post-deploy, отчёты, полировка (CD-16..19) | CD | Phase 16 | не начата |
+| 11 | **Phase 19** — MCP Server (LLM-доступ к БД) | MCP | Phase 10–13, 18 | ✅ done 2026-09-27 (+19.1 логирование запросов) — `_tasks_/2026-09-27/20260927_001_mcp_server_result.md` |
+| 12 | **Phase 20** — SQL-профайлер таблиц (PG + GP) | Profiling | Phase 10–13 (✓), 19 (✓) | в работе — план `_tasks_/2026-10-06/20261006_002_phase20_sql_profiler_plan.md` |
 | — | **AI track** (overlay) | AI | Phase 12 | не начата, опциональная надстройка |
 
 **Логика порядка:** Phase 8 чинит граф (топосорт деплоя) — **закрыта**, развязка для Phase 10
@@ -276,6 +278,29 @@ AI-трек надстраивается над Phase 12 (нужен струк�
    от `dblink()` (открывает своё соединение) и файловых функций.
 3. UNKNOWN (не распарсилось) = DESTRUCTIVE (fail-safe), требует confirm.
 4. Деплой через MCP не обходит штатные предохранители деплой-пайплайна.
+
+---
+
+## 7a. Направление E — Data Profiling (Phase 20)
+
+> Решения зафиксированы 2026-10-06: final `_tasks_/2026-10-06/20261006_001_ydata_profiling_final.md`,
+> план `_tasks_/2026-10-06/20261006_002_phase20_sql_profiler_plan.md`, журнал диалога —
+> `20261006_002_phase20_sql_profiler_dialog.md`.
+
+Собственный SQL-профайлер: агрегаты считает БД, наружу выкачиваются только
+итоги. ydata-profiling исключён (нет новых зависимостей), HTML не делаем —
+JSON. Отдельные генераторы для Postgres 18 и Greenplum 6 (ядро PG 9.4,
+LESSONS §70). Read-only по построению: RO-транзакция + statement_timeout
+(Phase 19); ANALYZE инструмент не запускает — только совет в отчёте.
+
+| ID | User Story | Acceptance Criteria | Priority |
+|----|------------|---------------------|----------|
+| **PF-1** | CLI `db-pm profile <connection> --tables schema.table,...`. | • JSON в `reports/<connection>/<schema>.<table>.json`<br>• Сводка в stdout<br>• `reports/` в .gitignore (литералы данных) | Must |
+| **PF-2** | Отдельные SQL-генераторы PG/GP. | • PG: TABLESAMPLE, percentile_cont<br>• GP: сэмпл `random() < p`, без TABLESAMPLE (spike 2026-10-06)<br>• Один скан на таблицу: агрегаты всех колонок одним SELECT | Must |
+| **PF-3** | Opt-in политика в подключении. | • Блок `profiling:` (enabled, пороги, сэмпл, timeout)<br>• Нет блока/`enabled: false` → отказ без единого запроса к БД | Must |
+| **PF-4** | Большие таблицы без статистики. | • Порог по `pg_total_relation_size()` (default 1 GiB)<br>• Дорогие метрики по сэмплу; доля из reltuples или `default_sample_fraction`<br>• ANALYZE не запускается: `stats_fresh` + совет в отчёте | Must |
+| **PF-5** | MCP-инструмент `profile_tables`. | • Тот же сервис, readOnlyHint=true<br>• Гейт `profiling.enabled` подключения | Must |
+| **PF-6** | Тесты и документация. | • Unit: генераторы SQL, сервис, гейты<br>• Integration: PG 18 testcontainers<br>• README раздел «Профайлинг» | Must |
 
 ---
 
