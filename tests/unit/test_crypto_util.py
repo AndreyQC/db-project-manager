@@ -106,3 +106,24 @@ def test_generate_fernet_key_is_usable(crypto_env: str, monkeypatch: pytest.Monk
     monkeypatch.setenv(TEST_CRYPTO_ENV, key)
     token = get_encrypted_text("hello", TEST_CRYPTO_ENV)
     assert get_decrypted_text(token) == "hello"
+
+
+# --- regression: "__" внутри Fernet-ciphertextа (base64url) ---
+
+
+def test_cipher_token_with_double_underscore_in_ciphertext() -> None:
+    """Fernet-токен может содержать '__' — хвост после ENV обязан остаться целым.
+
+    Живой случай из флейка test_encrypt_decrypt_roundtrip: ciphertext
+    '...pRhY__RRl6T9...' разваливался split('__') без лимита.
+    """
+    token = "crypto__DBPM_TEST_CRYPTO_KEY__gAAAAABqxMuygkzBOZmuM8l-4Ah4KG0iM-Ish1TgPkx3N3_XmnwcizZW19pRhY__RRl6T9j4Xz7UVwOjZ4xEA_ezmdsDcV0hKw=="
+    assert _is_cipher_token(token) is True
+    assert get_cipher_env(token) == "DBPM_TEST_CRYPTO_KEY"
+
+
+def test_encrypt_decrypt_roundtrip_survives_underscore_rich_token(crypto_env: str) -> None:
+    """Многократный roundtrip: вероятность '__' внутри токена ~2% на штуку."""
+    for i in range(40):
+        token = get_encrypted_text(f"secret-{i}", crypto_env)
+        assert get_decrypted_text(token) == f"secret-{i}"
