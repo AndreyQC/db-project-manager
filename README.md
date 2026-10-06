@@ -18,6 +18,9 @@
 ### Безопасность
 - Секреты и `connections/` вне git; пароли шифруются (Fernet, формат `crypto__<ENV>__<token>`); `.dbm_graph/` тоже вне git (детерминированно перестраивается из кодовой базы).
 
+### Phase 20 — Профайлинг таблиц (PG + GP)
+- **Собственный SQL-профайлер**: агрегаты считает сама БД (один скан на таблицу), наружу — только итоги. Отдельные генераторы для Postgres 18 и Greenplum 6 (сэмпл `random() < p`, ядро GP 6 = PG 9.4). JSON-профили без HTML. Opt-in через блок `profiling:` подключения; ANALYZE никогда не запускается.
+
 ## Требования
 
 - Python 3.13+
@@ -371,6 +374,58 @@ Safety Gate, `allow_drop_schemas`, подтверждение именем БД 
 запись в `registry.get_adapter` → значение в `SUPPORTED_DB_TYPES` → драйвер
 как optional extra → диалект sqlglot в `classify.py:DB_TYPE_DIALECT`.
 MCP-слой править не нужно.
+
+## Профайлинг таблиц (Phase 20)
+
+`db-pm profile <connection> --tables schema.table,... [--output <dir>]` —
+JSON-профиль каждой таблицы в `reports/<connection>/<schema>.<table>.json`
+(каталог в .gitignore: профиль содержит литералы данных) + сводка в stdout.
+Тот же функционал в MCP — инструмент `profile_tables` (read-only, 13-й
+инструмент). Решения фазы: `_tasks_/2026-10-06/20261006_001_ydata_profiling_final.md`.
+
+Метрики: count, размер, оценка reltuples; по колонкам — NULL-доли,
+COUNT(DISTINCT), min/max, avg/stddev, перцентили p01/p25/p50/p75/p99
+(числовые), гистограммы `width_bucket` (числовые) и по `extract(epoch)` 
+(даты), top-N частот (текст/bool/даты). Агрегаты всех колонок — один скан
+на таблицу (MPP-дружелюбно для GP); колонки чанкуются по 50.
+
+Политика (блок `profiling:` в connections/*.yaml, по умолчанию выключено —
+без блока профайлинг отклоняется до первого запроса):
+
+```yaml
+profiling:
+  enabled: true                  # opt-in гейт
+  full_size_threshold_bytes: 1073741824   # таблицы > 1 GiB — по сэмплу
+  sample_rows: 100000            # целевой размер сэмпла
+  default_sample_fraction: 0.01  # доля, когда reltuples неизвестен
+  statement_timeout_ms: 300000
+  top_n: 10
+  histogram_buckets: 20
+  column_chunk_size: 50
+```
+
+Безопасность:
+
+1. Только read-only агрегаты; каждый запрос прогоняется через
+   sqlglot-классификатор и исполняется в `BEGIN TRANSACTION READ ONLY …
+   ROLLBACK` с statement_timeout (механика Phase 19).
+2. Порог «полный проход vs сэмпл» — по `pg_total_relation_size()`
+   (статистика не требуется, работает для heap и AO-таблиц GP). Сэмпл:
+   PG — `TABLESAMPLE SYSTEM` (fallback `random() < p` при пустом сэмпле),
+   GP 6 — только `random() < p` (TABLESAMPLE отсутствует в ядре PG 9.4).
+3. **ANALYZE инструмент не запускает никогда** — в профиле поле
+   `stats_fresh: false` и совет запустить ANALYZE вручную. Свежесть: PG —
+   `pg_stat_user_tables.last_analyze`, GP — `pg_stats`
+   (+ `gp_toolkit.gp_stats_missing` для таблиц без статистики).
+4. JSON-профили содержат литералы данных (top-N значений) — `reports/`
+   в .gitignore; не выгружайте профили prod-баз наружу.
+
+### Добавление нового движка (профайлинг)
+
+Подкласс `infrastructure/profiling/base.ProfilingSQLGenerator` (образцы:
+`postgres.py` — TABLESAMPLE, `greenplum.py` — random-сэмпл) → запись в
+`get_profiler`. Агрегатные запросы (main/histogram/top-N) наследуются;
+переопределяются каталог-запросы и форма сэмпла.
 
 ## Разработка
 
