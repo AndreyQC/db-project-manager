@@ -178,3 +178,36 @@ reltuples → байты); final 20261006_001 не правится (истор�
 `--tables '"src_ods_hn_trade_zup"."ext_department"'` — OK.
 Ограничение: запятая — разделитель списка, внутри квотированного имени
 запятую не поддержать (в MCP список передаётся массивом — там ограничения нет).
+
+## 6. Пример на списке таблиц (2026-10-06)
+
+### Запрос пользователя
+
+Прокачать пример вызова на списке таблиц.
+
+### CLI (список через запятую, микс квотированных и обычных имён)
+
+```bash
+uv run db-pm profile IVSD00258.reksoft.com_GP__DB__cis_zup_gp_dev__U_gpadmin \
+  --tables '"src_ods_hn_trade_zup"."ext_department",src_ods_hn_trade_zup.ext_cost_centers,src_ods_hn_trade_zup.ext_account_groups'
+```
+
+Результат: по строке сводки на таблицу + по JSON-файлу на каждую в
+`reports/<connection>/` (3 профиля).
+
+### MCP (tables — JSON-массив)
+
+`tools/call profile_tables` с
+`"tables": ["src_ods_hn_trade_zup.ext_department", "\"src_ods_hn_trade_zup\".\"ext_cost_centers\"", "src_ods_hn_trade_zup.ext_account_groups"]`
+→ `isError: false`, 3 content-блока (по одному `TableProfile` на таблицу):
+ext_department — 10 колонок / 777 мс; ext_cost_centers — 9 / 584 мс;
+ext_account_groups — 7 / 753 мс. Второй элемент передан в кавычках внутри
+JSON-строки — парсинг общий с CLI, кавычки снимаются.
+
+### Зафиксированное поведение
+
+- Fail-fast: не найденная таблица в списке останавливает прогон (exit 1),
+  файлы за весь прогон не пишутся — большие списки предварительно
+  проверять через MCP `list_objects`.
+- Пустые таблицы (row_count=0): гистограммы/top-N не добираются — только
+  nulls/distinct из каталога; осознанное поведение.
