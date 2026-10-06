@@ -211,3 +211,34 @@ JSON-строки — парсинг общий с CLI, кавычки сним�
   проверять через MCP `list_objects`.
 - Пустые таблицы (row_count=0): гистограммы/top-N не добираются — только
   nulls/distinct из каталога; осознанное поведение.
+
+## 7. Приёмка на PG: несколько таблиц и где смотреть результат (2026-10-06)
+
+### Что проверено (local-PG-18-db--dagster, список из 5 таблиц)
+
+```bash
+uv run db-pm profile local-PG-18-db--dagster \
+  --tables '"public"."runs",public.job_ticks,public.run_tags,public.daemon_heartbeats,public.secondary_indexes'
+```
+
+runs 13 809 строк / job_ticks 12 588 / run_tags 114 168 (4 с, full) /
+daemon_heartbeats 6 / secondary_indexes 11 + предупреждение «ANALYZE не
+выполнялся». MCP со списком `["public.jobs", "\"public\".\"instigators\""]`
+— isError: false, 2 content-блока. Санити: distinct(run_id)=13809 =
+row_count(runs) — перекрёстная согласованность. Гейт `profiling: enabled: true`
+возвращён в подключение после отката.
+
+### Где смотреть результат
+
+- **CLI** — файлы `reports/<connection>/<schema>.<table>.json` относительно
+  корня репозитория (путь печатается в сводке после «→»); открываются любым
+  редактором; каталог переопределяется `--output`. Каталог в .gitignore.
+- **MCP** — файл не пишется: JSON каждой таблицы возвращается в ответе
+  инструмента (в чате клиента); копия события (SQL + ответ) — аудит-лог
+  `logs/mcp_queries.log` (JSONL, фильтр по `"tool": "profile_tables"`).
+
+### Примечания для больших таблиц
+
+`public.event_logs` (396k строк, 539 МБ) пойдёт полным проходом (порог
+1 GiB); сэмплинг для него — `full_size_threshold_bytes: 100000000` в блоке
+`profiling:` подключения.
