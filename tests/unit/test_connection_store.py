@@ -110,6 +110,43 @@ def test_token_is_cipher_format() -> None:
     assert _is_cipher_token("plain") is False
 
 
+# --- crypto_env_for: raw-file key variable lookup (для диалога редактирования) ---
+
+
+def test_crypto_env_for_returns_password_token_env(crypto_env: str, tmp_path) -> None:
+    store = ConnectionStore(tmp_path)
+    store.save(_make_cfg(), name="prod", crypto_env=crypto_env)
+    assert store.crypto_env_for("prod") == crypto_env
+
+
+def test_crypto_env_for_plain_password_returns_none(tmp_path) -> None:
+    store = ConnectionStore(tmp_path)
+    (tmp_path / "plain.yaml").write_text(
+        "host: localhost\npassword: plain-secret\n", encoding="utf-8"
+    )
+    assert store.crypto_env_for("plain") is None
+
+
+def test_crypto_env_for_missing_file_returns_none(tmp_path) -> None:
+    store = ConnectionStore(tmp_path)
+    assert store.crypto_env_for("nope") is None
+
+
+def test_crypto_env_for_falls_back_to_ssh_token(crypto_env: str, tmp_path) -> None:
+    """Plain DB password but an encrypted SSH field: the key var is still found."""
+    from db_project_manager.infrastructure.crypto.crypto_util import get_encrypted_text
+
+    store = ConnectionStore(tmp_path)
+    (tmp_path / "mixed.yaml").write_text(
+        "host: localhost\n"
+        "password: plain-secret\n"
+        "ssh_tunnel:\n"
+        f"  ssh_pass: {get_encrypted_text('ssh-pw', crypto_env)}\n",
+        encoding="utf-8",
+    )
+    assert store.crypto_env_for("mixed") == crypto_env
+
+
 # --- Phase 18: allow_drop_schemas flag round-trip ---
 
 

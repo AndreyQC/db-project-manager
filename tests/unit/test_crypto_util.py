@@ -7,6 +7,7 @@ import pytest
 from db_project_manager.infrastructure.crypto.crypto_util import (
     format_cipher_token,
     generate_fernet_key,
+    get_cipher_env,
     get_decrypted_nested_dict,
     get_decrypted_text,
     get_encrypted_text,
@@ -35,6 +36,17 @@ def test_is_cipher_token() -> None:
     assert _is_cipher_token("crypto__ENV__payload") is True
     assert _is_cipher_token("plain-password") is False
     assert _is_cipher_token("crypto__only_one_part") is False
+
+
+def test_get_cipher_env_extracts_env_name(crypto_env: str) -> None:
+    token = get_encrypted_text("s3cret", crypto_env)
+    assert get_cipher_env(token) == crypto_env
+
+
+def test_get_cipher_env_non_token_returns_none() -> None:
+    assert get_cipher_env("plain-password") is None
+    assert get_cipher_env("crypto__only_one_part") is None
+    assert get_cipher_env("") is None
 
 
 # --- nested dict ---
@@ -94,3 +106,24 @@ def test_generate_fernet_key_is_usable(crypto_env: str, monkeypatch: pytest.Monk
     monkeypatch.setenv(TEST_CRYPTO_ENV, key)
     token = get_encrypted_text("hello", TEST_CRYPTO_ENV)
     assert get_decrypted_text(token) == "hello"
+
+
+# --- regression: "__" внутри Fernet-ciphertextа (base64url) ---
+
+
+def test_cipher_token_with_double_underscore_in_ciphertext() -> None:
+    """Fernet-токен может содержать '__' — хвост после ENV обязан остаться целым.
+
+    Живой случай из флейка test_encrypt_decrypt_roundtrip: ciphertext
+    '...pRhY__RRl6T9...' разваливался split('__') без лимита.
+    """
+    token = "crypto__DBPM_TEST_CRYPTO_KEY__gAAAAABqxMuygkzBOZmuM8l-4Ah4KG0iM-Ish1TgPkx3N3_XmnwcizZW19pRhY__RRl6T9j4Xz7UVwOjZ4xEA_ezmdsDcV0hKw=="
+    assert _is_cipher_token(token) is True
+    assert get_cipher_env(token) == "DBPM_TEST_CRYPTO_KEY"
+
+
+def test_encrypt_decrypt_roundtrip_survives_underscore_rich_token(crypto_env: str) -> None:
+    """Многократный roundtrip: вероятность '__' внутри токена ~2% на штуку."""
+    for i in range(40):
+        token = get_encrypted_text(f"secret-{i}", crypto_env)
+        assert get_decrypted_text(token) == f"secret-{i}"

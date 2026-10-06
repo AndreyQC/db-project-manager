@@ -8,6 +8,8 @@ Layout:
     db-pm deploy    plan                        --dir <dir> --target-connection-file <conn.yaml> [...]
     db-pm deploy    apply                       --dir <dir> --target-connection-file <conn.yaml> [...]
     db-pm deploy    reset                       --dir <dir> --target-connection-file <conn.yaml> [...]
+    db-pm crypto    keygen|encrypt              (секреты для connections/*.yaml)
+    db-pm profile   <connection> --tables ...   (профайлинг таблиц, Phase 20)
 
 Connection management (create/edit) is UI-only; the CLI consumes a connection
 file produced in the GUI (see roadmap §8).
@@ -15,6 +17,10 @@ file produced in the GUI (see roadmap §8).
 
 from __future__ import annotations
 
+import json
+import os
+import re
+import sys
 from pathlib import Path
 from typing import Annotated, Optional
 
@@ -30,6 +36,7 @@ from db_project_manager.application.deploy_service import (
     DeployValidateService,
 )
 from db_project_manager.application.graph_service import BuildGraphService
+from db_project_manager.application.profiling_service import ProfilingError, ProfilingService
 from db_project_manager.application.safety_gate_service import (
     SafetyGateError,
     SafetyGateService,
@@ -58,6 +65,10 @@ from db_project_manager.infrastructure.config.connection_store import (
     ConnectionStore,
     ConnectionStoreError,
 )
+from db_project_manager.infrastructure.crypto.crypto_util import (
+    generate_fernet_key,
+    get_encrypted_text,
+)
 from db_project_manager.infrastructure.files.run_naming import create_run_dir
 from db_project_manager.infrastructure.deploy.safety_report import rows_phrase
 from db_project_manager.infrastructure.graph import graph_store
@@ -69,10 +80,12 @@ graph_app = typer.Typer(no_args_is_help=True, help="Граф зависимос�
 deploy_app = typer.Typer(no_args_is_help=True, help="Деплой кодовой базы в базу данных.")
 compare_app = typer.Typer(no_args_is_help=True, help="Сравнение состояния БД и кодовой базы.")
 yaml_app = typer.Typer(no_args_is_help=True, help="YAML project: generate from directory or apply to target.")
+crypto_app = typer.Typer(no_args_is_help=True, help="Шифрование секретов (Fernet, формат crypto__ENV__токен).")
 app.add_typer(graph_app, name="graph")
 app.add_typer(deploy_app, name="deploy")
 app.add_typer(compare_app, name="compare")
 app.add_typer(yaml_app, name="yaml")
+app.add_typer(crypto_app, name="crypto")
 
 
 @app.callback()
@@ -98,6 +111,74 @@ _NO_RUN_SUBDIR_OPTION = Annotated[
         "без уникального подкаталога прогона.",
     ),
 ]
+
+
+# --- profile (Phase 20) ---
+
+
+def _safe_path_part(name: str) -> str:
+    """Имя подключения/схемы/таблицы → безопасный фрагмент пути."""
+    return re.sub(r"[^A-Za-z0-9_.\-]", "_", name) or "_"
+
+
+@app.command("profile")
+def profile(
+    connection: Annotated[
+        str,
+        typer.Argument(help="Имя подключения из каталога connections/ (как в GUI/MCP)."),
+    ],
+    tables: Annotated[
+        str,
+        typer.Option(
+            "--tables",
+            help="Квалифицированные имена таблиц через запятую: schema.table,schema2.table2",
+        ),
+    ],
+    output: Annotated[
+        Optional[Path],
+        typer.Option("--output", help="Каталог отчётов (по умолчанию reports/)."),
+    ] = None,
+    connections_dir: Annotated[
+        Path,
+        typer.Option("--connections-dir", help="Каталог подключений (по умолчанию connections/)."),
+    ] = Path("connections"),
+) -> None:
+    """Профайлинг таблиц: JSON-профили в reports/<connection>/ (Phase 20).
+
+    Только read-only агрегаты (ANALYZE не запускается); таблицы выше порога
+    pg_total_relation_size считаются по сэмплу. Требует блока
+    profiling: enabled=true в файле подключения.
+    """
+    configure_logging()
+    table_names = [part.strip() for part in tables.split(",") if part.strip()]
+    if not table_names:
+        typer.secho("Ошибка: --tables пуст (пример: --tables public.bookings,app.orders)", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
+
+    service = ProfilingService(connections_dir=str(connections_dir))
+    try:
+        profiles = service.profile_tables(connection, table_names)
+    except ProfilingError as e:
+        typer.secho(f"Ошибка: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from e
+    except ConnectionStoreError as e:
+        typer.secho(f"Ошибка загрузки подключения: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from e
+
+    out_dir = (output if output is not None else Path("reports")) / _safe_path_part(connection)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for tp in profiles:
+        target = out_dir / f"{_safe_path_part(tp.schema_name)}.{_safe_path_part(tp.table_name)}.json"
+        target.write_text(json.dumps(tp.model_dump(), ensure_ascii=False, indent=2), encoding="utf-8")
+        size = f"{tp.size_bytes / 1048576:.1f} MB" if tp.size_bytes else "n/a"
+        typer.echo(
+            f"✓ {tp.schema_name}.{tp.table_name}: строк={tp.row_count}, размер={size}, "
+            f"сэмпл={'да' if tp.sampled else 'нет'}, предупреждений={len(tp.warnings)}"
+        )
+        for warning in tp.warnings:
+            typer.echo(f"  ! {warning}")
+        typer.secho(f"  → {target}", fg=typer.colors.CYAN)
+    typer.secho(f"Готово: {len(profiles)} профил(я) → {out_dir}", fg=typer.colors.GREEN)
 
 
 # --- reverse-engineer (Phase 1) ---
@@ -1136,6 +1217,72 @@ def yaml_apply(
         f"output={result.output_dir}",
         fg=typer.colors.GREEN,
     )
+
+
+# --- crypto: secrets for connection files (Fernet, crypto__ENV__token) ---
+
+
+@crypto_app.command("keygen")
+def crypto_keygen() -> None:
+    """Сгенерировать новый Fernet-ключ для переменной окружения (например, ENVOS_CRYPTO_01).
+
+    Ключ генерируется один раз и живёт в переменной окружения машины/CI;
+    все пароли подключений шифруются им (GUI делает это автоматически).
+    """
+    typer.echo(generate_fernet_key())
+
+
+@crypto_app.command("encrypt")
+def crypto_encrypt(
+    env_var: Annotated[
+        str,
+        typer.Argument(help="Имя переменной окружения с Fernet-ключом (например, ENVOS_CRYPTO_01)."),
+    ],
+) -> None:
+    """Зашифровать значение ключом из ENV_VAR и напечатать токен для yaml.
+
+    Значение читается со stdin: в интерактивном терминале — скрытый ввод с
+    подтверждением, в пайпе — первая строка stdin (можно использовать в
+    скриптах). Вывод — единственная строка crypto__<ENV_VAR>__<ciphertext>:
+    вставьте её в connections/*.yaml (поле password или ssh_tunnel.ssh_pass).
+
+    Примеры:
+      db-pm crypto encrypt ENVOS_CRYPTO_01
+      echo 'my-secret' | db-pm crypto encrypt ENVOS_CRYPTO_01
+    """
+    # Key check FIRST: asking for a secret and only then failing on a missing
+    # key wastes the user's input (Windows gotcha: setx/UI vars appear only
+    # in terminals started AFTER the change).
+    if env_var not in os.environ:
+        typer.secho(
+            f"✗ Переменная окружения {env_var} не задана в этой сессии. Если вы добавили "
+            "её недавно (setx / интерфейс Windows) — перезапустите терминал. "
+            "Сгенерировать новый ключ: db-pm crypto keygen",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    if sys.stdin.isatty():
+        value = typer.prompt("Значение для шифрования", hide_input=True)
+        confirmation = typer.prompt("Повторите значение", hide_input=True)
+        if value != confirmation:
+            typer.secho("✗ Значения не совпадают.", fg=typer.colors.RED, err=True)
+            raise typer.Exit(code=1)
+    else:
+        value = sys.stdin.readline().strip()
+    if not value:
+        typer.secho("✗ Пустое значение — нечего шифровать.", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+    try:
+        token = get_encrypted_text(value, env_var)
+    except Exception as e:  # noqa: BLE001 — any crypto failure is a hard error
+        typer.secho(
+            f"✗ Не удалось зашифровать (проверьте ключ в {env_var}): {e}",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=2) from e
+    typer.echo(token)
 
 
 if __name__ == "__main__":

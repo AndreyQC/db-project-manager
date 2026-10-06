@@ -15,8 +15,24 @@ logger = logging.getLogger(__name__)
 
 
 def _is_cipher_token(s: str) -> bool:
-    parts = s.strip().split("__")
-    return len(parts) == 3 and parts[0] == CIPHER_PREFIX
+    # Токен режется строго на ПЕРВЫЕ два разделителя: Fernet-ciphertext в
+    # base64url может сам содержать "__" (~2% токенов), поэтому хвост после
+    # второй пары подчёркиваний — всегда часть токена. Ограничение: имя
+    # env-переменной не должно содержать "__" (иначе формат неоднозначен).
+    parts = s.strip().split("__", 2)
+    return len(parts) == 3 and parts[0] == CIPHER_PREFIX and bool(parts[1]) and bool(parts[2])
+
+
+def get_cipher_env(value: str) -> str | None:
+    """Имя переменной окружения, зашитое в токен ``crypto__<ENV>__<token>``.
+
+    Returns:
+        Имя env-переменной с ключом, либо ``None`` — если строка не токен.
+    """
+    stripped = value.strip() if isinstance(value, str) else ""
+    if not _is_cipher_token(stripped):
+        return None
+    return stripped.split("__", 2)[1]
 
 
 def get_decrypted_text(encrypted_data: str) -> str:
@@ -28,9 +44,8 @@ def get_decrypted_text(encrypted_data: str) -> str:
         logger.warning("Строка не в ожидаемом crypto-формате, возвращаю как есть.")
         return encrypted_data
 
-    parts = encrypted_data.strip().split("__")
-    key_env_variable = parts[1]
-    token = parts[2]
+    # "__" внутри Fernet-ciphertextа — часть токена (base64url); см. _is_cipher_token.
+    _, key_env_variable, token = encrypted_data.strip().split("__", 2)
 
     try:
         raw_key = os.environ[key_env_variable]

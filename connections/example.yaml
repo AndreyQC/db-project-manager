@@ -5,7 +5,9 @@
 # The password field uses the crypto__<ENV_VAR>__<token> format:
 #   - <ENV_VAR> is an environment variable name holding the Fernet key (set on your machine / CI secrets).
 #   - <token> is the Fernet ciphertext.
-# To produce an encrypted password, run: db-pm crypto encrypt <ENV_VAR>   (reads password from stdin)
+# To produce an encrypted password:
+#   db-pm crypto keygen                        # generate a Fernet key (once) -> put into the env var
+#   db-pm crypto encrypt <ENV_VAR>             # hidden prompt in a terminal, or first stdin line in a pipe
 # or use the GUI connection dialog (encrypts automatically on save).
 #
 # =============================================================================
@@ -38,3 +40,40 @@
 #   ssh_pass: crypto__ENVOS_CRYPTO_01__gAAAAABm...your-token...
 #   remote_bind_host: 127.0.0.1  # DB host as seen from jump host
 #   remote_bind_port: 5432
+
+# =============================================================================
+# MCP SERVER POLICY (Phase 19, db-pm-mcp)
+# =============================================================================
+# Optional block. All settings live here — the MCP server takes no behavioral
+# flags. Fail-safe defaults: everything mutating stays off.
+#
+# mcp:
+#   allow_writes: false      # run_script (any INSERT/UPDATE/DELETE/DDL)
+#   allow_deploy: false      # deploy_apply / deploy_reset (implies writes)
+#   row_limit: 50            # max rows returned by the `query` tool
+#   query_timeout_s: 60      # statement_timeout for query/explain (seconds)
+#
+# Example — a dev database where the LLM agent may run scripts and deploy:
+# mcp:
+#   allow_writes: true
+#   allow_deploy: true
+#   row_limit: 200
+#   query_timeout_s: 120
+
+# =============================================================================
+# TABLE PROFILING POLICY (Phase 20, db-pm profile / MCP profile_tables)
+# =============================================================================
+# Optional block. Fail-safe default: profiling is OFF until enabled — a
+# connection without this block rejects profiling before a single query.
+# Queries are read-only aggregates (RO transaction + statement_timeout);
+# ANALYZE is never run by the profiler — reports suggest running it manually.
+#
+# profiling:
+#   enabled: true                  # opt-in gate
+#   full_size_threshold_bytes: 1073741824   # tables above 1 GiB are sampled
+#   sample_rows: 100000            # target sample size (rows) for big tables
+#   default_sample_fraction: 0.01  # fraction when reltuples is unknown
+#   statement_timeout_ms: 300000   # 5 minutes per query
+#   top_n: 10                      # top-N frequent values
+#   histogram_buckets: 20          # width_bucket buckets
+#   column_chunk_size: 50          # columns per aggregate query

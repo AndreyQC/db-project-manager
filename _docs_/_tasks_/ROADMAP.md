@@ -63,7 +63,10 @@
 | 6 | **Phase 14** — Delta Viewer | DV | Phase 9 (✓) | ✅ done (коммиты `3649b0c`…`141e9fc`) |
 | 7 | **Phase 15** — GUI deploy plan/apply + Plan Viewer | CD | Phase 12, 13 | ✅ done |
 | 8 | **Phase 16** — Greenplum tuning (живой кластер GP 6.19, ядро PG 9.4) | CD | Phase 15 (✓) | ✓ завершена — `_phases_/Phase_16.md` |
-| 9 | **Phase 17** — Post-deploy, отчёты, полировка (CD-16..19) | CD | Phase 16 | не начата |
+| 9 | **Phase 18** — deploy reset (сброс пользовательских схем) | CD | Phase 12, 16 | ✅ done 2026-09-17 — `_tasks_/2026-09-17/20260917_001_deploy_reset_final.md` |
+| 10 | **Phase 17** — Post-deploy, отчёты, полировка (CD-16..19) | CD | Phase 16 | не начата |
+| 11 | **Phase 19** — MCP Server (LLM-доступ к БД) | MCP | Phase 10–13, 18 | ✅ done 2026-09-27 (+19.1 логирование запросов) — `_tasks_/2026-09-27/20260927_001_mcp_server_result.md` |
+| 12 | **Phase 20** — SQL-профайлер таблиц (PG + GP) | Profiling | Phase 10–13 (✓), 19 (✓) | в работе — план `_tasks_/2026-10-06/20261006_002_phase20_sql_profiler_plan.md` |
 | — | **AI track** (overlay) | AI | Phase 12 | не начата, опциональная надстройка |
 
 **Логика порядка:** Phase 8 чинит граф (топосорт деплоя) — **закрыта**, развязка для Phase 10
@@ -223,7 +226,85 @@ AI-трек надстраивается над Phase 12 (нужен струк�
 
 ---
 
-## 7. Правила безопасности (зафиксированные)
+## 7. Направление D — MCP-интеграция (Phase 19)
+
+> План принят 2026-09-27 (сессия с обсуждением crystaldba/postgres-mcp как референса).
+> Детальный план: `_tasks_/2026-09-27/20260927_001_mcp_server_plan.md`.
+
+Локальный MCP-сервер `db-pm-mcp` (stdio) поверх существующей инфраструктуры:
+`ConnectionStore` (имя → ConnectionConfig с расшифровкой), `registry.get_adapter`,
+деплой-сервисы. Отвечает запросу пользователя: запуск скриптов, анализ плана
+выполнения, ответы на вопросы по данным + полный деплой-цикл.
+
+**Принципы (зафиксированы при обсуждении плана):**
+
+1. **Готовность к другим СУБД** (MSSQL, Snowflake, MySQL, Oracle…): MCP-секция
+   контракта адаптера диалект-агностична, возможности движка объявляются
+   capability-флагами. PG/GP — единственная реализация v1; рецепт расширения
+   документирован (registry + SUPPORTED_DB_TYPES + optional extra драйвера +
+   диалект-мапа sqlglot).
+2. **Все настройки MCP — в файлах подключений** (`connections/*.yaml`, блок
+   `mcp:`) — продолжение паттерна `allow_drop_schemas`. Поведенческих флагов
+   запуска нет (только bootstrap: каталог подключений).
+3. **Read-only по умолчанию, запись opt-in.** Двухслойная защита
+   (идея из crystaldba/postgres-mcp): sqlglot-классификатор до исполнения +
+   read-only транзакция на исполнении как backstop.
+4. **Заимствовано из postgres-mcp:** RO-транзакция-backstop, запрет
+   EXPLAIN ANALYZE для не-read-only стейтментов, denylist функций
+   (dblink/pg_read_file/pg_sleep/lo_*), гранулярная интроспекция
+   (list_schemas → list_objects → get_object_details — не выгружать всю
+   структуру в контекст LLM), readOnlyHint/destructiveHint, get_top_queries.
+   **Осознанно не берём:** hypopg-тюнинг индексов (расширение PG-only),
+   health-checks (кандидат в будущие фазы), SSE-транспорт, переезд на
+   psycopg3/async.
+
+| ID | User Story | Acceptance Criteria | Priority |
+|----|------------|---------------------|----------|
+| **MCP-1** | Локальный MCP-сервер над существующими подключениями. | • Entry point `db-pm-mcp`, optional extra `mcp` (`uv sync --extra mcp`)<br>• stdio-транспорт, логи → stderr (stdout занят протоколом)<br>• Инструменты видны MCP-клиенту (ZCode/Claude Desktop) | Must |
+| **MCP-2** | Ответы на вопросы по данным (read-only запросы). | • `query`: колонки + строки (dict), row_limit/truncated, statement_timeout<br>• Классификация READ_ONLY + исполнение в read-only транзакции<br>• Не-read-only SQL → отказ с объяснением | Must |
+| **MCP-3** | Анализ плана выполнения. | • `explain`: text/JSON (JSON с fallback на text — Greenplum 6)<br>• `analyze=True` только для READ_ONLY стейтментов<br>• `get_top_queries` (pg_stat_statements; graceful NotSupported) | Must |
+| **MCP-4** | Запуск SQL-скриптов с предохранителями. | • `run_script` гейтится `mcp.allow_writes` подключения<br>• DESTRUCTIVE/UNKNOWN операторы → дополнительно `confirm_destructive=true`<br>• sqlglot-классификатор с диалектом подключения | Must |
+| **MCP-5** | Интроспекция схемы для LLM. | • `list_schemas` / `list_objects(schema, type)` / `get_object_details(schema, object)` поверх `get_database_structure()`<br>• `list_connections` без секретов, с эффективными правами | Must |
+| **MCP-6** | Деплой через MCP. | • `deploy_plan`, `deploy_analyze` — read-only<br>• `deploy_apply`, `deploy_reset` — гейт `mcp.allow_deploy` + штатные предохранители (rehearsal temp-БД, SafetyGate, `allow_drop_schemas`, `confirm_database`) | Must |
+| **MCP-7** | Политика в файлах подключений. | • Блок `mcp:` (allow_writes, allow_deploy, row_limit, query_timeout_s) в `connections/*.yaml`<br>• Fail-safe дефолты (записи запрещены)<br>• `connections/example.yaml` документирует блок | Must |
+| **MCP-8** | Готовность к другим СУБД. | • MCP-секция контракта диалект-агностична (ExplainResult допускает xml/tabular)<br>• Capability-флаги `supports_readonly_txn`, `supports_statement_timeout`<br>• Рецепт расширения в docstring контракта и README | Must |
+| **MCP-9** | Тесты и документация. | • Unit: McpSettings, классификатор, адаптер, policy-гейты, инструменты<br>• Integration (Docker): run_query/explain/RO-транзакция e2e<br>• README (раздел MCP), AGENTS.md | Must |
+
+**Правила безопасности фазы (в развитие §8 ниже):**
+
+1. `query` исполняется ТОЛЬКО в read-only транзакции (где движок поддерживает)
+   и только для READ_ONLY-классифицированного SQL; один стейтмент на вызов.
+2. Denylist функций для read-only режима — read-only транзакция не защищает
+   от `dblink()` (открывает своё соединение) и файловых функций.
+3. UNKNOWN (не распарсилось) = DESTRUCTIVE (fail-safe), требует confirm.
+4. Деплой через MCP не обходит штатные предохранители деплой-пайплайна.
+
+---
+
+## 7a. Направление E — Data Profiling (Phase 20)
+
+> Решения зафиксированы 2026-10-06: final `_tasks_/2026-10-06/20261006_001_ydata_profiling_final.md`,
+> план `_tasks_/2026-10-06/20261006_002_phase20_sql_profiler_plan.md`, журнал диалога —
+> `20261006_002_phase20_sql_profiler_dialog.md`.
+
+Собственный SQL-профайлер: агрегаты считает БД, наружу выкачиваются только
+итоги. ydata-profiling исключён (нет новых зависимостей), HTML не делаем —
+JSON. Отдельные генераторы для Postgres 18 и Greenplum 6 (ядро PG 9.4,
+LESSONS §70). Read-only по построению: RO-транзакция + statement_timeout
+(Phase 19); ANALYZE инструмент не запускает — только совет в отчёте.
+
+| ID | User Story | Acceptance Criteria | Priority |
+|----|------------|---------------------|----------|
+| **PF-1** | CLI `db-pm profile <connection> --tables schema.table,...`. | • JSON в `reports/<connection>/<schema>.<table>.json`<br>• Сводка в stdout<br>• `reports/` в .gitignore (литералы данных) | Must |
+| **PF-2** | Отдельные SQL-генераторы PG/GP. | • PG: TABLESAMPLE, percentile_cont<br>• GP: сэмпл `random() < p`, без TABLESAMPLE (spike 2026-10-06)<br>• Один скан на таблицу: агрегаты всех колонок одним SELECT | Must |
+| **PF-3** | Opt-in политика в подключении. | • Блок `profiling:` (enabled, пороги, сэмпл, timeout)<br>• Нет блока/`enabled: false` → отказ без единого запроса к БД | Must |
+| **PF-4** | Большие таблицы без статистики. | • Порог по `pg_total_relation_size()` (default 1 GiB)<br>• Дорогие метрики по сэмплу; доля из reltuples или `default_sample_fraction`<br>• ANALYZE не запускается: `stats_fresh` + совет в отчёте | Must |
+| **PF-5** | MCP-инструмент `profile_tables`. | • Тот же сервис, readOnlyHint=true<br>• Гейт `profiling.enabled` подключения | Must |
+| **PF-6** | Тесты и документация. | • Unit: генераторы SQL, сервис, гейты<br>• Integration: PG 18 testcontainers<br>• README раздел «Профайлинг» | Must |
+
+---
+
+## 8. Правила безопасности (зафиксированные)
 
 1. **Таблицы с данными** — любые операции в авто-дельте запрещены. Нет флага «можно потерять данные».
 2. **Пустые таблицы** — можно пересоздавать и изменять автоматически.
@@ -237,7 +318,7 @@ AI-трек надстраивается над Phase 12 (нужен струк�
 
 ---
 
-## 8. Целевой пайплайн
+## 9. Целевой пайплайн
 
 ```
 1. Сборка артефакта: дерево схемы + migrations/pre + migrations/post
@@ -257,7 +338,7 @@ AI-трек надстраивается над Phase 12 (нужен струк�
 
 ---
 
-## 9. Открытые вопросы (`USER_INPUT`)
+## 10. Открытые вопросы (`USER_INPUT`)
 
 > Закрываются при старте соответствующей фазы (в её `phase_NN/..._vision_draft.md`).
 
@@ -290,7 +371,7 @@ AI-трек надстраивается над Phase 12 (нужен струк�
 
 ---
 
-## 10. Где читать дальше
+## 11. Где читать дальше
 
 | Doc | Why |
 |-----|-----|

@@ -1,17 +1,18 @@
 """Database adapter contract (infrastructure layer).
 
 Phase 1 needs only the reverse-engineering surface: connect + read the full
-structure as a nested dict. The full adapter contract (list_objects, get_ddl,
-execute_script, create_temp_database) arrives in Phase 2.
+structure as a nested dict. Subsequent phases extend the contract with their
+own sections (validation-deploy, CD Foundation, deploy reset, MCP server).
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, ClassVar
 
 from db_project_manager.domain.connection import ConnectionConfig
 from db_project_manager.domain.deploy import ScriptRecord
+from db_project_manager.domain.query import ExplainResult, QueryResult
 from db_project_manager.domain.safety import TablePresenceStats
 
 
@@ -19,8 +20,35 @@ class DatabaseError(Exception):
     """Raised on connection/query failures inside an adapter."""
 
 
+class NotSupportedError(DatabaseError):
+    """Optional engine capability that this adapter does not implement.
+
+    Raised by base implementations of optional MCP-surface methods so tooling
+    can degrade gracefully ("движок не поддерживает") instead of failing hard.
+    """
+
+
 class DatabaseAdapter(ABC):
-    """Abstract base for database-specific adapters."""
+    """Abstract base for database-specific adapters.
+
+    Adding a new DBMS (Phase 19 extension recipe):
+
+    1. package ``infrastructure/database/<engine>/`` — ``adapter.py`` (this
+       contract) + ``queries.py``;
+    2. dispatch entry in ``infrastructure/database/registry.py``;
+    3. value in ``domain.connection.SUPPORTED_DB_TYPES``;
+    4. driver as an optional pyproject extra (e.g. ``db-project-manager[mssql]``);
+    5. sqlglot dialect in ``infrastructure/sql/classify.py:DB_TYPE_DIALECT``.
+
+    No MCP-layer changes are needed: tools speak this contract, not a dialect.
+    """
+
+    #: Engine capabilities (Phase 19, MCP surface). Adapters declare what the
+    #: engine can enforce server-side; the application layer adapts its
+    #: defense-in-depth accordingly (classifier always, server backstop when
+    #: available).
+    supports_readonly_txn: ClassVar[bool] = False
+    supports_statement_timeout: ClassVar[bool] = False
 
     @abstractmethod
     def connect(self, cfg: ConnectionConfig) -> None:
@@ -250,3 +278,63 @@ class DatabaseAdapter(ABC):
         of DBMS without the extension concept return ``[]`` — the reset's
         extension step degrades to a no-op (Phase 18 D11).
         """
+
+    # --- Phase 19: MCP server surface ---
+
+    @abstractmethod
+    def run_query(
+        self,
+        sql: str,
+        *,
+        max_rows: int = 50,
+        timeout_s: int = 60,
+        readonly: bool = True,
+    ) -> QueryResult:
+        """Execute a single statement and return its rows (MCP-2).
+
+        Dialect-agnostic contract:
+
+        * single statement — the caller (application layer) enforces this and
+          pre-classifies the SQL; the adapter is the enforcement backstop;
+        * ``readonly=True``: the statement must execute inside a read-only
+          transaction when ``supports_readonly_txn`` — even a statement that
+          escaped classification then fails server-side. Engines without the
+          capability execute as usual and note the missing backstop in
+          ``QueryResult.notices``;
+        * ``timeout_s``: statement-level timeout when
+          ``supports_statement_timeout``; otherwise advisory;
+        * values must be JSON-serializable (driver types stringified);
+        * ``truncated=True`` when the statement produced more than ``max_rows``
+          rows (adapters fetch ``max_rows + 1`` to detect it).
+        """
+
+    @abstractmethod
+    def explain(
+        self,
+        sql: str,
+        *,
+        analyze: bool = False,
+        fmt: str = "auto",
+        timeout_s: int = 60,
+    ) -> ExplainResult:
+        """Return the execution plan of a single statement (MCP-3).
+
+        ``fmt="auto"`` lets the adapter pick the richest format it can render
+        reliably (PG: json with text fallback — Greenplum 6 may not serialize
+        its custom plan nodes to JSON). Engine-native formats report their own
+        ``ExplainResult.fmt`` (``xml``, ``tabular``, ...). ``analyze=True``
+        executes the statement — the application layer gates it to read-only
+        statements; adapters wrap the execution in a read-only transaction
+        when ``supports_readonly_txn`` (defense in depth).
+        """
+
+    def get_top_queries(self, *, sort_by: str = "resources", limit: int = 10) -> list[dict[str, Any]]:
+        """Slowest / most resource-heavy statements from engine statistics.
+
+        Optional capability (MCP-3): engines without a statistics view (or
+        without the extension loaded) raise :class:`NotSupportedError` from
+        this default implementation — tooling reports it as a soft limitation.
+        """
+        raise NotSupportedError(
+            f"Тип БД {type(self).__name__} не реализует get_top_queries (нет статистики запросов)"
+        )

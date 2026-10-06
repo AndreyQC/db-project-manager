@@ -626,3 +626,35 @@ GET_DEFAULT_ACL_SNAPSHOT = """
     WHERE n.nspname = ANY(:schemas)
     ORDER BY n.nspname, r.rolname, d.defaclobjtype
 """
+
+# Top statements from pg_stat_statements (Phase 19, MCP-3). Two generations:
+# PG 13+ renamed total_time -> total_exec_time (mean_time -> mean_exec_time);
+# Greenplum 6 (kernel PG 9.4) keeps legacy names. {order} carries only
+# whitelisted literals from PGDatabaseAdapter._TOP_QUERIES_ORDER.
+GET_TOP_QUERIES_MODERN = """
+    SELECT s.query,
+           s.calls,
+           round(s.total_exec_time::numeric, 2) AS total_ms,
+           round(s.mean_exec_time::numeric, 2) AS mean_ms,
+           s.rows,
+           s.shared_blks_hit,
+           s.shared_blks_read
+    FROM pg_catalog.pg_stat_statements s
+    WHERE s.query NOT ILIKE '%pg_stat_statements%'
+    ORDER BY {order} DESC
+    LIMIT :limit
+"""
+
+GET_TOP_QUERIES_LEGACY = """
+    SELECT s.query,
+           s.calls,
+           round(s.total_time::numeric, 2) AS total_ms,
+           round(s.mean_time::numeric, 2) AS mean_ms,
+           s.rows,
+           s.shared_blks_hit,
+           s.shared_blks_read
+    FROM pg_catalog.pg_stat_statements s
+    WHERE s.query NOT ILIKE '%pg_stat_statements%'
+    ORDER BY {order} DESC
+    LIMIT :limit
+"""

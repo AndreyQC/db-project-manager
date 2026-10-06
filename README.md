@@ -18,6 +18,9 @@
 ### Безопасность
 - Секреты и `connections/` вне git; пароли шифруются (Fernet, формат `crypto__<ENV>__<token>`); `.dbm_graph/` тоже вне git (детерминированно перестраивается из кодовой базы).
 
+### Phase 20 — Профайлинг таблиц (PG + GP)
+- **Собственный SQL-профайлер**: агрегаты считает сама БД (один скан на таблицу), наружу — только итоги. Отдельные генераторы для Postgres 18 и Greenplum 6 (сэмпл `random() < p`, ядро GP 6 = PG 9.4). JSON-профили без HTML. Opt-in через блок `profiling:` подключения; ANALYZE никогда не запускается.
+
 ## Требования
 
 - Python 3.13+
@@ -35,14 +38,24 @@ uv sync --system-certs
 ## Настройка
 
 1. **Конфиг приложения**: скопируйте `config.example.yaml` → `config.yaml` (в `.gitignore`) и задайте пути.
-2. **Ключ шифрования**: задайте переменную окружения с Fernet-ключом (сгенерируйте однажды):
+2. **Ключ шифрования**: сгенерируйте однажды Fernet-ключ и положите в переменную окружения:
    ```bash
+   uv run db-pm crypto keygen          # печатает ключ
    # Linux/macOS
-   export ENVOS_CRYPTO_01=$(uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
-   # Windows (PowerShell)
-   $env:ENVOS_CRYPTO_01 = ...ключ...
+   export ENVOS_CRYPTO_01=<ключ>
+   # Windows (PowerShell, постоянная)
+   setx ENVOS_CRYPTO_01 "<ключ>"
    ```
-3. **Подключение**: создайте его в GUI (рекомендуется) — пароль зашифруется автоматически. Либо вручную по образцу `connections/example.yaml`.
+3. **Подключение**: создайте его в GUI (рекомендуется) — пароль зашифруется автоматически. Либо вручную по образцу `connections/example.yaml`; секрет зашифруйте командой:
+   ```bash
+   # интерактивно (ввод скрыт, с подтверждением)
+   uv run db-pm crypto encrypt ENVOS_CRYPTO_01
+   # или из пайпа/скрипта (первая строка stdin)
+   echo 'my-secret' | uv run db-pm crypto encrypt ENVOS_CRYPTO_01
+   ```
+   Вывод — единственная строка вида `crypto__ENVOS_CRYPTO_01__gAAAAAB...`; вставьте её в поле `password` (или `ssh_tunnel.ssh_pass`) yaml-файла подключения. Расшифровка при чтении происходит автоматически по имени переменной из токена.
+
+   **Несколько ключей.** Имя переменной зашито в каждый токен, поэтому разные подключения (и даже отдельные поля) можно шифровать разными ключами — достаточно, чтобы при работе инструмента были заданы все переменные, упомянутые в токенах. Имя может быть любым (`ENVOS_CRYPTO_01`, `ENVOS_CRYPTO_KUBER_01`, ...). В GUI в диалоге подключения за это отвечает поле «Ключ шифрования (env)»: список автозаполняется переменными окружения с валидным Fernet-ключом, имя можно ввести вручную; при редактировании подставляется тот ключ, которым файл уже зашифрован. Если все секреты подключения уже лежат токенами, локально ключ не нужен — переменная должна быть задана только там, где подключение используется (например, переменная, существующая лишь внутри Kubernetes). Зашифровать новый пароль можно только ключом, доступным в текущей сессии. Это же поле — способ ротации: новые подключения шифруйте ключом `ENVOS_CRYPTO_02` и т.д., старые продолжат работать.
 
 ## Использование
 
@@ -187,6 +200,233 @@ db-pm-gui
   и кнопка «Применить…» в тулбаре.
 - Меню «Вид → Plan Viewer…» — открыть любой `plan.json` отдельно.
 
+## MCP-сервер (Phase 19)
+
+`db-pm-mcp` — локальный MCP-сервер (Model Context Protocol, транспорт stdio),
+открывающий LLM-агенту (ZCode, Claude Desktop, Cursor) доступ к базам через
+именованные подключения из `connections/*.yaml`: ответы на вопросы по данным,
+анализ планов выполнения, запуск скриптов и полный деплой-цикл.
+
+```bash
+uv sync --extra mcp      # ставит официальны MCP SDK (optional-dependencies)
+```
+
+### Клиенты
+
+ZCode — `.mcp.json` в корне проекта:
+
+```json
+{
+  "mcpServers": {
+    "db-pm": {
+      "command": "uv",
+      "args": ["run", "db-pm-mcp"],
+      "cwd": "C:/path/to/db-project-manager",
+      "env": { "ENVOS_CRYPTO_01": "<Fernet-ключ>" }
+    }
+  }
+}
+```
+
+Claude Desktop — `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "db-pm": {
+      "command": "uv",
+      "args": ["--directory", "C:/path/to/db-project-manager", "run", "db-pm-mcp"],
+      "env": { "ENVOS_CRYPTO_01": "<Fernet-ключ>" }
+    }
+  }
+}
+```
+
+OpenCode — `opencode.json` (глобальный или в корне проекта):
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "db-pm": {
+      "type": "local",
+      "command": ["uv", "--directory", "C:/path/to/db-project-manager", "run", "db-pm-mcp"],
+      "enabled": true,
+      "environment": { "ENVOS_CRYPTO_01": "<Fernet-ключ>" },
+      "timeout": 600000
+    }
+  }
+}
+```
+
+`timeout` (мс, по умолчанию 5000) стоит поднять — `deploy_apply`/`deploy_reset`
+выполняются дольше дефолта.
+
+Bootstrap-аргументы сервера: `--connections-dir` (по умолчанию `connections`,
+env `DBPM_CONNECTIONS_DIR`) и `--config` (config.yaml — логирование,
+`deploy.service_schema`). Поведенческих флагов нет — **вся политика в файлах
+подключений** (блок `mcp:`, см. `connections/example.yaml`).
+
+### Подключения
+
+Подключение указывается **в каждом вызове инструмента** параметром
+`connection` = имя файла из `connections/` без `.yaml`. Первый шаг агента —
+`list_connections`: имена, БД, тип и эффективные права (`allow_writes`,
+`allow_deploy`), без секретов. Пример:
+
+```
+query(connection="local-PG-18_DB__cis_zup_dev_U_postgres",
+      sql="SELECT * FROM public.bookings LIMIT 10")
+```
+
+Явное указание:
+
+- **Каталог подключений** — флаг `--connections-dir <путь>` (или env
+  `DBPM_CONNECTIONS_DIR`). Сервер видит только файлы из этого каталога.
+  В конфиге клиента путь добавляется к команде запуска, для OpenCode:
+
+  ```json
+  "command": ["uv", "--directory", "C:/path/to/db-project-manager",
+              "run", "db-pm-mcp", "--connections-dir", "C:/path/to/my-connections"]
+  ```
+
+- **Ровно одно подключение** — отдельный каталог с одним yaml (копия или
+  жёсткая ссылка нужного файла), запуск с `--connections-dir` на него.
+  `list_connections` вернёт единственную БД, и агент физически не сможет
+  обратиться к другим. Копия может отличаться от основного файла — например,
+  `mcp.allow_writes: true` только для MCP-доступа.
+
+- **Права подключения** настраиваются в его же файле (блок `mcp:`), следуют
+  за файлом, а не за сервером: одно подключение может быть read-only, другое —
+  с записью. Подключения создаются как обычно — в GUI (`db-pm-gui`, пароль
+  шифруется автоматически) или вручную по `connections/example.yaml`;
+  MCP-сервер их только читает.
+
+### Инструменты
+
+| Инструмент | Назначение | Гейт |
+|---|---|---|
+| `list_connections` | подключения + эффективные права (без секретов) | — |
+| `list_schemas` / `list_objects` / `get_object_details` | пошаговая инспекция схемы | — |
+| `query` | read-only SELECT (один стейтмент), лимит строк/таймаут | классификация + RO-транзакция |
+| `explain` | план выполнения (text/JSON; `analyze` исполняет запрос) | analyze — только read-only стейтмент |
+| `get_top_queries` | топ запросов из pg_stat_statements | расширение должно быть установлено |
+| `run_script` | произвольный SQL-скрипт (AUTOCOMMIT) | `mcp.allow_writes`; DROP/TRUNCATE — ещё и `confirm_destructive=true` |
+| `deploy_plan` / `deploy_analyze` | dry-run деплоя и safety gate | — (read-only) |
+| `deploy_apply` / `deploy_reset` | применение/сброс (деструктивно) | `mcp.allow_deploy` + штатные предохранители |
+
+### Логирование запросов
+
+Каждый вызов инструментов работы с данными (`query`, `explain`,
+`get_top_queries`, `run_script`) пишется в **`logs/mcp_queries.log`** — одна
+JSON-строка (JSONL) на вызов:
+
+```json
+{"ts": "2026-09-27T22:41:03.120", "tool": "query", "connection": "local-PG-18...",
+ "sql": "SELECT id, doc FROM public.payload", "duration_ms": 42,
+ "row_count": 2, "truncated": false,
+ "response": {"columns": ["id", "doc"], "rows": [{"id": 1, "doc": {"a": 1}}]}}
+```
+
+- Логируется **текст SQL и полный ответ БД** — включая jsonb-значения (адаптер
+  заранее приводит их к JSON-безопасным типам: Decimal → строка, даты → ISO).
+  Отказы policy-гейтов и ошибки тоже пишутся (поле `error`) — лог является
+  полным аудитом того, что LLM спрашивал у базы.
+- **Ротация по дате**: в полночь активный файл переименовывается с датой в
+  имени (`mcp_queries.2026-09-27_00-00-00.log`) и начинается новый;
+  устаревшие файлы удаляются автоматически.
+- Настройка — `config.yaml` (по умолчанию включено):
+
+  ```yaml
+  logging:
+    log_queries: true            # false — полностью выключить sink
+    queries_retention_days: 14   # сколько дней хранить датированные файлы
+  ```
+
+- В лог попадают литералы данных (`WHERE name = '...'`, значения INSERT) —
+  держите `logs/` вне git (уже в `.gitignore`) и отключайте `log_queries`,
+  если это неприемлемо.
+
+### Модель безопасности
+
+Двухслойный read-only (идея из [crystaldba/postgres-mcp](https://github.com/crystaldba/postgres-mcp)):
+
+1. **Классификатор** (sqlglot, диалект подключения): каждый оператор до
+   исполнения относится к `read_only` / `write` / `destructive` / `unknown`.
+   Нераспарсенное = `unknown` = fail-safe как деструктивное. Запрещённые
+   функции в read-only запросах: `dblink`, `pg_read_file`, `pg_sleep`,
+   `lo_import`/`lo_export`, `nextval`/`setval` (RO-транзакция от них не
+   защищает — dblink открывает своё соединение).
+2. **Серверный backstop**: `query` исполняется в `BEGIN TRANSACTION READ ONLY
+   … ROLLBACK` — запись, проскочившая мимо классификатора, отклоняется самим
+   PostgreSQL. `EXPLAIN ANALYZE` обёрнут в ту же транзакцию.
+
+Деплой-инструменты повторяют проводку CLI без изменений: rehearsal на temp-БД,
+Safety Gate, `allow_drop_schemas`, подтверждение именем БД (`confirm_database`).
+Долгие операции (`deploy_apply`) — увеличивайте таймаут MCP-вызовов в клиенте
+(в ответе возвращаются последние строки прогресса).
+
+### Добавление нового движка (MCP-8)
+
+Контракт MCP-слоя диалект-агностичен (`supports_readonly_txn`,
+`supports_statement_timeout`; `ExplainResult.fmt` допускает `xml`/`tabular`).
+Рецепт: пакет `infrastructure/database/<engine>/` (adapter + queries) →
+запись в `registry.get_adapter` → значение в `SUPPORTED_DB_TYPES` → драйвер
+как optional extra → диалект sqlglot в `classify.py:DB_TYPE_DIALECT`.
+MCP-слой править не нужно.
+
+## Профайлинг таблиц (Phase 20)
+
+`db-pm profile <connection> --tables schema.table,... [--output <dir>]` —
+JSON-профиль каждой таблицы в `reports/<connection>/<schema>.<table>.json`
+(каталог в .gitignore: профиль содержит литералы данных) + сводка в stdout.
+Тот же функционал в MCP — инструмент `profile_tables` (read-only, 13-й
+инструмент). Решения фазы: `_tasks_/2026-10-06/20261006_001_ydata_profiling_final.md`.
+
+Метрики: count, размер, оценка reltuples; по колонкам — NULL-доли,
+COUNT(DISTINCT), min/max, avg/stddev, перцентили p01/p25/p50/p75/p99
+(числовые), гистограммы `width_bucket` (числовые) и по `extract(epoch)` 
+(даты), top-N частот (текст/bool/даты). Агрегаты всех колонок — один скан
+на таблицу (MPP-дружелюбно для GP); колонки чанкуются по 50.
+
+Политика (блок `profiling:` в connections/*.yaml, по умолчанию выключено —
+без блока профайлинг отклоняется до первого запроса):
+
+```yaml
+profiling:
+  enabled: true                  # opt-in гейт
+  full_size_threshold_bytes: 1073741824   # таблицы > 1 GiB — по сэмплу
+  sample_rows: 100000            # целевой размер сэмпла
+  default_sample_fraction: 0.01  # доля, когда reltuples неизвестен
+  statement_timeout_ms: 300000
+  top_n: 10
+  histogram_buckets: 20
+  column_chunk_size: 50
+```
+
+Безопасность:
+
+1. Только read-only агрегаты; каждый запрос прогоняется через
+   sqlglot-классификатор и исполняется в `BEGIN TRANSACTION READ ONLY …
+   ROLLBACK` с statement_timeout (механика Phase 19).
+2. Порог «полный проход vs сэмпл» — по `pg_total_relation_size()`
+   (статистика не требуется, работает для heap и AO-таблиц GP). Сэмпл:
+   PG — `TABLESAMPLE SYSTEM` (fallback `random() < p` при пустом сэмпле),
+   GP 6 — только `random() < p` (TABLESAMPLE отсутствует в ядре PG 9.4).
+3. **ANALYZE инструмент не запускает никогда** — в профиле поле
+   `stats_fresh: false` и совет запустить ANALYZE вручную. Свежесть: PG —
+   `pg_stat_user_tables.last_analyze`, GP — `pg_stats`
+   (+ `gp_toolkit.gp_stats_missing` для таблиц без статистики).
+4. JSON-профили содержат литералы данных (top-N значений) — `reports/`
+   в .gitignore; не выгружайте профили prod-баз наружу.
+
+### Добавление нового движка (профайлинг)
+
+Подкласс `infrastructure/profiling/base.ProfilingSQLGenerator` (образцы:
+`postgres.py` — TABLESAMPLE, `greenplum.py` — random-сэмпл) → запись в
+`get_profiler`. Агрегатные запросы (main/histogram/top-N) наследуются;
+переопределяются каталог-запросы и форма сэмпла.
+
 ## Разработка
 
 ```bash
@@ -197,7 +437,7 @@ uv run pytest --cov=db_project_manager   # с покрытием
 uv run ruff check .     # линтер
 ```
 
-Структура пакетов: `domain` (модели) → `infrastructure` (БД, файлы, crypto) → `application` (сервисы) → `presentation` (CLI/GUI). Подробности: `_tasks_/`.
+Структура пакетов: `domain` (модели) → `infrastructure` (БД, файлы, crypto) → `application` (сервисы) → `presentation` (CLI/GUI/MCP). Подробности: `_tasks_/`.
 
 ## Лицензия
 
