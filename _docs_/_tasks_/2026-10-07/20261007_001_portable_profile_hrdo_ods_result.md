@@ -74,3 +74,27 @@
 1. Скопировать `dbpm-portable` на целевую машину, выполнить
    `PROFILE-HRDO-ODS.md` (запуск — `dbpm_profile_hrdo.cmd`).
 2. Забрать `reports\...` (119 JSON) обратно.
+
+## Follow-up (2026-10-07, после первого прогона пользователя)
+
+Первый прогон на базе внутри периметра: 113/119 таблиц успешны, 6 упали
+с `function min(uuid) does not exist` — генератор Phase 20 маршрутизировал
+`uuid` в TEXT (min/max + длина), а агрегатов min/max для uuid в PostgreSQL
+нет. Обёртка отработала как задумано: ошибки по таблицам, остальные
+продолжили, готовые JSON сохранены.
+
+- **Фикс продукта** (`1797abe`): `categorize()` — uuid → OTHER
+  (только nulls + distinct); регрессия `test_main_sql_uuid_no_minmax`;
+  LESSONS §77. `uv run pytest` — 1245 passed, ruff чисто.
+- **Синхронизация в бандл:** обновлён
+  `dbpm-portable\site\db_project_manager\infrastructure\profiling\base.py`
+  (единственный изменённый файл). **На машине прогона нужно заменить
+  этот же файл** и перезапустить `dbpm_profile_hrdo.cmd` (перезапись
+  идемпотентна).
+- **Живая проверка с фиксой:** все 6 ранее упавших таблиц
+  (`test1`, `Dept_1`, `FIOFizicheskikhLits`, `KadrovayaIstoriyaSotrudnikov`,
+  `PersonalData` × 2 схемы) — OK; uuid-колонки дают честные distinct
+  (GUID_Person: 6497/8869) без min/max.
+- Мелочь на заметку (вне фикса): `avg`/`stddev_samp` для `money` в PG
+  тоже отсутствуют — в этом датасете money-колонок нет; если появятся,
+  тот же принцип OTHER (LESSONS §77 урок #1).
