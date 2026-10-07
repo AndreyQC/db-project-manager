@@ -38,13 +38,15 @@ def col(name: str, category: ColumnCategory, data_type: str = "numeric") -> Prof
         ("interval", ColumnCategory.TEMPORAL),
         ("character varying(50)", ColumnCategory.TEXT),
         ("text", ColumnCategory.TEXT),
-        ("uuid", ColumnCategory.TEXT),
         ("citext", ColumnCategory.TEXT),
         ("boolean", ColumnCategory.BOOL),
         ("jsonb", ColumnCategory.OTHER),
         ("bytea", ColumnCategory.OTHER),
         ("ARRAY", ColumnCategory.OTHER),
         ("xml", ColumnCategory.OTHER),
+        # uuid → OTHER: min/max-агрегатов для uuid в PostgreSQL нет
+        # (живой прогон hrdo_ods 2026-10-07: function min(uuid) does not exist)
+        ("uuid", ColumnCategory.OTHER),
         ("", ColumnCategory.OTHER),
     ],
 )
@@ -118,6 +120,22 @@ def test_main_sql_routes_metrics_by_category() -> None:
 def test_main_sql_empty_columns_rejected() -> None:
     with pytest.raises(ValueError, match="пустой"):
         PostgresProfiler().main_sql([], '"public"."t"')
+
+
+def test_main_sql_uuid_column_no_minmax() -> None:
+    """Регрессия живого прогона hrdo_ods: min/max(uuid) не существует в PG.
+
+    uuid-колонка обязана дать только count/count distinct (OTHER-маршрут),
+    иначе один GUID-столбец валит весь main-агрегат таблицы.
+    """
+    p = PostgresProfiler()
+    sql = p.main_sql(
+        [col("OrganizatsiyaGuid", ColumnCategory.OTHER, "uuid")], '"s"."t"'
+    )
+    assert '"OrganizatsiyaGuid__distinct"' in sql
+    assert '"OrganizatsiyaGuid__min"' not in sql
+    assert '"OrganizatsiyaGuid__max"' not in sql
+    assert '"OrganizatsiyaGuid__avglen"' not in sql
 
 
 # --- histogram / top-N / bound literals ---

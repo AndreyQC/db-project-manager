@@ -36,7 +36,7 @@ class ColumnCategory(str, Enum):
     TEMPORAL = "temporal"    # перцентили, гистограмма, top-N
     TEXT = "text"            # length, top-N, min/max
     BOOL = "bool"            # top-N
-    OTHER = "other"          # только nulls + distinct (jsonb/bytea/массивы/кастом)
+    OTHER = "other"          # только nulls + distinct (jsonb/bytea/массивы/uuid/кастом)
 
 
 @dataclass(frozen=True)
@@ -72,7 +72,9 @@ def categorize(data_type: str) -> ColumnCategory:
     """Map a raw ``information_schema.columns.data_type`` to a metric route.
 
     Unknown types degrade to OTHER (nulls + distinct only) — never an error:
-    a profiler must not fail on exotic column types.
+    a profiler must not fail on exotic column types. uuid тоже OTHER:
+    min/max-агрегатов для uuid в PostgreSQL нет (живой прогон hrdo_ods,
+    2026-10-07 — function min(uuid) does not exist).
     """
     dt = (data_type or "").strip().lower()
     if dt.startswith("boolean"):
@@ -92,8 +94,8 @@ def categorize(data_type: str) -> ColumnCategory:
         return ColumnCategory.NUMERIC
     if any(
         dt == p or dt.startswith(p + "(") or dt.startswith(p + " ")
-        for p in ("character", "varchar", "text", "citext", "uuid")
-    ) or dt in ("char", "name", "uuid"):
+        for p in ("character", "varchar", "text", "citext")
+    ) or dt in ("char", "name"):
         return ColumnCategory.TEXT
     return ColumnCategory.OTHER
 
