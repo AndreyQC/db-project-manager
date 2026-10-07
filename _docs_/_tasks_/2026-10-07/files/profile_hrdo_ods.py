@@ -1,16 +1,20 @@
-"""Профайлинг всех таблиц подключения hrdo_ods (маскированные ODS-схемы).
+r"""Профайлинг всех таблиц схем подключения hrdo_ods (маскированные ODS-данные).
 
 Разовый файл для portable-бандла: кладётся в корень dbpm-portable, запускается
-dbpm_profile_hrdo.cmd. Список таблиц вшит — снимок 2026-10-07 с бэкапа
-от 2026-10-06 (данные статичны): 62 таблицы в ods_hn_trade_zup_masked,
-57 в ods_hn_zup_masked. Имена mixed-case, поэтому каждое — в двойных кавычках
-("schema"."Table"); парсер Phase 20 снимает кавычки и сохраняет регистр.
+dbpm_profile_hrdo.cmd. ЧТО ПРАВИТЬ ПОД ДРУГИЕ СХЕМЫ/СЕРВЕР:
+  - SCHEMAS ниже — единственное место правки под другой набор схем; список
+    таблиц снимается с information_schema при каждом запуске (read-only
+    каталог), вшитого списка таблиц нет;
+  - CONNECTION — имя подключения = имя yaml-файла в connections\ без .yaml;
+    хост/креды правятся в том yaml (README-PORTABLE.txt, раздел
+    «Другой сервер / другая база»);
+  - LIMIT — быстрая проверка: ограничить число таблиц (None = все).
 
-Отличие от CLI `db-pm profile --tables ...`: профайлинг идёт ПО ОДНОЙ таблице
-с немедленной записью JSON — ошибка/обрыв на одной таблице не теряет результаты
-остальных (CLI собирает весь список в памяти и падает целиком). Пароль:
-env-ключа ENVOS_CRYPTO_01 на целевой машине нет — db-pm сам запросит пароль
-скрытым вводом (README-PORTABLE.txt, вариант B); кэш пароля живёт в процессе.
+Профайлинг идёт ПО ОДНОЙ таблице с немедленной записью JSON — ошибка/обрыв
+на одной таблице не теряет результаты остальных (CLI собирает весь список
+в памяти и падает целиком). Пароль: env-ключа ENVOS_CRYPTO_01 на целевой
+машине нет — db-pm сам запросит пароль скрытым вводом (README-PORTABLE.txt,
+вариант B); кэш пароля живёт в процессе.
 """
 import json
 import os
@@ -35,10 +39,10 @@ from pathlib import Path  # noqa: E402
 
 import typer  # noqa: E402
 
-from db_project_manager.application.profiling_service import (  # noqa: E402
-    ProfilingError,
-    ProfilingService,
-)
+from db_project_manager.application.profiling_service import ProfilingError, ProfilingService  # noqa: E402
+from db_project_manager.domain.connection import ConnectionConfig  # noqa: E402
+from db_project_manager.infrastructure.database.base import DatabaseAdapter  # noqa: E402
+from db_project_manager.infrastructure.profiling.base import quote_ident, quote_literal  # noqa: E402
 from db_project_manager.presentation.cli.main import (  # noqa: E402
     _make_cli_password_prompt,
     _safe_path_part,
@@ -46,127 +50,12 @@ from db_project_manager.presentation.cli.main import (  # noqa: E402
 
 CONNECTION = "IVSD00258.reksoft.com_PG__DB__hrdo_ods__U_postgres"
 
-TABLES = [
-    '"ods_hn_trade_zup_masked"."Account_groups"',
-    '"ods_hn_trade_zup_masked"."Accounting_for_employee_salaries"',
-    '"ods_hn_trade_zup_masked"."Accounting_for_employee_salaries_period"',
-    '"ods_hn_trade_zup_masked"."Application_of_planned_accruals"',
-    '"ods_hn_trade_zup_masked"."BusinessStream"',
-    '"ods_hn_trade_zup_masked"."Contract_basis_for_concluding"',
-    '"ods_hn_trade_zup_masked"."Contract_information_for_employee"',
-    '"ods_hn_trade_zup_masked"."Cost_centers"',
-    '"ods_hn_trade_zup_masked"."Counterparty"',
-    '"ods_hn_trade_zup_masked"."Department"',
-    '"ods_hn_trade_zup_masked"."Dept"',
-    '"ods_hn_trade_zup_masked"."Dept_1"',
-    '"ods_hn_trade_zup_masked"."Employee"',
-    '"ods_hn_trade_zup_masked"."FIOFizicheskikhLits"',
-    '"ods_hn_trade_zup_masked"."Food_cards_employees"',
-    '"ods_hn_trade_zup_masked"."Function"',
-    '"ods_hn_trade_zup_masked"."Grade_categories"',
-    '"ods_hn_trade_zup_masked"."Grades"',
-    '"ods_hn_trade_zup_masked"."Grades_employee"',
-    '"ods_hn_trade_zup_masked"."HRBP"',
-    '"ods_hn_trade_zup_masked"."HRBP_1"',
-    '"ods_hn_trade_zup_masked"."HRadmin"',
-    '"ods_hn_trade_zup_masked"."Health_insurance_program"',
-    '"ods_hn_trade_zup_masked"."Health_insurance_program_employee"',
-    '"ods_hn_trade_zup_masked"."History_of_employees"',
-    '"ods_hn_trade_zup_masked"."History_of_employees_period"',
-    '"ods_hn_trade_zup_masked"."History_of_food_card_limits"',
-    '"ods_hn_trade_zup_masked"."History_of_manage_employees"',
-    '"ods_hn_trade_zup_masked"."History_of_manage_employees_period"',
-    '"ods_hn_trade_zup_masked"."Insurance_person"',
-    '"ods_hn_trade_zup_masked"."KadrovayaIstoriyaSotrudnikov"',
-    '"ods_hn_trade_zup_masked"."Limits_on_food_cards"',
-    '"ods_hn_trade_zup_masked"."Location"',
-    '"ods_hn_trade_zup_masked"."ManagementUnit"',
-    '"ods_hn_trade_zup_masked"."Manager_for_employee"',
-    '"ods_hn_trade_zup_masked"."Meal_cards_issued_to_employees"',
-    '"ods_hn_trade_zup_masked"."Perscent_northern_allowance_persons"',
-    '"ods_hn_trade_zup_masked"."Person"',
-    '"ods_hn_trade_zup_masked"."PersonalData"',
-    '"ods_hn_trade_zup_masked"."Plan_accrual"',
-    '"ods_hn_trade_zup_masked"."Plan_accrual_interval"',
-    '"ods_hn_trade_zup_masked"."Plan_of_calculation_types"',
-    '"ods_hn_trade_zup_masked"."Position_Staff"',
-    '"ods_hn_trade_zup_masked"."Position_rus"',
-    '"ods_hn_trade_zup_masked"."Positions"',
-    '"ods_hn_trade_zup_masked"."Production_calendar_monthliy"',
-    '"ods_hn_trade_zup_masked"."Production_calendars"',
-    '"ods_hn_trade_zup_masked"."Reason_for_absence"',
-    '"ods_hn_trade_zup_masked"."Region"',
-    '"ods_hn_trade_zup_masked"."Report_groups_TS"',
-    '"ods_hn_trade_zup_masked"."Salary_calculation_metrics"',
-    '"ods_hn_trade_zup_masked"."Status_data_employees"',
-    '"ods_hn_trade_zup_masked"."Status_excep_employees"',
-    '"ods_hn_trade_zup_masked"."Stream"',
-    '"ods_hn_trade_zup_masked"."SubLocation"',
-    '"ods_hn_trade_zup_masked"."Types_of_employment"',
-    '"ods_hn_trade_zup_masked"."Types_of_employment_period"',
-    '"ods_hn_trade_zup_masked"."Types_of_reception"',
-    '"ods_hn_trade_zup_masked"."Types_of_time"',
-    '"ods_hn_trade_zup_masked"."Values_of_periodic_metrics_employee_int"',
-    '"ods_hn_trade_zup_masked"."key_fields"',
-    '"ods_hn_trade_zup_masked"."test1"',
-    '"ods_hn_zup_masked"."Account_groups"',
-    '"ods_hn_zup_masked"."Accounting_for_employee_salaries"',
-    '"ods_hn_zup_masked"."Accounting_for_employee_salaries_period"',
-    '"ods_hn_zup_masked"."Application_of_planned_accruals"',
-    '"ods_hn_zup_masked"."BusinessStream"',
-    '"ods_hn_zup_masked"."Contract_basis_for_concluding"',
-    '"ods_hn_zup_masked"."Contract_information_for_employee"',
-    '"ods_hn_zup_masked"."Cost_centers"',
-    '"ods_hn_zup_masked"."Counterparty"',
-    '"ods_hn_zup_masked"."Department"',
-    '"ods_hn_zup_masked"."Dept"',
-    '"ods_hn_zup_masked"."Employee"',
-    '"ods_hn_zup_masked"."Food_cards_employees"',
-    '"ods_hn_zup_masked"."Function"',
-    '"ods_hn_zup_masked"."Grade_categories"',
-    '"ods_hn_zup_masked"."Grades"',
-    '"ods_hn_zup_masked"."Grades_employee"',
-    '"ods_hn_zup_masked"."HRBP"',
-    '"ods_hn_zup_masked"."HRadmin"',
-    '"ods_hn_zup_masked"."Health_insurance_program"',
-    '"ods_hn_zup_masked"."Health_insurance_program_employee"',
-    '"ods_hn_zup_masked"."History_of_employees"',
-    '"ods_hn_zup_masked"."History_of_employees_period"',
-    '"ods_hn_zup_masked"."History_of_food_card_limits"',
-    '"ods_hn_zup_masked"."History_of_manage_employees"',
-    '"ods_hn_zup_masked"."History_of_manage_employees_period"',
-    '"ods_hn_zup_masked"."Insurance_person"',
-    '"ods_hn_zup_masked"."Limits_on_food_cards"',
-    '"ods_hn_zup_masked"."Location"',
-    '"ods_hn_zup_masked"."ManagementUnit"',
-    '"ods_hn_zup_masked"."Manager_for_employee"',
-    '"ods_hn_zup_masked"."Meal_cards_issued_to_employees"',
-    '"ods_hn_zup_masked"."Perscent_northern_allowance_persons"',
-    '"ods_hn_zup_masked"."Person"',
-    '"ods_hn_zup_masked"."PersonalData"',
-    '"ods_hn_zup_masked"."Plan_accrual"',
-    '"ods_hn_zup_masked"."Plan_accrual_interval"',
-    '"ods_hn_zup_masked"."Plan_of_calculation_types"',
-    '"ods_hn_zup_masked"."Position_Staff"',
-    '"ods_hn_zup_masked"."Position_rus"',
-    '"ods_hn_zup_masked"."Positions"',
-    '"ods_hn_zup_masked"."Production_calendar_monthliy"',
-    '"ods_hn_zup_masked"."Production_calendars"',
-    '"ods_hn_zup_masked"."Reason_for_absence"',
-    '"ods_hn_zup_masked"."Region"',
-    '"ods_hn_zup_masked"."Report_groups_TS"',
-    '"ods_hn_zup_masked"."Salary_calculation_metrics"',
-    '"ods_hn_zup_masked"."Status_data_employees"',
-    '"ods_hn_zup_masked"."Status_excep_employees"',
-    '"ods_hn_zup_masked"."Stream"',
-    '"ods_hn_zup_masked"."SubLocation"',
-    '"ods_hn_zup_masked"."Types_of_employment"',
-    '"ods_hn_zup_masked"."Types_of_employment_period"',
-    '"ods_hn_zup_masked"."Types_of_reception"',
-    '"ods_hn_zup_masked"."Types_of_time"',
-    '"ods_hn_zup_masked"."Values_of_periodic_metrics_employee_int"',
-    '"ods_hn_zup_masked"."key_fields"',
-]
+# Схемы для профайлинга — правится под другой набор схем (mixed-case схем
+# тоже допустим: кавычки ставятся автоматически).
+SCHEMAS = ["ods_hn_zup_masked", "ods_hn_trade_zup_masked"]
+
+# Быстрая проверка: ограничить число таблиц (None = профилировать все).
+LIMIT: int | None = None
 
 
 def _echo(text: str, err: bool = False, red: bool = False) -> None:
@@ -174,6 +63,20 @@ def _echo(text: str, err: bool = False, red: bool = False) -> None:
         typer.secho(text, fg=typer.colors.RED, err=err)
     else:
         typer.echo(text, err=err)
+
+
+def _discover_tables(
+    service: ProfilingService, cfg: ConnectionConfig, adapter: DatabaseAdapter, timeout_s: int
+) -> list[str]:
+    """BASE TABLE по SCHEMAS из information_schema; имена — "schema"."table"."""
+    schema_list = ", ".join(quote_literal(s) for s in SCHEMAS)
+    sql = (
+        "SELECT table_schema, table_name FROM information_schema.tables\n"
+        f"WHERE table_type = 'BASE TABLE' AND table_schema IN ({schema_list})\n"
+        "ORDER BY 1, 2"
+    )
+    result = service._run(adapter, cfg, sql, "каталог таблиц схем", max_rows=100000, timeout_s=timeout_s)
+    return [f"{quote_ident(r['table_schema'])}.{quote_ident(r['table_name'])}" for r in result.rows]
 
 
 def main() -> None:
@@ -184,8 +87,29 @@ def main() -> None:
     out_dir = Path(_here) / "reports" / _safe_path_part(CONNECTION)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    cfg = service._manager.load_config(CONNECTION)
+    if not cfg.profiling_settings.enabled:
+        _echo("Ошибка: в yaml подключения нет блока profiling: enabled=true", err=True, red=True)
+        sys.exit(2)
+    timeout_s = max(1, cfg.profiling_settings.statement_timeout_ms // 1000)
+
+    with service._manager.connection(CONNECTION) as managed:
+        tables = _discover_tables(service, cfg, managed.adapter, timeout_s)
+    if not tables:
+        _echo(
+            f"Ошибка: в схемах {', '.join(SCHEMAS)} не найдено ни одной таблицы (BASE TABLE) — "
+            "проверьте SCHEMAS в этом файле и содержимое базы",
+            err=True,
+            red=True,
+        )
+        sys.exit(2)
+    _echo(f"Схемы: {', '.join(SCHEMAS)}; найдено таблиц: {len(tables)}")
+    if LIMIT is not None:
+        tables = tables[:LIMIT]
+        _echo(f"LIMIT={LIMIT}: профилируются первые {len(tables)}")
+
     done, failed = 0, []
-    for raw in TABLES:
+    for raw in tables:
         try:
             profiles = service.profile_tables(CONNECTION, [raw])
         except ProfilingError as exc:
@@ -200,10 +124,13 @@ def main() -> None:
             _echo(f"OK {tp.schema_name}.{tp.table_name}: rows={tp.row_count}, size={size}, {mode}")
         done += 1
 
-    _echo(f"Готово: {done}/{len(TABLES)} профилей в {out_dir}")
+    _echo(f"Готово: {done}/{len(tables)} профилей в {out_dir}")
     if failed:
         _echo(f"Не удалось ({len(failed)}): {', '.join(failed)}", err=True, red=True)
-        _echo("Перезапуск точечной таблицы: dbpm.cmd profile " + CONNECTION + ' --tables "\"schema\".\"Table\""', err=True)
+        _echo(
+            "Перезапуск точечной таблицы: dbpm.cmd profile " + CONNECTION + ' --tables "\\"schema\\".\\"Table\\""',
+            err=True,
+        )
         sys.exit(1)
 
 

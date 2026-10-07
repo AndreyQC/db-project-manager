@@ -9,10 +9,14 @@
 
 - Подключение: `IVSD00258.reksoft.com:5432`, БД `hrdo_ods`, пользователь
   `postgres` (файл `connections\IVSD00258.reksoft.com_PG__DB__hrdo_ods__U_postgres.yaml`).
-- Схемы: `ods_hn_zup_masked` (57 таблиц) и `ods_hn_trade_zup_masked`
-  (62 таблицы) — всего **119 таблиц**, список вшит в `profile_hrdo_ods.py`.
-- Имена таблиц в mixed-case (`"Region"`, `"Status_data_employees"`) — поэтому
-  в обёртке все имена в двойных кавычках; вручную их тоже надо писать
+- Схемы: `ods_hn_zup_masked` и `ods_hn_trade_zup_masked`. Обёртка сама
+  снимает список таблиц этих схем из `information_schema` при каждом
+  запуске (на момент задачи — 119 таблиц); вшитого списка таблиц нет.
+  Чтобы прогнать **другие схемы**, впиши их имена в `SCHEMAS` в
+  `profile_hrdo_ods.py` (перед быстрой проверкой удобно поставить
+  `LIMIT = 3` в том же файле).
+- Имена таблиц в mixed-case (`"Region"`, `"Status_data_employees"`) —
+  обёртка квотирует их автоматически; вручную их тоже надо писать
   в кавычках, иначе PostgreSQL свернёт имя в нижний регистр и не найдёт.
 - Профайлинг read-only: только SELECT-агрегаты (перцентили, гистограммы,
   top-N, nulls/distinct). ANALYZE не запускается, данные не меняются.
