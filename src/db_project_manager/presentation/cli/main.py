@@ -530,6 +530,10 @@ def deploy_validate(
         Optional[str],
         typer.Option("--prefix", help="Temp-DB name prefix. Default: codebase dir name."),
     ] = None,
+    db_name: Annotated[
+        Optional[str],
+        typer.Option("--db-name", help="Explicit temp DB name. If not set — generated from prefix+timestamp."),
+    ] = None,
     keep_db: Annotated[bool, typer.Option("--keep-db", help="Keep the temp DB after deploy.")] = False,
     continue_on_error: Annotated[
         bool, typer.Option("--continue-on-error", help="Continue past late-object failures.")
@@ -554,6 +558,7 @@ def deploy_validate(
             conn_cfg,
             directory,
             prefix=prefix,
+            db_name=db_name,
             keep_db=keep_db,
             continue_on_error=continue_on_error,
             progress=progress,
@@ -564,6 +569,9 @@ def deploy_validate(
     except CycleError as e:
         typer.secho(f"✗ Граф содержит циклы: {', '.join(sorted(e.unresolved))}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=3) from e
+    except ValueError as e:
+        typer.secho(f"✗ Некорректное имя БД: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from e
 
     if result.success:
         typer.secho(
