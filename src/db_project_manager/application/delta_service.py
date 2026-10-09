@@ -256,8 +256,15 @@ class DeltaService:
                 f"-- DROP для типа {op.object_type} требует ручного оператора "
                 f"(нет данных для конструкции); объект: {target}"
             )
-        args = ""
-        if kind in ("FUNCTION", "PROCEDURE") and vertex is not None and vertex.argument_types:
+        # Kernels < PG 10 (Greenplum 6) require the argument list in the
+        # DROP FUNCTION/PROCEDURE grammar: without parens the statement dies
+        # with `syntax error at or near ";"` (misleadingly pointing at the
+        # semicolon). Mirrors adapter.drop_schema_contents (Phase 18): the
+        # list is always present, `()` for zero-arg / unknown signature.
+        args = "()"
+        if kind not in ("FUNCTION", "PROCEDURE"):
+            args = ""
+        elif vertex is not None and vertex.argument_types:
             args = "(" + ", ".join(
                 arg.strip() for arg in vertex.argument_types.split(",") if arg.strip()
             ) + ")"
