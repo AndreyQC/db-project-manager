@@ -127,3 +127,14 @@ def test_encrypt_decrypt_roundtrip_survives_underscore_rich_token(crypto_env: st
     for i in range(40):
         token = get_encrypted_text(f"secret-{i}", crypto_env)
         assert get_decrypted_text(token) == f"secret-{i}"
+
+
+def test_missing_env_raises_crypto_key_missing(monkeypatch) -> None:
+    """Нет env-ключа → CryptoKeyMissing с именем переменной (наследник KeyError)."""
+    from db_project_manager.infrastructure.crypto.crypto_util import CryptoKeyMissing
+
+    monkeypatch.delenv(TEST_CRYPTO_ENV, raising=False)
+    token = format_cipher_token(TEST_CRYPTO_ENV, "gAAAAABfake-payload")
+    with pytest.raises(CryptoKeyMissing) as exc_info:
+        get_decrypted_text(token)
+    assert exc_info.value.env_var == TEST_CRYPTO_ENV

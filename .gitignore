@@ -149,3 +149,7 @@ gui_settings.json
 .zcode
 # Profiling reports (Phase 20): contain data literals (PII) — never commit
 reports/
+
+# Portable bundle (build artifact, ~70MB)
+dbpm-portable/
+dbpm-portable.zip

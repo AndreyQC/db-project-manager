@@ -21,6 +21,7 @@ import json
 import os
 import re
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated, Optional
 
@@ -121,6 +122,40 @@ def _safe_path_part(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.\-]", "_", name) or "_"
 
 
+def _make_cli_password_prompt() -> Callable[[str, str], str]:
+    """Промпт пароля для CLI: env-ключ недоступен, секрет — только в памяти.
+
+    Реальный терминал (tty) — getpass с отключённым эхом; конвейер/файл
+    (автоматизация) — чтение строки из stdin. Прямо getpass нельзя: в
+    portable-бандле без консоли win_getpass уходит в msvcrt и блокируется
+    (читает консоль, а не stdin). Введённый пароль кэшируется по имени
+    env-ключа: конфиг подключения грузится дважды (гейт + connect), и
+    несколько подключений на одном ключе должны спрашивать пароль один раз.
+    """
+    cache: dict[str, str] = {}
+
+    def prompt(env_var: str, description: str) -> str:
+        if env_var in cache:
+            return cache[env_var]
+        import getpass
+        import sys
+
+        typer.echo(f"! env-ключ {env_var} недоступен — {description}")
+        if sys.stdin is not None and sys.stdin.isatty():
+            answer = getpass.getpass("Пароль (скрытый ввод): ")
+        else:
+            typer.echo("(stdin не терминал — пароль читается из потока, эхо включено)")
+            answer = sys.stdin.readline() if sys.stdin is not None else ""
+            answer = answer.rstrip("\r\n")
+            if not answer:
+                typer.secho("Ошибка: пароль не передан", fg=typer.colors.RED, err=True)
+                raise typer.Exit(code=2)
+        cache[env_var] = answer
+        return answer
+
+    return prompt
+
+
 @app.command("profile")
 def profile(
     connection: Annotated[
@@ -131,7 +166,8 @@ def profile(
         str,
         typer.Option(
             "--tables",
-            help="Квалифицированные имена таблиц через запятую: schema.table,schema2.table2",
+            help="Квалифицированные имена таблиц через запятую: schema.table,schema2.table2 "
+            '(допустимы "квотированные" идентификаторы)',
         ),
     ],
     output: Annotated[
@@ -147,7 +183,8 @@ def profile(
 
     Только read-only агрегаты (ANALYZE не запускается); таблицы выше порога
     pg_total_relation_size считаются по сэмплу. Требует блока
-    profiling: enabled=true в файле подключения.
+    profiling: enabled=true в файле подключения. Если env-ключ расшифровки
+    недоступен — пароль запрашивается интерактивно (скрытый ввод).
     """
     configure_logging()
     table_names = [part.strip() for part in tables.split(",") if part.strip()]
@@ -155,7 +192,10 @@ def profile(
         typer.secho("Ошибка: --tables пуст (пример: --tables public.bookings,app.orders)", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2)
 
-    service = ProfilingService(connections_dir=str(connections_dir))
+    service = ProfilingService(
+        connections_dir=str(connections_dir),
+        password_prompt=_make_cli_password_prompt(),
+    )
     try:
         profiles = service.profile_tables(connection, table_names)
     except ProfilingError as e:
@@ -490,6 +530,10 @@ def deploy_validate(
         Optional[str],
         typer.Option("--prefix", help="Temp-DB name prefix. Default: codebase dir name."),
     ] = None,
+    db_name: Annotated[
+        Optional[str],
+        typer.Option("--db-name", help="Explicit temp DB name. If not set — generated from prefix+timestamp."),
+    ] = None,
     keep_db: Annotated[bool, typer.Option("--keep-db", help="Keep the temp DB after deploy.")] = False,
     continue_on_error: Annotated[
         bool, typer.Option("--continue-on-error", help="Continue past late-object failures.")
@@ -514,6 +558,7 @@ def deploy_validate(
             conn_cfg,
             directory,
             prefix=prefix,
+            db_name=db_name,
             keep_db=keep_db,
             continue_on_error=continue_on_error,
             progress=progress,
@@ -524,6 +569,9 @@ def deploy_validate(
     except CycleError as e:
         typer.secho(f"✗ Граф содержит циклы: {', '.join(sorted(e.unresolved))}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=3) from e
+    except ValueError as e:
+        typer.secho(f"✗ Некорректное имя БД: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from e
 
     if result.success:
         typer.secho(

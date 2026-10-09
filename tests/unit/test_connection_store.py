@@ -192,3 +192,51 @@ def test_allow_drop_schemas_not_in_connect_options(crypto_env: str, tmp_path) ->
 
     assert loaded.options == {"connect_timeout": 5}
     assert "allow_drop_schemas" not in loaded.options
+
+
+# --- interactive password fallback (машина без env-ключей, Phase 20) ---
+
+
+def test_missing_key_prompts_for_password(crypto_env, tmp_path, monkeypatch) -> None:
+    """env-ключ недоступен + колбэк → пароль запрашивается и попадает в cfg."""
+    from db_project_manager.infrastructure.crypto.crypto_util import get_encrypted_text
+
+    token = get_encrypted_text("real-secret", crypto_env)
+    (tmp_path / "prod.yaml").write_text(
+        f"host: db.host\nport: 5432\ndatabase: mydb\nusername: myuser\n"
+        f"password: {token}\ntype: postgres\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv(crypto_env, raising=False)
+
+    prompts: list[str] = []
+
+    def fake_prompt(env_var: str, description: str) -> str:
+        prompts.append((env_var, description))
+        return "typed-password"
+
+    store = ConnectionStore(tmp_path, password_prompt=fake_prompt)
+    cfg = store.load_by_name("prod")
+
+    assert cfg.password == "typed-password"
+    assert len(prompts) == 1
+    assert prompts[0][0] == crypto_env
+    assert "myuser@db.host" in prompts[0][1]
+
+
+def test_missing_key_without_prompt_keeps_token(crypto_env, tmp_path, monkeypatch) -> None:
+    """Без колбэка (GUI/MCP) — прежнее поведение: токен возвращается как есть."""
+    from db_project_manager.infrastructure.crypto.crypto_util import get_encrypted_text
+
+    token = get_encrypted_text("real-secret", crypto_env)
+    (tmp_path / "prod.yaml").write_text(
+        f"host: db.host\nport: 5432\ndatabase: mydb\nusername: myuser\n"
+        f"password: {token}\ntype: postgres\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv(crypto_env, raising=False)
+
+    store = ConnectionStore(tmp_path)
+    cfg = store.load_by_name("prod")
+
+    assert cfg.password == token

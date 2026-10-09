@@ -223,3 +223,75 @@ def test_parse_quoted_identifiers() -> None:
     # неквотированные части фолдятся в нижний регистр, как планировщик
     assert parse_qualified("Public.Orders") == ("public", "orders")
     assert parse_qualified('"Public".Orders') == ("Public", "orders")
+
+
+def test_connection_failure_becomes_profiling_error() -> None:
+    """Неверный пароль/недоступная БД → ProfilingError, а не traceback."""
+    from db_project_manager.infrastructure.database.base import DatabaseError
+
+    class FailingManager(FakeManager):
+        @contextmanager
+        def connection(self, name: str):
+            raise DatabaseError("password authentication failed")
+            yield  # pragma: no cover
+
+    service = ProfilingService(manager=FailingManager(enabled_cfg()))
+    with pytest.raises(ProfilingError, match="не удалось подключиться"):
+        service.profile_tables("conn", ["public.t"])
+
+
+# --- read-only гарантия генераторов (аудит 2026-10-07, живой прогон hrdo_ods) ---
+
+
+def _all_generated_sql() -> list[tuple[str, str]]:
+    """Весь SQL, который генераторы PG/GP способны выдать по полной матрице категорий."""
+    from db_project_manager.infrastructure.profiling.base import (
+        ColumnCategory,
+        ProfilingColumn,
+    )
+    from db_project_manager.infrastructure.profiling.greenplum import GreenplumProfiler
+    from db_project_manager.infrastructure.profiling.postgres import PostgresProfiler
+
+    columns = [
+        ProfilingColumn(name="n", data_type="integer", category=ColumnCategory.NUMERIC),
+        ProfilingColumn(name="ts", data_type="timestamp without time zone", category=ColumnCategory.TEMPORAL),
+        ProfilingColumn(name="s", data_type="text", category=ColumnCategory.TEXT),
+        ProfilingColumn(name="b", data_type="boolean", category=ColumnCategory.BOOL),
+        ProfilingColumn(name="u", data_type="uuid", category=ColumnCategory.OTHER),
+        ProfilingColumn(name="j", data_type="jsonb", category=ColumnCategory.OTHER),
+    ]
+    out: list[tuple[str, str]] = []
+    for label, profiler in (("pg", PostgresProfiler()), ("gp", GreenplumProfiler())):
+        out.append((f"{label}:columns", profiler.columns_sql("s", "t")))
+        out.append((f"{label}:meta", profiler.table_meta_sql("s", "t")))
+        for base_label, base in (
+            ("full", profiler.base_expr("s", "t", None)),
+            ("sampled", profiler.base_expr("s", "t", 0.01)),
+            ("random", profiler.sample_base_expr_random("s", "t", 0.005)),
+        ):
+            out.append((f"{label}:main:{base_label}", profiler.main_sql(columns, base)))
+        for col, lo, hi in (
+            (columns[0], "0.5", "990.01"),                       # NUMERIC
+            (columns[1], "2026-01-01 00:00:00", "2026-01-02 00:00:00"),  # TEMPORAL
+        ):
+            hist = profiler.histogram_sql(col, lo, hi, 20, '"s"."t"')
+            if hist is not None:
+                out.append((f"{label}:hist:{col.name}", hist))
+        for col in columns:
+            out.append((f"{label}:topn:{col.name}", profiler.topn_sql(col, 10, '"s"."t"')))
+    return out
+
+
+@pytest.mark.parametrize("label,sql", _all_generated_sql())
+def test_generated_sql_is_single_read_only_statement(label: str, sql: str) -> None:
+    """Каждый стейтмент генераторов — один read-only SELECT (fail-closed гейт _run).
+
+    Аудит 2026-10-07 (hrdo_ods): перехват живого прогона показал 0 DML/DDL;
+    тест закрепляет это на уровне всех генерируемых форм SQL, включая
+    TABLESAMPLE/random-сэмплы, гистограммы и top-N.
+    """
+    from db_project_manager.infrastructure.sql.classify import classify_script
+
+    verdict = classify_script(sql, dialect="postgres")
+    assert len(verdict.statements) == 1, f"{label}: не одиночный стейтмент"
+    assert verdict.is_read_only, f"{label}: не read-only — {verdict.summary()}"

@@ -100,6 +100,20 @@ class DeployResult:
 #: Whitelist for the prefix portion of the temp-DB name (sanitized lower-case).
 _PREFIX_RE = re.compile(r"[^a-z0-9]+")
 
+#: Valid PostgreSQL database name: must start with letter or underscore,
+#: then letters, digits or underscores.
+_DB_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _validate_db_name(name: str) -> str:
+    """Reject anything outside [A-Za-z_][A-Za-z0-9_]* before it reaches SQL."""
+    if not name or not _DB_NAME_RE.match(name):
+        raise ValueError(
+            f"Недопустимое имя базы данных: {name!r}. "
+            "Допускаются только латинские буквы, цифры и подчёркивание."
+        )
+    return name
+
 
 def sanitize_prefix(name: str) -> str:
     """Lowercase and collapse non [a-z0-9] runs to a single underscore.
@@ -131,6 +145,7 @@ class DeployValidateService:
         codebase_dir: str | Path,
         *,
         prefix: str | None = None,
+        db_name: str | None = None,
         keep_db: bool = False,
         continue_on_error: bool = False,
         progress: ProgressCallback | None = None,
@@ -173,9 +188,12 @@ class DeployValidateService:
                 break
 
         # 4. Name + create temp DB.
-        prefix_value = sanitize_prefix(prefix or codebase_dir.name)
-        timestamp = adapter.get_server_timestamp_utc()
-        db_name = f"{prefix_value}_{timestamp}"
+        if db_name is None:
+            prefix_value = sanitize_prefix(prefix or codebase_dir.name)
+            timestamp = adapter.get_server_timestamp_utc()
+            db_name = f"{prefix_value}_{timestamp}"
+        else:
+            _validate_db_name(db_name)
 
         self._emit(progress, f"Создание временной базы данных: {db_name}", 0, total)
         adapter.create_database(

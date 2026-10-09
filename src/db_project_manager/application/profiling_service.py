@@ -14,6 +14,7 @@ guard от порчи генератора. ANALYZE никогда не запу
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any
 
@@ -45,8 +46,22 @@ class ProfilingError(Exception):
 class ProfilingService:
     """Builds :class:`TableProfile` for a table list over one connection."""
 
-    def __init__(self, connections_dir: str = "connections", manager: ConnectionManager | None = None) -> None:
-        self._manager = manager if manager is not None else ConnectionManager(connections_dir)
+    def __init__(
+        self,
+        connections_dir: str = "connections",
+        manager: ConnectionManager | None = None,
+        *,
+        password_prompt: Callable[[str], str] | None = None,
+    ) -> None:
+        """``password_prompt`` — интерактивный ввод пароля, когда env-ключ
+        расшифровки недоступен (CLI на машине без возможности задавать
+        переменные окружения). В MCP не используется: stdio занят протоколом.
+        """
+        self._manager = (
+            manager
+            if manager is not None
+            else ConnectionManager(connections_dir, password_prompt=password_prompt)
+        )
 
     # --- public API ---
 
@@ -62,15 +77,20 @@ class ProfilingService:
         profiler = get_profiler_or_error(cfg)
         timeout_s = max(1, settings.statement_timeout_ms // 1000)
         profiles: list[TableProfile] = []
-        with self._manager.connection(connection) as conn:
-            for raw in tables:
-                schema, table = parse_qualified(raw)
-                logger.info(f"profile: {schema}.{table} ({cfg.type})")
-                profiles.append(
-                    self._profile_one(
-                        conn.adapter, profiler, cfg, settings, connection, schema, table, timeout_s
+        try:
+            with self._manager.connection(connection) as conn:
+                for raw in tables:
+                    schema, table = parse_qualified(raw)
+                    logger.info(f"profile: {schema}.{table} ({cfg.type})")
+                    profiles.append(
+                        self._profile_one(
+                            conn.adapter, profiler, cfg, settings, connection, schema, table, timeout_s
+                        )
                     )
-                )
+        except DatabaseError as exc:
+            # Ошибка самого подключения (например, неверный пароль после
+            # интерактивного ввода) — пользовательский текст вместо traceback.
+            raise ProfilingError(f"не удалось подключиться к БД: {exc}") from exc
         return profiles
 
     # --- internals ---

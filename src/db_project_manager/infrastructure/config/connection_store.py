@@ -6,6 +6,8 @@ persisted encrypted (crypto__<ENV_VAR>__<token>) and decrypted on load.
 
 from __future__ import annotations
 
+import logging
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -13,11 +15,14 @@ import yaml
 
 from db_project_manager.domain.connection import ConnectionConfig
 from db_project_manager.infrastructure.crypto.crypto_util import (
+    CryptoKeyMissing,
     _is_cipher_token,
     get_cipher_env,
-    get_decrypted_nested_dict,
+    get_decrypted_text,
     get_encrypted_text,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class ConnectionStoreError(Exception):
@@ -25,10 +30,24 @@ class ConnectionStoreError(Exception):
 
 
 class ConnectionStore:
-    """Persist and load ConnectionConfig to/from YAML files."""
+    """Persist and load ConnectionConfig to/from YAML files.
 
-    def __init__(self, connections_dir: str | Path | None = None) -> None:
+    ``password_prompt`` (опционально) — колбэк для интерактивного ввода
+    секрета, когда env-ключ расшифровки недоступен (CLI на машине без
+    возможности задавать переменные окружения). Аргументы: имя env-переменной
+    и готовое описание; возвращает секрет plaintext. Он используется только
+    в памяти текущего запуска и не пишется на диск. Без колбэка (GUI/MCP)
+    поведение прежнее: токен с недоступным ключом возвращается как есть.
+    """
+
+    def __init__(
+        self,
+        connections_dir: str | Path | None = None,
+        *,
+        password_prompt: Callable[[str, str], str] | None = None,
+    ) -> None:
         self.connections_dir = Path(connections_dir) if connections_dir else Path("connections")
+        self.password_prompt = password_prompt
 
     # --- paths ---
 
@@ -112,7 +131,7 @@ class ConnectionStore:
         if not isinstance(raw, dict):
             raise ConnectionStoreError(f"Файл подключения имеет неверный формат: {path}")
 
-        decrypted = get_decrypted_nested_dict(raw)
+        decrypted = self._decrypt_raw(raw, path, field="")
         conn_name = name if name is not None else path.stem
         decrypted.setdefault("name", conn_name)
         try:
@@ -123,6 +142,48 @@ class ConnectionStore:
     def load_by_name(self, name: str) -> ConnectionConfig:
         """Load a connection by its name within the connections directory."""
         return self.load(self.path_for(name), name=name)
+
+    # --- decrypt pass (with optional interactive fallback) ---
+
+    def _decrypt_raw(self, value: Any, path: Path, *, field: str = "", who: str = "") -> Any:
+        """Recursively decrypt crypto tokens; missing key → prompt if configured.
+
+        Без ``password_prompt`` (GUI/MCP) нерасшифрованный токен возвращается
+        как есть — прежнее поведение (диалог редактирования показывает токен).
+        """
+        if isinstance(value, dict):
+            if value.get("username") and value.get("host"):
+                who = f"{value['username']}@{value['host']}"
+            return {k: self._decrypt_raw(v, path, field=k, who=who) for k, v in value.items()}
+        if isinstance(value, list):
+            return [self._decrypt_raw(v, path, field=field, who=who) for v in value]
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not _is_cipher_token(stripped):
+                return value
+            try:
+                return get_decrypted_text(stripped)
+            except CryptoKeyMissing as exc:
+                if self.password_prompt is None:
+                    return value  # прежнее поведение: токен как есть
+                what = "SSH-пароль" if field == "ssh_pass" else "пароль подключения"
+                entered = self.password_prompt(
+                    exc.env_var,
+                    f"введите {what} для {who or path.stem} "
+                    f"[подключение {path.stem}]; ввод скрыт, пароль не сохраняется",
+                )
+                logger.warning(
+                    "Секрет для подключения %s введён вручную (env-ключ %s недоступен)",
+                    path.stem, exc.env_var,
+                )
+                return entered
+            except Exception:
+                logger.warning(
+                    "Не удалось расшифровать поле %s в %s, оставляю как есть",
+                    field or "?", path,
+                )
+                return value
+        return value
 
     def crypto_env_for(self, name: str) -> str | None:
         """Имя env-переменной, которой зашифрован файл подключения.
