@@ -16,6 +16,7 @@ from db_project_manager.domain.delta import (
     ColumnSnapshot,
     DeltaPlan,
     OperationClass,
+    PlannedOperation,
 )
 from db_project_manager.domain.diff import (
     DiffEntry,
@@ -24,6 +25,7 @@ from db_project_manager.domain.diff import (
     SnapshotSourceKind,
     StateSnapshot,
 )
+from db_project_manager.domain.graph import Vertex
 from db_project_manager.domain.safety import StatsConfidence, TablePresenceStats
 from db_project_manager.infrastructure.deploy.plan_report import (
     JSON_OUTPUT_NAME,
@@ -245,6 +247,58 @@ def test_removed_with_flag_and_empty_writes_executable_drop(tmp_path: Path) -> N
     DeltaService().write_artifacts(plan, root, out)
     content = (out / "delta" / "001_table_app_t_old.sql").read_text(encoding="utf-8")
     assert content.strip() == 'DROP TABLE IF EXISTS "app"."t_old";'
+
+
+def test_removed_function_drop_carries_empty_arg_list(tmp_path: Path) -> None:
+    """REMOVED routines have no codebase vertex — the DROP must still be valid
+    on Greenplum 6 (kernel PG 9.4): the grammar requires the argument list,
+    `syntax error at or near ";"` without parens (cis_zup feedback 2026-10-09).
+    """
+    root = _make_codebase(tmp_path)
+    entries = [
+        _entry(DiffStatus.REMOVED, None, _snap("function", "fun_old_etl", "h")),
+    ]
+    plan = DeltaService().build_plan(
+        root, _report(entries), stats={}, coverage={}, db_type="greenplum",
+        include_drops=True,
+    )
+    assert plan.operations[0].classification is OperationClass.SAFE
+    out = tmp_path / "out"
+    DeltaService().write_artifacts(plan, root, out)
+    content = (out / "delta" / "001_function_app_fun_old_etl.sql").read_text(encoding="utf-8")
+    assert content.strip() == 'DROP FUNCTION IF EXISTS "app"."fun_old_etl"();'
+
+
+def test_removed_function_blocked_drop_commented_with_parens(tmp_path: Path) -> None:
+    root = _make_codebase(tmp_path)
+    entries = [
+        _entry(DiffStatus.REMOVED, None, _snap("procedure", "sp_old", "h")),
+    ]
+    plan = DeltaService().build_plan(
+        root, _report(entries), stats={}, coverage={}, db_type="greenplum",
+    )
+    assert plan.operations[0].classification is OperationClass.BLOCKED
+    out = tmp_path / "out"
+    DeltaService().write_artifacts(plan, root, out)
+    content = (out / "delta" / "001_procedure_app_sp_old.sql").read_text(encoding="utf-8")
+    assert content.startswith("-- BLOCKED:")
+    assert '-- DROP PROCEDURE IF EXISTS "app"."sp_old"();' in content
+
+
+def test_drop_statement_uses_vertex_argument_types() -> None:
+    """A routine still present in the graph drops by its overload signature."""
+    op = PlannedOperation(
+        object_key=_key("function", "f1"), object_schema="app", object_name="f1",
+        object_type="function", action="drop",
+        classification=OperationClass.SAFE, reason="явный --include-drops",
+    )
+    vertex = Vertex(
+        object_key=_key("function", "f1"), object_schema="app",
+        object_type="function", object_name="f1",
+        argument_types="integer, varchar(50)",
+    )
+    statement = DeltaService._drop_statement(op, vertex)
+    assert statement == 'DROP FUNCTION IF EXISTS "app"."f1"(integer, varchar(50));'
 
 
 def test_comment_only_body_downgraded_to_skip(tmp_path: Path) -> None:
