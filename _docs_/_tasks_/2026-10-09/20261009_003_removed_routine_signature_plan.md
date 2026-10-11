@@ -1,7 +1,7 @@
 # Сигнатуры REMOVED-рутин в ObjectSnapshot: DROP по настоящей перегрузке (plan)
 
 > **Date:** 2026-10-09
-> **Status:** backlog (уровень 2 к задаче 20261009_002)
+> **Status:** реализовано 2026-10-11 — см. `20261009_003_removed_routine_signature_result.md`
 
 > Контекст:
 > - `_tasks_/2026-10-09/20261009_002_drop_function_gp_parens_result.md` —
