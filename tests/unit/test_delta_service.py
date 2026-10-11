@@ -63,10 +63,15 @@ def _write_object(codebase: Path, object_type: str, name: str, body: str,
 
 
 def _snap(object_type: str, name: str, sql_hash: str, schema: str = "app",
-          columns: list[ColumnSnapshot] | None = None) -> ObjectSnapshot:
+          columns: list[ColumnSnapshot] | None = None,
+          object_signature: str = "", argument_types: str = "") -> ObjectSnapshot:
+    key = _key(object_type, name, schema)
+    if object_signature:  # overload key format (Phase 4)
+        key = f"{key}/signature/{object_signature}"
     return ObjectSnapshot(
-        object_key=_key(object_type, name, schema),
+        object_key=key,
         object_schema=schema, object_name=name, object_type=object_type,
+        object_signature=object_signature, argument_types=argument_types,
         sql_normalized="x", sql_hash=sql_hash,
         columns=columns if columns is not None else ([] if object_type == "table" else None),
     )
@@ -299,6 +304,101 @@ def test_drop_statement_uses_vertex_argument_types() -> None:
     )
     statement = DeltaService._drop_statement(op, vertex)
     assert statement == 'DROP FUNCTION IF EXISTS "app"."f1"(integer, varchar(50));'
+
+
+def test_removed_function_drop_uses_snapshot_signature(tmp_path: Path) -> None:
+    """20261009_003: REMOVED routines have no codebase vertex — the DROP
+    signature comes from the target snapshot, dropping the real overload
+    instead of the silent `()` no-op.
+    """
+    root = _make_codebase(tmp_path)
+    entries = [
+        _entry(DiffStatus.REMOVED, None,
+               _snap("function", "fun_old_etl", "h", argument_types="integer, text")),
+    ]
+    plan = DeltaService().build_plan(
+        root, _report(entries), stats={}, coverage={}, db_type="greenplum",
+        include_drops=True,
+    )
+    assert plan.operations[0].classification is OperationClass.SAFE
+    assert plan.operations[0].argument_types == "integer, text"
+    out = tmp_path / "out"
+    DeltaService().write_artifacts(plan, root, out)
+    content = (out / "delta" / "001_function_app_fun_old_etl.sql").read_text(encoding="utf-8")
+    assert content.strip() == 'DROP FUNCTION IF EXISTS "app"."fun_old_etl"(integer, text);'
+
+
+def test_removed_overloads_drop_with_distinct_signatures(tmp_path: Path) -> None:
+    """Two REMOVED overloads → two artifacts, each with its own signature."""
+    root = _make_codebase(tmp_path)
+    entries = [
+        _entry(DiffStatus.REMOVED, None,
+               _snap("function", "sp_old", "h1", object_signature="aaaa1111",
+                     argument_types="text")),
+        _entry(DiffStatus.REMOVED, None,
+               _snap("function", "sp_old", "h2", object_signature="bbbb2222",
+                     argument_types="integer, integer")),
+    ]
+    plan = DeltaService().build_plan(
+        root, _report(entries), stats={}, coverage={}, db_type="postgres",
+        include_drops=True,
+    )
+    assert [op.classification for op in plan.operations] == [OperationClass.SAFE] * 2
+    out = tmp_path / "out"
+    DeltaService().write_artifacts(plan, root, out)
+    bodies = sorted(
+        p.read_text(encoding="utf-8").strip()
+        for p in (out / "delta").iterdir() if p.suffix == ".sql"
+    )
+    assert bodies == [
+        'DROP FUNCTION IF EXISTS "app"."sp_old"(integer, integer);',
+        'DROP FUNCTION IF EXISTS "app"."sp_old"(text);',
+    ]
+
+
+def test_removed_routine_unknown_signature_blocked(tmp_path: Path) -> None:
+    """Fail-safe 20261009_003: object_signature says the overload HAS args but
+    argument_types is lost (old snapshot) — BLOCKED with a manual-drop reason,
+    not an executable `()` that IF EXISTS would silently skip.
+    """
+    root = _make_codebase(tmp_path)
+    entries = [
+        _entry(DiffStatus.REMOVED, None,
+               _snap("function", "fun_sig", "h", object_signature="ab12cd34")),
+    ]
+    plan = DeltaService().build_plan(
+        root, _report(entries), stats={}, coverage={}, db_type="greenplum",
+        include_drops=True,
+    )
+    op = plan.operations[0]
+    assert op.classification is OperationClass.BLOCKED
+    assert "вручную" in op.reason
+    out = tmp_path / "out"
+    DeltaService().write_artifacts(plan, root, out)
+    content = (out / "delta" / "001_function_app_fun_sig.sql").read_text(encoding="utf-8")
+    assert content.startswith("-- BLOCKED:")
+    assert '-- DROP FUNCTION IF EXISTS "app"."fun_sig"();' in content
+
+
+def test_drop_statement_prefers_op_argument_types() -> None:
+    """op.argument_types (target snapshot) wins over the codebase vertex."""
+    op = PlannedOperation(
+        object_key=_key("function", "f1"), object_schema="app", object_name="f1",
+        object_type="function", action="drop",
+        classification=OperationClass.SAFE, reason="явный --include-drops",
+        argument_types="text",
+    )
+    vertex = Vertex(
+        object_key=_key("function", "f1"), object_schema="app",
+        object_type="function", object_name="f1",
+        argument_types="integer",
+    )
+    assert DeltaService._drop_statement(op, vertex) == \
+        'DROP FUNCTION IF EXISTS "app"."f1"(text);'
+    # vertex fallback when the op carries nothing (plan built pre-20261009_003)
+    op_no_args = op.model_copy(update={"argument_types": ""})
+    assert DeltaService._drop_statement(op_no_args, vertex) == \
+        'DROP FUNCTION IF EXISTS "app"."f1"(integer);'
 
 
 def test_comment_only_body_downgraded_to_skip(tmp_path: Path) -> None:

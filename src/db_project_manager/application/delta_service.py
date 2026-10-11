@@ -261,13 +261,19 @@ class DeltaService:
         # with `syntax error at or near ";"` (misleadingly pointing at the
         # semicolon). Mirrors adapter.drop_schema_contents (Phase 18): the
         # list is always present, `()` for zero-arg / unknown signature.
+        #
+        # Signature source priority (20261009_003): op.argument_types (target
+        # snapshot — the only source for REMOVED routines, which have no
+        # codebase vertex) → vertex.argument_types (codebase) → `()` fallback.
         args = "()"
         if kind not in ("FUNCTION", "PROCEDURE"):
             args = ""
-        elif vertex is not None and vertex.argument_types:
-            args = "(" + ", ".join(
-                arg.strip() for arg in vertex.argument_types.split(",") if arg.strip()
-            ) + ")"
+        else:
+            raw = op.argument_types or (vertex.argument_types if vertex is not None else "")
+            if raw:
+                args = "(" + ", ".join(
+                    arg.strip() for arg in raw.split(",") if arg.strip()
+                ) + ")"
         return f"DROP {kind} IF EXISTS {target}{args};"
 
     @staticmethod

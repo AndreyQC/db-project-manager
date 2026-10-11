@@ -83,6 +83,9 @@ def build_snapshot_from_dir(
             object_name=vertex.object_name,
             object_type=vertex.object_type,
             object_signature=vertex.object_signature,
+            # 20261009_003: raw routine argument types — the delta plan's only
+            # signature source for REMOVED routines (no codebase vertex exists).
+            argument_types=vertex.argument_types,
             sql_normalized=normalized,
             # Phase 16.12: hash the ALREADY-normalized string — sql_hash here
             # re-parsed it, and the canonical GP tail degraded sqlglot to a

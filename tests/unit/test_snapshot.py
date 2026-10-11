@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from db_project_manager.domain.diff import SnapshotSourceKind
+from db_project_manager.domain.diff import ObjectSnapshot, SnapshotSourceKind
 from db_project_manager.infrastructure.diff.snapshot import (
     DIFFED_TYPES,
     build_snapshot_from_dir,
@@ -173,3 +173,39 @@ def test_snapshot_is_deterministic_across_runs():
     )
     for key in snap1.objects:
         assert snap1.objects[key].sql_hash == snap2.objects[key].sql_hash
+
+
+def test_snapshot_carries_argument_types():
+    """20261009_003: routine argument_types flow from the graph into the
+    snapshot — the delta plan's only signature source for REMOVED routines."""
+    snap = build_snapshot_from_dir(
+        CODEBASE_SAMPLE,
+        source_kind=SnapshotSourceKind.DIR,
+        source_ref=str(CODEBASE_SAMPLE),
+        db_type="postgres",
+    )
+    sp_x = [o for o in snap.objects.values() if o.object_name == "sp_x"]
+    assert len(sp_x) == 2
+    # fixture overloads: sp_x(text) and sp_x(int4) — both carried verbatim
+    assert {o.argument_types for o in sp_x} == {"text", "int4"}
+    # non-routines carry an empty string, not None
+    table = next(o for o in snap.objects.values() if o.object_type == "table")
+    assert table.argument_types == ""
+
+
+def test_snapshot_argument_types_json_roundtrip():
+    """plan/diff JSON round-trip keeps argument_types; legacy snapshots without
+    the field parse with the empty-string default (old artifacts stay valid)."""
+    snap = build_snapshot_from_dir(
+        CODEBASE_SAMPLE,
+        source_kind=SnapshotSourceKind.DIR,
+        source_ref=str(CODEBASE_SAMPLE),
+        db_type="postgres",
+    )
+    restored = type(snap).model_validate_json(snap.model_dump_json())
+    by_key = {k: v.argument_types for k, v in restored.objects.items()}
+    assert "text" in by_key.values() and "int4" in by_key.values()
+
+    # legacy: an object dict without the field (pre-20261009_003 artifact)
+    legacy = next(iter(snap.objects.values())).model_dump(exclude={"argument_types"})
+    assert ObjectSnapshot.model_validate(legacy).argument_types == ""

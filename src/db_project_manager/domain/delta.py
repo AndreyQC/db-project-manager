@@ -120,6 +120,11 @@ class PlannedOperation(BaseModel):
     # WHY the classification is what it is without re-reading presence stats.
     estimated_rows: int | None = None
     covered_by: list[str] = []
+    # Raw argument types of a routine (function/procedure), copied from the
+    # entry's snapshot by classify() — for REMOVED routines the target snapshot
+    # is the ONLY signature source (no codebase vertex exists). Used by
+    # _drop_statement to drop the real overload (task 20261009_003).
+    argument_types: str = ""
 
 
 class DeltaPlan(BaseModel):

@@ -226,6 +226,9 @@ def classify(
         "object_type": snap.object_type,
         "object_schema": snap.object_schema,
         "object_name": snap.object_name,
+        # 20261009_003: routine signature for DROP rendering; for REMOVED
+        # routines the snapshot is the only source (no codebase vertex).
+        "argument_types": snap.argument_types,
     }
 
     if entry.status is DiffStatus.UNCHANGED:
@@ -248,6 +251,21 @@ def classify(
             return PlannedOperation(
                 **base, action=_ACTION_DROP, classification=OperationClass.BLOCKED,
                 reason="DROP таблицы с данными — только через pre-скрипт (ALT-6)",
+            )
+        # Fail-safe (20261009_003): a REMOVED overload whose argument list is
+        # unknown would render `DROP ... name()` — IF EXISTS then silently
+        # skips it (function does not exist) and the plan reports a drop that
+        # never happened. A manual drop is required instead.
+        if (
+            snap.object_type in ("function", "procedure")
+            and snap.object_signature
+            and not snap.argument_types
+        ):
+            return PlannedOperation(
+                **base, action=_ACTION_DROP, classification=OperationClass.BLOCKED,
+                reason="сигнатура перегрузки неизвестна (argument_types нет в "
+                       "снапшоте) — авто-DROP молча удалит не ту сигнатуру; "
+                       "DROP вручную (ALT-6)",
             )
         return PlannedOperation(**base, action=_ACTION_DROP,
                                 classification=OperationClass.SAFE,

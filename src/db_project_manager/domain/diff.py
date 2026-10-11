@@ -84,6 +84,11 @@ class ObjectSnapshot(BaseModel):
     object_name: str = ""
     object_type: str
     object_signature: str = ""
+    # Raw comma-joined argument types of routines (function/procedure), the same
+    # string as Vertex.argument_types. Copied from the graph at snapshot-build
+    # time; lets the delta plan render DROP with the overload's REAL signature
+    # for REMOVED routines (they have no codebase vertex — task 20261009_003).
+    argument_types: str = ""
     sql_normalized: str       # sqlglot-normalized SQL body (audit/debug)
     sql_hash: str             # 8 hex SHA-256 of sql_normalized
     estimated_rows: int | None = None  # tables only (reltuples); None otherwise
