@@ -234,6 +234,59 @@ AS SELECT ...
 "clickhouse": "clickhouse",
 ```
 
+### 8. MCP-сервер (Phase 19)
+
+MCP-сервер `db-pm-mcp` уже реализован для PG/GP. Для Clickhouse
+необходима адаптация следующих инструментов:
+
+**Существующие MCP-инструменты и их адаптация:**
+
+| Инструмент | PG/GP | Clickhouse | Примечание |
+|------------|-------|------------|------------|
+| `mcp_query` | `run_query` | `run_query` | query/command/query_df — базовая функция |
+| `mcp_explain` | `EXPLAIN (json/text)` | **N/A** | CH не имеет EXPLAIN в PG-стиле → `NotSupportedError` |
+| `mcp_list_schemas` | `pg_namespace` | `system.databases` | |
+| `mcp_list_tables` | `pg_class` | `system.tables` | |
+| `mcp_describe_table` | `information_schema` | `system.columns` + `system.tables` | нужно JOIN для движка |
+| `mcp_list_views` | `pg_views` | `system.tables WHERE engine LIKE 'View'` | |
+| `mcp_list_materialized` | `pg_matviews` | `system.tables WHERE engine LIKE 'Materialized%'` | |
+| `mcp_list_functions` | `pg_proc` | `system.functions` | |
+| `mcp_list_columns` | `information_schema.columns` | `system.columns` | |
+| `mcp_get_indexes` | `pg_indexes` | `system.table_engines` / skip indexes | |
+| `mcp_table_size` | `pg_total_relation_size` | `system.parts` (по database/table) | |
+| `mcp_profile_table` | `pg_stat_user_tables` | `system.metrics` / `system.query_log` | |
+| `mcp_top_queries` | `pg_stat_statements` | `system.query_log` (если enabled) | |
+
+**CH-специфичные инструменты (новые):**
+
+| Инструмент | Описание |
+|------------|----------|
+| `mcp_ch_list_mergetree` | Список MergeTree-таблиц с ORDER BY, PARTITION BY |
+| `mcp_ch_list_dictionaries` | Список словарей (system.dictionaries) |
+| `mcp_ch_list_engines` | Доступные движки таблиц |
+| `mcp_ch_list_parts` | Partition parts (system.parts) |
+| `mcp_ch_list Mutations` | Список мутаций (system.mutations) |
+
+**Адаптация `run_query` для Clickhouse:**
+
+```python
+def run_query(self, sql: str, *, max_rows: int = 50, ...) -> QueryResult:
+    # clickhouse_connect возвращает QueryResult
+    result = self.client.query(sql)
+    rows = result.result_rows
+    columns = [col.name for col in result.columns]
+    
+    return QueryResult(
+        columns=columns,
+        rows=rows[:max_rows],
+        truncated=len(rows) > max_rows,
+        row_count=len(rows),
+    )
+```
+
+**QueryResult.notices** для CH:
+- При отсутствии `system.query_log` → `"CH: query_log disabled, performance analysis unavailable"`
+
 ## Проверки
 
 - [ ] Подключение к Clickhouse-базе через CLI/GUI
@@ -259,6 +312,7 @@ AS SELECT ...
 1. **20261016_001a** — Добавить `CHDatabaseAdapter` в registry + ConnectionConfig
 2. **20261016_001b** — Реализовать `get_database_structure()` (RE core)
 3. **20261016_001c** — Адаптер: Phase 2 (validation-deploy), Phase 9 (row counts)
-4. **20261016_001d** — Адаптер: Phase 10 (__deploy), Phase 18 (reset), Phase 19 (MCP)
+4. **20261016_001d** — Адаптер: Phase 10 (__deploy), Phase 18 (reset)
 5. **20261016_001e** — Поддержка в deploy apply / delta service
-6. **20261016_001f** — Юнит-тесты + интеграционные (если Docker с CH)
+6. **20261016_001f** — MCP-сервер: адаптация 13+ инструментов + CH-специфичные
+7. **20261016_001g** — Юнит-тесты + интеграционные (если Docker с CH)
