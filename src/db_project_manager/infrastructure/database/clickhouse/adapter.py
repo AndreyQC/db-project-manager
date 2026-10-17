@@ -246,7 +246,12 @@ class CHDatabaseAdapter(DatabaseAdapter):
 
     def get_table_presence_stats(self) -> list[TablePresenceStats]:
         """Normalised presence stats (CH has no PG planner stats, so this
-        mirrors ``get_table_row_counts`` 1:1 with low confidence)."""
+        mirrors ``get_table_row_counts`` 1:1 with no freshness signal).
+
+        CH ``system.tables.total_rows`` is recomputed asynchronously during
+        merges; we report it as ``UNKNOWN`` because there's no analyser /
+        pg_stat-style staleness indicator, and ``classify_presence`` treats
+        ``UNKNOWN`` fail-safe (assumes data is present)."""
         from db_project_manager.domain.safety import StatsConfidence
 
         return [
@@ -254,7 +259,7 @@ class CHDatabaseAdapter(DatabaseAdapter):
                 object_schema=r["database"],
                 name=r["table"],
                 estimated_rows=r["estimated_rows"],
-                confidence=StatsConfidence.LOW,
+                confidence=StatsConfidence.UNKNOWN,
             )
             for r in self.get_table_row_counts()
         ]
@@ -688,7 +693,8 @@ class CHDatabaseAdapter(DatabaseAdapter):
                     "storage_policy": storage_policy,
                     "columns": self._build_columns(db, name),
                     "constraints": [],   # CH has no PG-style constraints
-                    "indexes": [],       # skip-indexes (DataSkippingIndex) — Phase 3
+                    "skip_indexes": self._build_skip_indexes(db, name),
+                    "storage_stats": self._build_storage_stats(db, name),
                 }
             )
 
@@ -745,6 +751,21 @@ class CHDatabaseAdapter(DatabaseAdapter):
                 }
             )
 
+        # in-flight mutations (per-database) — for deploy pre-flight check
+        pending_mutations: list[dict[str, Any]] = []
+        for row in self._exec_rows(q.LIST_PENDING_MUTATIONS, {"db": db}):
+            (mtable, mutation_id, command, parts_to_do, is_killed, fail_reason) = row
+            pending_mutations.append(
+                {
+                    "table": mtable,
+                    "mutation_id": mutation_id,
+                    "command": command,
+                    "parts_to_do": int(parts_to_do or 0),
+                    "is_killed": bool(is_killed),
+                    "fail_reason": fail_reason or None,
+                }
+            )
+
         return {
             "name": db,
             "comment": comment,
@@ -753,10 +774,63 @@ class CHDatabaseAdapter(DatabaseAdapter):
             "views": views,
             "materialized_views": materialized_views,
             "dictionaries": dictionaries,
+            "pending_mutations": pending_mutations,
             "functions": [],
             "procedures": [],         # CH has no stored procedures
             "enums": [],              # CH has no enums
             "table_functions": [],
+        }
+
+    def _build_skip_indexes(
+        self, db: str, table: str
+    ) -> list[dict[str, Any]]:
+        """One entry per DataSkippingIndex (minmax / set / bloom_filter / ...)."""
+        indexes: list[dict[str, Any]] = []
+        for row in self._exec_rows(q.LIST_SKIP_INDEXES, {"db": db, "table": table}):
+            (
+                name,
+                idx_type,
+                expr,
+                granularity,
+                compressed,
+                uncompressed,
+                marks,
+            ) = row
+            indexes.append(
+                {
+                    "name": name,
+                    "type": idx_type,
+                    "expr": expr,
+                    "granularity": int(granularity or 0),
+                    "data_compressed_bytes": int(compressed or 0),
+                    "data_uncompressed_bytes": int(uncompressed or 0),
+                    "marks_bytes": int(marks or 0),
+                }
+            )
+        return indexes
+
+    def _build_storage_stats(
+        self, db: str, table: str
+    ) -> dict[str, int]:
+        """Per-table parts / bytes aggregated from ``system.parts``.
+
+        ``active_parts`` = parts that back live queries; ``inactive_parts``
+        = merged-out or detached (still on disk until TTL). 0 for views
+        (no parts)."""
+        rows = self._exec_rows(q.GET_STORAGE_STATS, {"db": db, "table": table})
+        if not rows:
+            return {
+                "active_parts": 0,
+                "inactive_parts": 0,
+                "parts_total_rows": 0,
+                "parts_total_bytes": 0,
+            }
+        (active, inactive, total_rows, total_bytes) = rows[0]
+        return {
+            "active_parts": int(active or 0),
+            "inactive_parts": int(inactive or 0),
+            "parts_total_rows": int(total_rows or 0),
+            "parts_total_bytes": int(total_bytes or 0),
         }
 
     def _build_columns(self, db: str, table: str) -> list[dict[str, Any]]:

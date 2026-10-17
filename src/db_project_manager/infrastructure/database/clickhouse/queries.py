@@ -133,6 +133,55 @@ WHERE database = %(db)s
 ORDER BY name
 """
 
+#: Skip indexes (DataSkippingIndex) per table — CH 25.x schema.
+#: One row per (db, table, name). Index types: minmax / set /
+#: bloom_filter / tokenbf_v1 / ngrambf_v1 etc. ``expr`` is the indexed
+#: column/expression; ``granularity`` is index grain.
+LIST_SKIP_INDEXES = """
+SELECT DISTINCT
+    name,
+    type,
+    expr,
+    granularity,
+    data_compressed_bytes,
+    data_uncompressed_bytes,
+    marks_bytes
+FROM clusterAllReplicas('default', system.data_skipping_indices)
+WHERE database = %(db)s
+  AND table = %(table)s
+ORDER BY name
+"""
+
+#: Storage stats per table — parts / bytes / marks. Aggregated over
+#: ``system.parts`` (one row per part). Used for "is this table actually
+#: small/large" indicators in the RE output.
+GET_STORAGE_STATS = """
+SELECT
+    countIf(active = 1)         AS active_parts,
+    countIf(active = 0)         AS inactive_parts,
+    sum(rows)                   AS parts_total_rows,
+    sum(bytes_on_disk)          AS parts_total_bytes
+FROM clusterAllReplicas('default', system.parts)
+WHERE database = %(db)s
+  AND table = %(table)s
+"""
+
+#: In-flight (not done) mutations on a database — for the deploy pre-flight
+#: check ("don't deploy while an ALTER TABLE DELETE is running").
+LIST_PENDING_MUTATIONS = """
+SELECT DISTINCT
+    table,
+    mutation_id,
+    command,
+    parts_to_do,
+    is_killed,
+    latest_fail_reason
+FROM clusterAllReplicas('default', system.mutations)
+WHERE database = %(db)s
+  AND NOT is_done
+ORDER BY table, mutation_id
+"""
+
 # --- functions (UDFs; regular functions are too noisy) -------------------
 
 #: User-defined functions only (sqlglot already provides builtin list).
