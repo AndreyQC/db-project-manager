@@ -66,7 +66,7 @@ SELECT DISTINCT
     storage_policy
 FROM clusterAllReplicas('default', system.tables)
 WHERE database = %(db)s
-  AND engine NOT IN ('View')
+  AND engine NOT IN ('View', 'MaterializedView')
   AND name NOT LIKE '.inner%%'
 ORDER BY name
 """

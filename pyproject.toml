@@ -82,7 +82,11 @@ testpaths = ["tests"]
 pythonpath = ["src"]
 # Skip integration tests by default (need Docker). Run them explicitly with:
 #   uv run pytest -m integration
-addopts = "-ra -m 'not integration'"
+# ClickHouse integration tests are tagged with ``clickhouse`` (live CH
+# server via clickhouse-connect). Run them explicitly with:
+#   uv run pytest -m clickhouse
+addopts = "-ra -m 'not integration and not clickhouse'"
 markers = [
     "integration: end-to-end tests requiring Docker (testcontainers). Select with -m integration.",
+    "clickhouse: end-to-end tests requiring a live ClickHouse server (clickhouse-connect). Select with -m clickhouse.",
 ]
