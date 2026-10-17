@@ -36,7 +36,7 @@ from db_project_manager.infrastructure.crypto.crypto_util import get_cipher_env
 class ConnectionDialog(QDialog):
     """Add or edit a connection (UI is the only place connections are created)."""
 
-    DB_TYPES = ("postgres", "greenplum")
+    DB_TYPES = ("postgres", "greenplum", "clickhouse")
     CONNECTION_TYPES = (
         ("direct", "Direct PG"),
         ("ssh_tunnel", "SSH Tunnel PG"),

@@ -86,6 +86,7 @@ _COMMAND_CLASS: dict[str, StatementClass] = {
 DB_TYPE_DIALECT: dict[str, str] = {
     "postgres": "postgres",
     "greenplum": "postgres",
+    "clickhouse": "clickhouse",
     "mssql": "tsql",
     "snowflake": "snowflake",
     "mysql": "mysql",

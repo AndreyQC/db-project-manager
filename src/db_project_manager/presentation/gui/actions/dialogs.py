@@ -352,6 +352,7 @@ class YamlGenerateDialog(BaseActionDialog):
         self._db_type = QComboBox()
         self._db_type.addItem("Greenplum", userData="greenplum")
         self._db_type.addItem("PostgreSQL", userData="postgres")
+        self._db_type.addItem("ClickHouse", userData="clickhouse")
         idx = self._db_type.findData(settings.db_type)
         if idx >= 0:
             self._db_type.setCurrentIndex(idx)
@@ -394,6 +395,7 @@ class YamlApplyDialog(BaseActionDialog):
         self._target_db_type = QComboBox()
         self._target_db_type.addItem("PostgreSQL", userData="postgres")
         self._target_db_type.addItem("Greenplum", userData="greenplum")
+        self._target_db_type.addItem("ClickHouse", userData="clickhouse")
         idx = self._target_db_type.findData(settings.target_db_type)
         if idx >= 0:
             self._target_db_type.setCurrentIndex(idx)
