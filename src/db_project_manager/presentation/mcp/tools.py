@@ -39,6 +39,7 @@ from db_project_manager.application.schema_reset_service import (
 from db_project_manager.domain.connection import ConnectionConfig
 from db_project_manager.domain.query import ExplainResult, QueryResult
 from db_project_manager.infrastructure.config.app_config import CFG
+from db_project_manager.infrastructure.database.base import DatabaseError
 from db_project_manager.infrastructure.files.run_naming import create_run_dir
 from db_project_manager.infrastructure.query_log import log_db_call
 
@@ -81,7 +82,7 @@ class MCPToolBox:
             return conn.adapter.list_schemas()
 
     def list_objects(self, connection: str, schema: str, object_type: str = "table") -> list[dict[str, Any]]:
-        """Объекты схемы: имя + комментарий. Типы: table|view|materialized_view|sequence|function|procedure."""
+        """Объекты схемы: имя + комментарий. Типы: table|view|materialized_view|sequence|function|procedure|dictionary."""
         with self.manager.connection(connection) as conn:
             structure = conn.adapter.get_database_structure()
         return extract_objects(structure, schema, object_type)
@@ -93,6 +94,35 @@ class MCPToolBox:
         with self.manager.connection(connection) as conn:
             structure = conn.adapter.get_database_structure()
         return extract_object_details(structure, schema, object_name, object_type)
+
+    # --- CH-specific (ClickHouse-only) ------------------------------------
+    #
+    # These are only meaningful for ``type: clickhouse`` connections;
+    # on PG/GP the relevant fields are empty. The tools stay defined for
+    # all engines so the toolbox surface is uniform — callers pick the
+    # connection type, not the tool.
+
+    def list_ch_skip_indexes(
+        self, connection: str, schema: str, table: str
+    ) -> list[dict[str, Any]]:
+        """Skip-indexes (DataSkippingIndex) for a CH table. CH-only.
+
+        Returns one row per index with: ``name``, ``type`` (minmax / set /
+        bloom_filter / tokenbf_v1 / ngrambf_v1), ``expr`` (indexed column
+        or expression), ``granularity``, and storage bytes.
+        """
+        with self.manager.connection(connection) as conn:
+            structure = conn.adapter.get_database_structure()
+        for entry in structure.get("schemas", []):
+            if entry.get("name") != schema:
+                continue
+            for t in entry.get("tables", []):
+                if t.get("name") == table:
+                    return list(t.get("skip_indexes", []))
+            raise DatabaseError(
+                f"Таблица {schema}.{table} не найдена."
+            )
+        raise DatabaseError(f"Схема {schema!r} не найдена в структуре базы.")
 
     # --- data & plans (read-only, MCP-2/3) ---
 
