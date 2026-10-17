@@ -408,27 +408,38 @@ class CHDatabaseAdapter(DatabaseAdapter):
         self._cmd_with_retry(f"DROP DATABASE {name}{ON_CLUSTER_SUFFIX}")
 
     def drop_schema_contents(self, schema: str) -> None:
-        """Drop every user object inside ``schema``, keep the shell."""
+        """Drop every user object inside ``schema``, keep the shell.
+
+        Drop order matters because of CH's dependency tracking:
+        1. MVs first (so they stop pulling from their source tables).
+        2. Views (regular views have no storage to drop, but be safe).
+        3. Dictionaries (DROP DICTIONARY; a dictionary may depend on
+           a table, so the table can't be dropped while the dict exists).
+        4. Tables last (now safe to drop without dependent objects).
+        """
         self._require_connection()
         self._validate_identifier(schema)
-        # Drop tables, views, dictionaries, MVs — in that order so MVs are
-        # gone before their underlying tables.
-        for kind_clause in (
-            "engine IN ('MaterializedView')",
-            "engine IN ('View')",
-            "engine NOT IN ('View', 'MaterializedView', 'Dictionary')",
-        ):
-            rows = self._exec_rows(
-                f"SELECT DISTINCT name FROM clusterAllReplicas('default', system.tables) "
-                f"WHERE database = %(db)s AND {kind_clause}",
-                {"db": schema},
+        # 1. MaterializedViews
+        rows = self._exec_rows(
+            "SELECT DISTINCT name FROM clusterAllReplicas('default', system.tables) "
+            "WHERE database = %(db)s AND engine = 'MaterializedView'",
+            {"db": schema},
+        )
+        for (name,) in rows:
+            self._cmd_with_retry(
+                f"DROP TABLE IF EXISTS {schema}.{name}{ON_CLUSTER_SUFFIX}"
             )
-            for (name,) in rows:
-                self._cmd_with_retry(
-                    f"DROP TABLE IF EXISTS {schema}.{name}{ON_CLUSTER_SUFFIX}"
-                )
-        # Dictionaries live in system.dictionaries; their DROP syntax is
-        # ``DROP DICTIONARY``.
+        # 2. Views
+        rows = self._exec_rows(
+            "SELECT DISTINCT name FROM clusterAllReplicas('default', system.tables) "
+            "WHERE database = %(db)s AND engine = 'View'",
+            {"db": schema},
+        )
+        for (name,) in rows:
+            self._cmd_with_retry(
+                f"DROP TABLE IF EXISTS {schema}.{name}{ON_CLUSTER_SUFFIX}"
+            )
+        # 3. Dictionaries (DROP DICTIONARY; may reference a table)
         rows = self._exec_rows(
             "SELECT DISTINCT name FROM clusterAllReplicas('default', system.dictionaries) "
             "WHERE database = %(db)s",
@@ -437,6 +448,17 @@ class CHDatabaseAdapter(DatabaseAdapter):
         for (name,) in rows:
             self._cmd_with_retry(
                 f"DROP DICTIONARY IF EXISTS {schema}.{name}{ON_CLUSTER_SUFFIX}"
+            )
+        # 4. All remaining tables (now safe — no dependent objects left)
+        rows = self._exec_rows(
+            "SELECT DISTINCT name FROM clusterAllReplicas('default', system.tables) "
+            "WHERE database = %(db)s "
+            "AND engine NOT IN ('View', 'MaterializedView', 'Dictionary')",
+            {"db": schema},
+        )
+        for (name,) in rows:
+            self._cmd_with_retry(
+                f"DROP TABLE IF EXISTS {schema}.{name}{ON_CLUSTER_SUFFIX}"
             )
 
     def snapshot_schema_acls(self, schemas: list[str]) -> str:
@@ -709,8 +731,11 @@ class CHDatabaseAdapter(DatabaseAdapter):
                 mtime,
                 create_query,
                 as_select,
+                deps_db,
+                deps_table,
+                has_own_data,
             ) = row
-            entry = {
+            entry: dict[str, Any] = {
                 "name": name,
                 "engine": engine,
                 "engine_full": engine_full,
@@ -719,6 +744,16 @@ class CHDatabaseAdapter(DatabaseAdapter):
                 "columns": self._build_columns(db, name),
             }
             if engine == "MaterializedView":
+                # dependencies: arrays of (db, table) pairs. CH uses
+                # ``system.tables.dependencies_database`` /
+                # ``dependencies_table`` (parallel arrays). Wire them so
+                # downstream graph code can resolve MV → source table
+                # without parsing the DDL.
+                deps: list[dict[str, str]] = []
+                for dep_db, dep_tbl in zip(deps_db or [], deps_table or []):
+                    deps.append({"database": dep_db, "table": dep_tbl})
+                entry["dependencies"] = deps
+                entry["has_own_data"] = bool(has_own_data)
                 materialized_views.append(entry)
             else:
                 views.append(entry)

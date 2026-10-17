@@ -46,10 +46,11 @@ LIMIT 1
 
 # --- tables, views, materialized views ----------------------------------
 
-#: One row per user table/view/MV/distributed/etc. in the given database.
-#: ``clusterAllReplicas`` aggregates across shards (returns duplicates if
-#: the same table exists on multiple shards — deduplicated by ``SELECT
-#: DISTINCT`` on the object name).
+#: One row per user table in the given database. Excludes View,
+#: MaterializedView (handled in LIST_VIEWS) and Dictionary (handled in
+#: LIST_DICTIONARIES). ``clusterAllReplicas`` aggregates across shards
+#: (returns duplicates if the same table exists on multiple shards —
+#: deduplicated by ``SELECT DISTINCT`` on the object name).
 LIST_OBJECTS = """
 SELECT DISTINCT
     name,
@@ -66,12 +67,15 @@ SELECT DISTINCT
     storage_policy
 FROM clusterAllReplicas('default', system.tables)
 WHERE database = %(db)s
-  AND engine NOT IN ('View', 'MaterializedView')
+  AND engine NOT IN ('View', 'MaterializedView', 'Dictionary')
   AND name NOT LIKE '.inner%%'
 ORDER BY name
 """
 
 #: ClickHouse views + materialized views.
+#: ``dependencies_database``/``dependencies_table`` are non-empty for
+#: MaterializedView (lists the source table). ``has_own_data`` is 0 for
+#: views (no storage) and 1 for MVs only when they have an inner table.
 LIST_VIEWS = """
 SELECT DISTINCT
     name,
@@ -79,7 +83,10 @@ SELECT DISTINCT
     engine_full,
     metadata_modification_time,
     create_table_query,
-    as_select
+    as_select,
+    dependencies_database,
+    dependencies_table,
+    has_own_data
 FROM clusterAllReplicas('default', system.tables)
 WHERE database = %(db)s
   AND engine IN ('View', 'MaterializedView')

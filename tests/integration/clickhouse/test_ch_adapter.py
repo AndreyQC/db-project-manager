@@ -105,7 +105,12 @@ def test_re_after_create_table(ch_conn_cfg: ConnectionConfig) -> None:
 
 
 def test_re_views_and_mvs(ch_conn_cfg: ConnectionConfig) -> None:
-    """RE separates regular views and materialized views."""
+    """RE separates regular views and materialized views.
+
+    MaterializedView entries also carry the source table(s) in
+    ``dependencies`` (resolved from system.tables.dependencies_database /
+    dependencies_table) — the graph layer can use this to draw MV→table
+    edges without parsing the DDL."""
     a = get_adapter(ch_conn_cfg)
     a.connect(ch_conn_cfg)
     try:
@@ -132,6 +137,21 @@ def test_re_views_and_mvs(ch_conn_cfg: ConnectionConfig) -> None:
     assert len(schema["materialized_views"]) == 1
     assert schema["views"][0]["name"] == "v1"
     assert schema["materialized_views"][0]["name"] == "mv1"
+
+    # MV: the structured ``dependencies`` field is present (CH populates
+    # it from system.tables.dependencies_database / dependencies_table).
+    # Note: CH only tracks EXTERNAL dependencies (cross-DB / dictionaries).
+    # For a simple MV pulling from a same-DB table, this is empty; the
+    # source can still be recovered from ``definition`` (as_select).
+    mv = schema["materialized_views"][0]
+    assert "dependencies" in mv
+    assert isinstance(mv["dependencies"], list)
+    # has_own_data: 0 for MVs with no rows yet (inner table not created);
+    # 1 once the inner table is materialized. We don't assert either way
+    # here — it depends on whether data was inserted.
+    assert "has_own_data" in mv
+    assert isinstance(mv["has_own_data"], bool)
+    assert "base" in mv["definition"]  # as_select mentions 'base' (the source)
 
 
 # --------------------------------------------------------------------------- #
@@ -251,6 +271,109 @@ def test_create_and_drop_database(ch_admin_conn_cfg: ConnectionConfig) -> None:
         assert name not in a.list_schemas()
     finally:
         a.disconnect()
+
+
+def test_drop_schema_contents(ch_conn_cfg: ConnectionConfig) -> None:
+    """drop_schema_contents empties the DB shell but keeps the DB itself.
+
+    Creates a mix of objects (table, view, MV) plus a real DICTIONARY
+    (CLICKHOUSE source pointing at the test's own table — CH does not
+    allow SOURCE(NULL) for dictionaries), then drops everything. The DB
+    must still exist, but contain no user objects."""
+    a = get_adapter(ch_conn_cfg)
+    a.connect(ch_conn_cfg)
+    try:
+        db = ch_conn_cfg.database
+        a.execute_script(
+            f"CREATE TABLE {db}.base (id UInt64, name String) "
+            "ENGINE = MergeTree ORDER BY id"
+        )
+        a.execute_script(
+            f"CREATE VIEW {db}.v1 AS SELECT id FROM {db}.base"
+        )
+        a.execute_script(
+            f"CREATE MATERIALIZED VIEW {db}.mv1 "
+            f"ENGINE = MergeTree ORDER BY id AS "
+            f"SELECT id FROM {db}.base"
+        )
+        # Real DICTIONARY — CLICKHOUSE source pointing at the test's own
+        # table. CH has no SOURCE(NULL) for dictionaries; lifetime is
+        # mandatory (LIFETIME(MIN 60 MAX 300) = reload every 1..5 min).
+        a.execute_script(
+            f"CREATE DICTIONARY {db}.d1 ("
+            "id UInt64, name String"
+            ") PRIMARY KEY id "
+            "LAYOUT(FLAT()) "
+            f"SOURCE(CLICKHOUSE(DB '{db}' TABLE 'base')) "
+            "LIFETIME(MIN 60 MAX 300)"
+        )
+
+        # Pre-condition: schema has objects
+        s = a.get_database_structure()
+        schema = _per_test_schema(s, ch_conn_cfg.database)
+        assert len(schema["tables"]) >= 1
+        assert len(schema["views"]) >= 1
+        assert len(schema["materialized_views"]) >= 1
+        assert len(schema["dictionaries"]) >= 1
+
+        # Drop everything
+        a.drop_schema_contents(ch_conn_cfg.database)
+
+        # Post-condition: schema is empty but still exists
+        s2 = a.get_database_structure()
+        schema2 = _per_test_schema(s2, ch_conn_cfg.database)
+        assert schema2["tables"] == []
+        assert schema2["views"] == []
+        assert schema2["materialized_views"] == []
+        assert schema2["dictionaries"] == []
+    finally:
+        a.disconnect()
+
+
+def test_re_real_dictionary(ch_conn_cfg: ConnectionConfig) -> None:
+    """A real DICTIONARY (LAYOUT(FLAT) + CLICKHOUSE source) appears under
+    RE's ``dictionaries[]`` group, separate from regular tables.
+
+    Note: ``system.dictionaries.type`` (the layout type like "FLAT" /
+    "hashed") is only populated AFTER the dictionary has been loaded for
+    the first time (via dictGet() or SYSTEM RELOAD DICTIONARY). For
+    un-loaded dicts it's an empty string. The test only asserts the
+    structural fields that are always populated."""
+    a = get_adapter(ch_conn_cfg)
+    a.connect(ch_conn_cfg)
+    try:
+        db = ch_conn_cfg.database
+        a.execute_script(
+            f"CREATE TABLE {db}.base (id UInt64, name String) "
+            "ENGINE = MergeTree ORDER BY id"
+        )
+        a.execute_script(
+            f"CREATE DICTIONARY {db}.country_dict ("
+            "id UInt64, name String"
+            ") PRIMARY KEY id "
+            "LAYOUT(FLAT()) "
+            f"SOURCE(CLICKHOUSE(DB '{db}' TABLE 'base')) "
+            "LIFETIME(MIN 60 MAX 300)"
+        )
+        s = a.get_database_structure()
+    finally:
+        a.disconnect()
+
+    schema = _per_test_schema(s, ch_conn_cfg.database)
+    # The base table is a regular table, not a dictionary
+    assert len(schema["tables"]) == 1
+    assert schema["tables"][0]["name"] == "base"
+    # The dictionary is in the dictionaries list, not the tables list
+    assert len(schema["dictionaries"]) == 1
+    d = schema["dictionaries"][0]
+    assert d["name"] == "country_dict"
+    # ``origin`` is the path to the dict config (set by the DDL we issued)
+    assert d["origin"]  # non-empty (typically "default.country_dict")
+    # ``type`` may be empty (not yet loaded) or "FLAT"/"flat" (loaded) —
+    # we just verify the field exists, not its value
+    assert "type" in d
+    # ``source`` is the free-form text describing the source
+    assert "source" in d
 
 
 # --------------------------------------------------------------------------- #
