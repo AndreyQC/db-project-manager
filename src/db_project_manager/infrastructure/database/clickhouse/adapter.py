@@ -260,27 +260,70 @@ class CHDatabaseAdapter(DatabaseAdapter):
         ]
 
     # ------------------------------------------------------------------ #
-    # Phase 10 — CD Foundation (__deploy journal) — not applicable to CH
+    # Phase 10 — CD Foundation (__deploy journal)
+    #
+    # Unlike PG, the CH deploy journal lives in a separate ``__deploy``
+    # database (not per-target). Every row carries a ``target_db``
+    # discriminator. All writes use ON CLUSTER default so the journal is
+    # available on every replica.
     # ------------------------------------------------------------------ #
 
     def get_schema_version(self, schema_name: str) -> str | None:
-        raise NotSupportedError(
-            "ClickHouse deploy journal lives in a separate database "
-            "(not a per-schema table); planned in Phase 3."
-        )
+        """Latest calver version applied to ``schema_name`` (target DB) or None."""
+        self._require_connection()
+        self._validate_identifier(schema_name)
+        try:
+            rows = self._exec_rows(
+                q.GET_SCHEMA_VERSION, {"schema": schema_name}
+            )
+        except Exception as e:
+            raise DatabaseError(f"Не удалось прочитать schema_version: {e}") from e
+        if not rows:
+            return None
+        return str(rows[0][0])
 
     def record_schema_version(
         self, schema_name: str, version: str, source: str
     ) -> None:
-        raise NotSupportedError(
-            "ClickHouse deploy journal lives in a separate database; "
-            "planned in Phase 3."
+        """Append a row to ``__deploy.schema_version`` (append-only)."""
+        self._require_connection()
+        self._validate_identifier(schema_name)
+        self._cmd_with_retry_params(
+            q.INSERT_SCHEMA_VERSION,
+            {"schema": schema_name, "version": version, "source": source},
         )
 
     def get_script_history(
         self, schema_name: str, script_name: str, script_type: str
     ) -> ScriptRecord | None:
-        raise NotSupportedError("ClickHouse deploy journal: planned in Phase 3.")
+        """State row for ``(schema_name, script_name, script_type)`` or None."""
+        self._require_connection()
+        self._validate_identifier(schema_name)
+        try:
+            rows = self._exec_rows(
+                q.GET_SCRIPT_HISTORY,
+                {
+                    "schema": schema_name,
+                    "script_name": script_name,
+                    "script_type": script_type,
+                },
+            )
+        except Exception as e:
+            raise DatabaseError(
+                f"Не удалось прочитать script_history: {e}"
+            ) from e
+        if not rows:
+            return None
+        (sn, st, checksum, success, err, dur, executed_at) = rows[0]
+        return ScriptRecord(
+            script_name=sn,
+            script_type=st,
+            checksum=checksum,
+            success=bool(success),
+            executed_at=executed_at,
+            error_message=err or None,
+            duration_ms=int(dur or 0),
+        )
 
     def record_script_execution(
         self,
@@ -289,7 +332,46 @@ class CHDatabaseAdapter(DatabaseAdapter):
         deploy_version: str,
         deploy_source: str,
     ) -> None:
-        raise NotSupportedError("ClickHouse deploy journal: planned in Phase 3.")
+        """Atomic state UPSERT + audit INSERT in one txn.
+
+        CH has no multi-statement txn in the PG sense, but ReplacingMergeTree
+        guarantees the latest row wins on read (with ``FINAL``). We issue
+        the UPSERT and the audit row in sequence; the latter is idempotent
+        (append-only), the former collapses to the latest via FINAL."""
+        self._require_connection()
+        self._validate_identifier(schema_name)
+        common = {
+            "schema": schema_name,
+            "script_name": record.script_name,
+            "script_type": record.script_type,
+            "checksum": record.checksum,
+            "success": 1 if record.success else 0,
+            "error_message": record.error_message or "",
+            "duration_ms": int(record.duration_ms or 0),
+            "deploy_version": deploy_version or "",
+            "deploy_source": deploy_source or "",
+        }
+        self._cmd_with_retry_params(q.UPSERT_SCRIPT_HISTORY, common)
+        self._cmd_with_retry_params(q.INSERT_SCRIPT_AUDIT, common)
+
+    @staticmethod
+    def _render_named(template: str, **params: Any) -> str:
+        """Expand a query with ``%(name)s``-style named parameters into a
+        fully-bound SQL string. Kept for callers that need raw SQL (e.g.
+        chained string operations); prefer ``_cmd_with_retry_params`` for
+        normal parameter binding — it uses the driver's parameter binding
+        and is injection-safe.
+
+        Values are single-quoted; strings are escaped by doubling quotes.
+        """
+        out = template
+        for key, val in params.items():
+            if isinstance(val, str):
+                esc = val.replace("'", "''")
+                out = out.replace(f"%({key})s", f"'{esc}'")
+            else:
+                out = out.replace(f"%({key})s", str(val))
+        return out
 
     # ------------------------------------------------------------------ #
     # Phase 18 — deploy reset (basic implementations for now)
@@ -538,6 +620,31 @@ class CHDatabaseAdapter(DatabaseAdapter):
                 )
                 time.sleep(_CLUSTER_RETRY_PAUSE_S)
         # unreachable
+        raise DatabaseError(f"CH command failed after retries: {last}")
+
+    def _cmd_with_retry_params(
+        self, sql: str, params: dict[str, Any]
+    ) -> None:
+        """Same as ``_cmd_with_retry`` but with clickhouse_connect-style
+        ``%(name)s`` named parameters (avoids SQL-injection on values)."""
+        import time
+
+        last: Exception | None = None
+        for attempt in range(_CLUSTER_RETRY_ATTEMPTS):
+            try:
+                self._client.command(sql, parameters=params)
+                return
+            except Exception as e:
+                last = e
+                if "UNKNOWN_DATABASE" not in str(e) or attempt == _CLUSTER_RETRY_ATTEMPTS - 1:
+                    raise DatabaseError(
+                        f"CH command failed: {e}\nSQL: {sql[:200]}"
+                    ) from e
+                logger.debug(
+                    f"Cluster desync on param cmd attempt {attempt + 1}/"
+                    f"{_CLUSTER_RETRY_ATTEMPTS}, retrying"
+                )
+                time.sleep(_CLUSTER_RETRY_PAUSE_S)
         raise DatabaseError(f"CH command failed after retries: {last}")
 
     def _build_schema(self, db: str) -> dict[str, Any]:
