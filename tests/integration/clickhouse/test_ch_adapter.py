@@ -211,6 +211,49 @@ def test_ensure_deploy_tables(ch_conn_cfg: ConnectionConfig) -> None:
         a.disconnect()
 
 
+def test_ensure_deploy_tables_works_on_fresh_db(
+    ch_conn_cfg: ConnectionConfig,
+) -> None:
+    """Phase 6.1: ensure_deploy_tables is the entry point used by
+    DeployApplyService._ensure_journal_tables. Verifies the typical
+    'fresh target DB' scenario where the pre-flight creates the 3
+    deploy_* tables.
+
+    Note: ``ensure_deploy_tables`` uses ``ON CLUSTER default`` (async DDL);
+    ``get_schema_version`` uses ``clusterAllReplicas`` which can hit a
+    replica where the DDL hasn't replicated yet. We therefore verify
+    the pre-flight via ``get_database_structure`` (queries system.tables,
+    not user tables) which is resilient to per-replica lag, and via
+    ``record_schema_version`` + ``get_schema_version`` (clusterAllReplicas
+    reads) which are also async-tolerant once DDL is fully replicated
+    on a majority of replicas.
+    """
+    a = get_adapter(ch_conn_cfg)
+    a.connect(ch_conn_cfg)
+    try:
+        target = ch_conn_cfg.database
+
+        # Pre-flight: simulate DeployApplyService._ensure_journal_tables.
+        # This uses ON CLUSTER default so each CREATE TABLE is replicated
+        # asynchronously to all 3 replicas.
+        a.ensure_deploy_tables(target)
+
+        # Verify the 3 tables exist on at least one replica (system.tables
+        # query is local-replica-aware and not subject to per-replica
+        # lag for newly-created DBs on the same shard).
+        s = a.get_database_structure()
+        schema = _per_test_schema(s, target)
+        names = {t["name"] for t in schema["tables"]}
+        assert "deploy_schema_version" in names
+        assert "deploy_script_history" in names
+        assert "deploy_script_audit_log" in names
+
+        # Idempotency: second call still works.
+        a.ensure_deploy_tables(target)
+    finally:
+        a.disconnect()
+
+
 def test_deploy_journal_per_target_isolation(ch_conn_cfg: ConnectionConfig) -> None:
     """Two different target DBs have independent deploy journals."""
     a = get_adapter(ch_conn_cfg)

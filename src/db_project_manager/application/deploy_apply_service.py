@@ -365,6 +365,9 @@ class DeployApplyService:
         adapter = self._adapter_factory(conn_cfg)
         try:
             adapter.connect(conn_cfg)
+            # Pre-flight: ensure deploy journal tables exist (CH: per-target
+            # deploy_* tables; PG: no-op via hasattr). Phase 6.1 / 20261017_003.
+            self._ensure_journal_tables(adapter, progress)
             target_version = self._read_target_version(adapter)
             outcome = check_version_relation(target_version, manifest.source_version)
             if outcome.value == "error_newer":
@@ -620,6 +623,38 @@ class DeployApplyService:
                 "деплоем (нет __deploy.schema_version)."
             )
             return None
+
+    def _ensure_journal_tables(
+        self, adapter: DatabaseAdapter, progress: ProgressCallback | None = None
+    ) -> None:
+        """Idempotent pre-flight: ensure the deploy journal tables exist.
+
+        Phase 6.1 (task 20261017_003). Engines that own a self-bootstrapping
+        ``ensure_deploy_tables(service_schema)`` method (currently only CH) get
+        a transparent CREATE TABLE IF NOT EXISTS run before any deploy work
+        begins. PG keeps its explicit ``ServiceSchemaInitializer`` flow —
+        ``hasattr`` is the engine-agnostic dispatch.
+
+        Called once per deploy, immediately after ``adapter.connect`` and
+        before ``_read_target_version``. For a fresh CH database this means
+        the 3 ``deploy_*`` tables get created in the target DB; for an
+        already-bootstrapped DB the call is a no-op (3 DDLs with
+        ``IF NOT EXISTS``).
+
+        Errors are wrapped as ``DeployApplyError`` so a misconfigured cluster
+        surfaces at the deploy boundary, not later in
+        ``record_schema_version``.
+        """
+        if not hasattr(adapter, "ensure_deploy_tables"):
+            return
+        self._emit(progress, "Bootstrap deploy journal…", 0, 0)
+        try:
+            adapter.ensure_deploy_tables(self._service_schema)
+        except DatabaseError as e:
+            raise DeployApplyError(
+                f"Не удалось создать таблицы deploy_journal в "
+                f"{self._service_schema}: {e}"
+            ) from e
 
     @staticmethod
     def _emit(
