@@ -213,74 +213,70 @@ SHOW_CURRENT_GRANTS = "SHOW GRANTS"
 
 # --- deploy journal (Phase 10) -----------------------------------------
 #
-# The CH deploy journal lives in a dedicated ``__deploy`` database (not
-# per-target like PG), so each row carries a ``target_db`` discriminator.
-# Tables: ``schema_version`` (append-only), ``script_history`` (one row
-# per (target_db, script_name, script_type) via ReplacingMergeTree),
-# ``script_audit_log`` (append-only).
+# The CH deploy journal lives **per target database** (mirroring the PG
+# design where ``__deploy`` is a schema inside each target DB). Since CH
+# has no schemas, the journal tables live directly in the target DB
+# with a ``deploy_`` prefix on the name to keep the namespace visible.
+# Tables: ``deploy_schema_version`` (append-only), ``deploy_script_history``
+# (one row per (script_name, script_type) via ReplacingMergeTree),
+# ``deploy_script_audit_log`` (append-only).
 #
 # Naming convention: parameters use the PG names (``schema``, ``source``,
-# ``script_name``...) so the call sites are uniform; ``schema`` here means
-# the **target database** (CH has no per-target __deploy).
+# ``script_name``...) so the call sites are uniform; ``schema`` here
+# means the **target database** name.
 
 #: Latest calver version applied to a target database (or None).
 #: Reads via ``clusterAllReplicas`` so the result is correct regardless
-#: of which shard the connection lands on. ``LIMIT 1 BY target_db`` is
-#: a CH idiom for the "latest row per group" pattern.
+#: of which shard the connection lands on. ``FINAL`` is not needed
+#: because deploy_schema_version is plain MergeTree (append-only).
 GET_SCHEMA_VERSION = """
 SELECT version
-FROM (
-    SELECT
-        target_db, version, applied_at, id,
-        row_number() OVER (PARTITION BY target_db ORDER BY applied_at DESC, id DESC) AS rn
-    FROM clusterAllReplicas('default', __deploy.schema_version)
-    WHERE target_db = %(schema)s
-)
-WHERE rn = 1
+FROM clusterAllReplicas('default', {schema}.deploy_schema_version)
+ORDER BY applied_at DESC, id DESC
 LIMIT 1
 """
 
 #: Append a new version row for a target database.
 INSERT_SCHEMA_VERSION = """
-INSERT INTO __deploy.schema_version
-    (target_db, version, source)
+INSERT INTO {schema}.deploy_schema_version
+    (version, source)
 VALUES
-    (%(schema)s, %(version)s, %(source)s)
+    (%(version)s, %(source)s)
 """
 
-#: State lookup for a single (target_db, script_name, script_type) row.
-#: ``FINAL`` collapses ReplacingMergeTree duplicates to the latest version.
-#: ``clusterAllReplicas`` ensures we see the write regardless of shard.
+#: State lookup for a single (script_name, script_type) row in a
+#: target database. ``FINAL`` collapses ReplacingMergeTree duplicates
+#: to the latest version. ``clusterAllReplicas`` ensures we see the
+#: write regardless of which shard the connection lands on.
 GET_SCRIPT_HISTORY = """
 SELECT
     script_name, script_type, checksum, success,
     error_message, duration_ms, executed_at
-FROM clusterAllReplicas('default', __deploy.script_history) FINAL
-WHERE target_db = %(schema)s
-  AND script_name = %(script_name)s
+FROM clusterAllReplicas('default', {schema}.deploy_script_history) FINAL
+WHERE script_name = %(script_name)s
   AND script_type = %(script_type)s
 LIMIT 1
 """
 
-#: UPSERT: Replace any existing row for the (target, script) tuple and
-#: append an audit row. ``INSERT`` into a ReplacingMergeTree creates a
-#: new versioned row; on read FINAL collapses to the latest.
+#: UPSERT: Insert a new versioned row into ReplacingMergeTree; on read
+#: FINAL collapses to the latest. Replaces any existing row for the
+#: same (script_name, script_type) tuple.
 UPSERT_SCRIPT_HISTORY = """
-INSERT INTO __deploy.script_history
-    (target_db, script_name, script_type, checksum, success,
+INSERT INTO {schema}.deploy_script_history
+    (script_name, script_type, checksum, success,
      executed_at, error_message, duration_ms)
 VALUES
-    (%(schema)s, %(script_name)s, %(script_type)s, %(checksum)s,
+    (%(script_name)s, %(script_type)s, %(checksum)s,
      %(success)s, now64(9), %(error_message)s, %(duration_ms)s)
 """
 
 #: Append an audit row (always, regardless of state UPSERT).
 INSERT_SCRIPT_AUDIT = """
-INSERT INTO __deploy.script_audit_log
-    (target_db, script_name, script_type, checksum, success,
+INSERT INTO {schema}.deploy_script_audit_log
+    (script_name, script_type, checksum, success,
      error_message, duration_ms, deploy_version, deploy_source)
 VALUES
-    (%(schema)s, %(script_name)s, %(script_type)s, %(checksum)s,
+    (%(script_name)s, %(script_type)s, %(checksum)s,
      %(success)s, %(error_message)s, %(duration_ms)s,
      %(deploy_version)s, %(deploy_source)s)
 """

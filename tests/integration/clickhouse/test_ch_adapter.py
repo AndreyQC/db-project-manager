@@ -190,12 +190,83 @@ def test_get_table_presence_stats_does_not_crash(ch_conn_cfg: ConnectionConfig) 
 # Phase 10: deploy journal
 # --------------------------------------------------------------------------- #
 
-def test_deploy_journal_roundtrip(ch_conn_cfg: ConnectionConfig) -> None:
-    """Schema version + script history UPSERT round-trip end-to-end."""
+def test_ensure_deploy_tables(ch_conn_cfg: ConnectionConfig) -> None:
+    """ensure_deploy_tables creates 3 tables in the target DB; idempotent."""
     a = get_adapter(ch_conn_cfg)
     a.connect(ch_conn_cfg)
     try:
         target = ch_conn_cfg.database
+        # First call: should create all 3 tables
+        a.ensure_deploy_tables(target)
+        # Verify
+        s = a.get_database_structure()
+        schema = _per_test_schema(s, target)
+        names = {t["name"] for t in schema["tables"]}
+        assert "deploy_schema_version" in names
+        assert "deploy_script_history" in names
+        assert "deploy_script_audit_log" in names
+        # Idempotent: second call is a no-op (no error)
+        a.ensure_deploy_tables(target)
+    finally:
+        a.disconnect()
+
+
+def test_deploy_journal_per_target_isolation(ch_conn_cfg: ConnectionConfig) -> None:
+    """Two different target DBs have independent deploy journals."""
+    a = get_adapter(ch_conn_cfg)
+    a.connect(ch_conn_cfg)
+    try:
+        target_a = ch_conn_cfg.database
+        # Create a second target DB via the admin connection
+        from db_project_manager.domain.connection import ConnectionConfig as CC
+        target_b = f"ch_jb_{target_a[-12:]}"
+
+        admin_cfg = CC(
+            host=ch_conn_cfg.host, port=ch_conn_cfg.port,
+            database="default", username=ch_conn_cfg.username,
+            password=ch_conn_cfg.password, type="clickhouse",
+        )
+        a2 = get_adapter(admin_cfg)
+        a2.connect(admin_cfg)
+        try:
+            a2.create_database(target_b)
+        finally:
+            a2.disconnect()
+
+        # Bootstrap both
+        a.ensure_deploy_tables(target_a)
+        a.ensure_deploy_tables(target_b)
+
+        # Different versions in each — must not leak
+        a.record_schema_version(target_a, "2026.10.17.a", "manual")
+        a.record_schema_version(target_b, "2026.10.17.b", "manual")
+
+        assert a.get_schema_version(target_a) == "2026.10.17.a"
+        assert a.get_schema_version(target_b) == "2026.10.17.b"
+
+        # Cleanup target_b
+        a2 = get_adapter(admin_cfg)
+        a2.connect(admin_cfg)
+        try:
+            a2.drop_database(target_b)
+        finally:
+            a2.disconnect()
+    finally:
+        a.disconnect()
+
+
+def test_deploy_journal_roundtrip(ch_conn_cfg: ConnectionConfig) -> None:
+    """Schema version + script history UPSERT round-trip end-to-end.
+
+    Per-target tables: bootstrap with ``ensure_deploy_tables`` before any
+    record_*/get_* call (the tables don't exist on a fresh DB)."""
+    a = get_adapter(ch_conn_cfg)
+    a.connect(ch_conn_cfg)
+    try:
+        target = ch_conn_cfg.database
+
+        # Bootstrap the per-target journal tables
+        a.ensure_deploy_tables(target)
 
         # Initial: no version
         assert a.get_schema_version(target) is None

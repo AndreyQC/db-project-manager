@@ -265,21 +265,47 @@ class CHDatabaseAdapter(DatabaseAdapter):
         ]
 
     # ------------------------------------------------------------------ #
-    # Phase 10 — CD Foundation (__deploy journal)
+    # Phase 10 — CD Foundation (deploy journal, per-target)
     #
-    # Unlike PG, the CH deploy journal lives in a separate ``__deploy``
-    # database (not per-target). Every row carries a ``target_db``
-    # discriminator. All writes use ON CLUSTER default so the journal is
+    # The CH deploy journal mirrors the PG design: each target database
+    # owns its own 3-tables (``deploy_schema_version``,
+    # ``deploy_script_history``, ``deploy_script_audit_log``). CH has no
+    # schemas, so the journal is in the target DB itself with a
+    # ``deploy_`` prefix to keep the namespace visible. There is no
+    # ``target_db`` discriminator column — the database itself is the
+    # scope. All writes use ON CLUSTER default so the journal is
     # available on every replica.
     # ------------------------------------------------------------------ #
 
+    def ensure_deploy_tables(self, target_db: str) -> None:
+        """Idempotent bootstrap of the 3 deploy_journal tables in ``target_db``.
+
+        Called by deploy apply pre-flight (and by ``ServiceSchemaInitializer``
+        for explicit user-initiated bootstrap). Safe to call repeatedly:
+        every DDL is ``CREATE TABLE IF NOT EXISTS … ON CLUSTER default``."""
+        self._require_connection()
+        self._validate_identifier(target_db)
+        from db_project_manager.infrastructure.database.clickhouse.canonical_ddl import (
+            canonical_deploy_ddl,
+        )
+        ddl_by_table = canonical_deploy_ddl(target_db)
+        for _name, ddl in ddl_by_table.items():
+            self._cmd_with_retry(ddl)
+
     def get_schema_version(self, schema_name: str) -> str | None:
-        """Latest calver version applied to ``schema_name`` (target DB) or None."""
+        """Latest calver version applied to ``schema_name`` (target DB) or None.
+
+        Reads from ``{schema_name}.deploy_schema_version`` — the per-target
+        table created by :meth:`ensure_deploy_tables`. Returns ``None``
+        when the table is empty (or hasn't been created yet — the deploy
+        apply path treats that as "first deploy").
+        """
         self._require_connection()
         self._validate_identifier(schema_name)
         try:
             rows = self._exec_rows(
-                q.GET_SCHEMA_VERSION, {"schema": schema_name}
+                q.GET_SCHEMA_VERSION.format(schema=schema_name),
+                {},
             )
         except Exception as e:
             raise DatabaseError(f"Не удалось прочитать schema_version: {e}") from e
@@ -290,28 +316,28 @@ class CHDatabaseAdapter(DatabaseAdapter):
     def record_schema_version(
         self, schema_name: str, version: str, source: str
     ) -> None:
-        """Append a row to ``__deploy.schema_version`` (append-only)."""
+        """Append a row to ``{schema_name}.deploy_schema_version`` (append-only)."""
         self._require_connection()
         self._validate_identifier(schema_name)
         self._cmd_with_retry_params(
-            q.INSERT_SCHEMA_VERSION,
-            {"schema": schema_name, "version": version, "source": source},
+            q.INSERT_SCHEMA_VERSION.format(schema=schema_name),
+            {"version": version, "source": source},
         )
 
     def get_script_history(
         self, schema_name: str, script_name: str, script_type: str
     ) -> ScriptRecord | None:
-        """State row for ``(schema_name, script_name, script_type)`` or None."""
+        """State row for ``(schema_name, script_name, script_type)`` or None.
+
+        Reads from ``{schema_name}.deploy_script_history FINAL`` so
+        ReplacingMergeTree collapses to the latest version of the row.
+        """
         self._require_connection()
         self._validate_identifier(schema_name)
         try:
             rows = self._exec_rows(
-                q.GET_SCRIPT_HISTORY,
-                {
-                    "schema": schema_name,
-                    "script_name": script_name,
-                    "script_type": script_type,
-                },
+                q.GET_SCRIPT_HISTORY.format(schema=schema_name),
+                {"script_name": script_name, "script_type": script_type},
             )
         except Exception as e:
             raise DatabaseError(
@@ -342,11 +368,11 @@ class CHDatabaseAdapter(DatabaseAdapter):
         CH has no multi-statement txn in the PG sense, but ReplacingMergeTree
         guarantees the latest row wins on read (with ``FINAL``). We issue
         the UPSERT and the audit row in sequence; the latter is idempotent
-        (append-only), the former collapses to the latest via FINAL."""
+        (append-only), the former collapses to the latest via FINAL.
+        Both go to the per-target tables in ``schema_name``."""
         self._require_connection()
         self._validate_identifier(schema_name)
         common = {
-            "schema": schema_name,
             "script_name": record.script_name,
             "script_type": record.script_type,
             "checksum": record.checksum,
@@ -356,8 +382,29 @@ class CHDatabaseAdapter(DatabaseAdapter):
             "deploy_version": deploy_version or "",
             "deploy_source": deploy_source or "",
         }
-        self._cmd_with_retry_params(q.UPSERT_SCRIPT_HISTORY, common)
-        self._cmd_with_retry_params(q.INSERT_SCRIPT_AUDIT, common)
+        self._cmd_with_retry_params(
+            q.UPSERT_SCRIPT_HISTORY.format(schema=schema_name), common
+        )
+        self._cmd_with_retry_params(
+            q.INSERT_SCRIPT_AUDIT.format(schema=schema_name), common
+        )
+
+    # ------------------------------------------------------------------ #
+    # Per-engine canonical DDL (used by ServiceSchemaInitializer)
+    # ------------------------------------------------------------------ #
+
+    def canonical_deploy_ddl(self, schema_name: str) -> dict[str, str]:
+        """Return per-target CH DDL for the 3 deploy journal tables.
+
+        Mirrors the PG ``canonical_deploy_ddl`` signature: returns a dict
+        ``{table_name: ddl_string}`` ready to be executed via
+        ``adapter.execute_script``. ``schema_name`` is the target database
+        name (already validated by the caller).
+        """
+        from db_project_manager.infrastructure.database.clickhouse.canonical_ddl import (
+            canonical_deploy_ddl,
+        )
+        return canonical_deploy_ddl(schema_name)
 
     @staticmethod
     def _render_named(template: str, **params: Any) -> str:

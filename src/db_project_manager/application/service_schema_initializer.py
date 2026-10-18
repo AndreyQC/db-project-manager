@@ -93,7 +93,8 @@ class ServiceSchemaInitializer:
     produce — no separate code path.
     """
 
-    _REQUIRED_TABLES: tuple[str, ...] = (
+    #: PG default tables (used when the adapter doesn't supply its own).
+    _PG_REQUIRED_TABLES: tuple[str, ...] = (
         "schema_version",
         "script_history",
         "script_audit_log",
@@ -138,29 +139,36 @@ class ServiceSchemaInitializer:
             self._emit(progress, "Чтение структуры БД…", 1, 3)
             structure = adapter.get_database_structure()
             schemas = structure.get("schemas") or []
-            schema_names = {s.get("name") for s in schemas if s.get("name")}
-            schema_present = self._service_schema in schema_names
 
-            tables_present: list[str] = []
-            tables_missing: list[str] = []
-            if schema_present:
-                for s in schemas:
-                    if s.get("name") != self._service_schema:
-                        continue
-                    existing = {t.get("name") for t in (s.get("tables") or [])}
-                    for tbl in self._REQUIRED_TABLES:
-                        if tbl in existing:
-                            tables_present.append(tbl)
-                        else:
-                            tables_missing.append(tbl)
+            # Per-engine dispatch:
+            #
+            # * PG/GP: ``service_schema`` is a real schema. We look for it
+            #   in the structure's schema list and check for the canonical
+            #   3 tables inside.
+            # * CH: ``service_schema`` is the *target database* (CH has no
+            #   schema concept; the journal lives in the target DB itself
+            #   with a ``deploy_`` prefix on table names). We look for the
+            #   connected target DB in the structure and check for the
+            #   adapter-specific 3 tables inside. The schema "creation"
+            #   step is a no-op (we connected to the target DB).
+            is_ch = conn_cfg.is_clickhouse
+            schema_present, tables_present, tables_missing = (
+                self._inspect_structure(schemas, is_ch)
+            )
+            # DDL source: per-engine when the adapter provides it (CH),
+            # otherwise the PG Jinja templates.
+            if hasattr(adapter, "canonical_deploy_ddl"):
+                ddl_by_table = adapter.canonical_deploy_ddl(self._service_schema)
+                required_tables = tuple(ddl_by_table.keys())
             else:
-                tables_missing = list(self._REQUIRED_TABLES)
+                ddl_by_table = canonical_deploy_ddl(self._service_schema)
+                required_tables = self._PG_REQUIRED_TABLES
 
             if schema_present and not tables_missing:
                 self._emit(
                     progress,
-                    f"Схема {self._service_schema} + 3 таблицы уже существуют — "
-                    "идемпотентный no-op.",
+                    f"{self._service_schema} (CH) / schema {self._service_schema} (PG) "
+                    f"+ таблицы уже существуют — идемпотентный no-op.",
                     3, 3,
                 )
                 version = self._read_schema_version(adapter)
@@ -176,14 +184,19 @@ class ServiceSchemaInitializer:
 
             self._emit(
                 progress,
-                f"Bootstrap {self._service_schema}: schema={'нет' if not schema_present else 'ok'}, "
+                f"Bootstrap {self._service_schema}: "
+                f"target_db={'есть' if schema_present else 'нет'}, "
                 f"отсутствуют таблицы: {tables_missing or '[]'}",
                 2, 3,
             )
             created_schema = False
             created_tables: list[str] = []
 
-            if not schema_present:
+            # CH: no CREATE DATABASE / CREATE SCHEMA — the connected
+            # database IS the target. The DDLs themselves include
+            # ``ON CLUSTER default`` and ``IF NOT EXISTS``, so we can run
+            # them directly. PG: continue to emit ``CREATE SCHEMA`` first.
+            if not schema_present and not is_ch:
                 self._emit(
                     progress, f"CREATE SCHEMA \"{self._service_schema}\"…", 2, 3
                 )
@@ -197,8 +210,7 @@ class ServiceSchemaInitializer:
                     ) from e
                 created_schema = True
 
-            ddl_by_table = canonical_deploy_ddl(self._service_schema)
-            for table_name in self._REQUIRED_TABLES:
+            for table_name in required_tables:
                 if schema_present and table_name in tables_present:
                     continue
                 self._emit(
@@ -207,21 +219,27 @@ class ServiceSchemaInitializer:
                     3, 3,
                 )
                 try:
-                    adapter.execute_script(
-                        _wrap_with_if_not_exists(ddl_by_table[table_name])
+                    # CH DDLs already include IF NOT EXISTS + ON CLUSTER.
+                    # PG DDLs are wrapped here.
+                    ddl = (
+                        ddl_by_table[table_name]
+                        if is_ch
+                        else _wrap_with_if_not_exists(ddl_by_table[table_name])
                     )
+                    adapter.execute_script(ddl)
                 except DatabaseError as e:
                     raise ServiceSchemaInitializerError(
                         f"Не удалось создать таблицу {self._service_schema}."
                         f"{table_name}: {e}"
                     ) from e
                 created_tables.append(table_name)
+                tables_present.append(table_name)
 
             version = self._read_schema_version(adapter)
             return ServiceSchemaInitializerResult(
                 service_schema=self._service_schema,
                 schema_present=True,
-                tables_present=list(self._REQUIRED_TABLES),
+                tables_present=tables_present,
                 tables_missing=[],
                 created_schema=created_schema,
                 created_tables=created_tables,
@@ -242,6 +260,46 @@ class ServiceSchemaInitializer:
                 f"Не удалось прочитать schema_version после bootstrap: {e}"
             )
             return None
+
+    def _inspect_structure(
+        self, schemas: list[dict], is_ch: bool
+    ) -> tuple[bool, list[str], list[str]]:
+        """Compute (present, tables_present, tables_missing) for the
+        service_schema / target DB.
+
+        For PG, ``service_schema`` is a real schema. For CH, the
+        service_schema is the *target database* name; if it's missing
+        from the structure we report it as not-present and let the
+        caller decide (the CH deploy path always connects to a target
+        DB that already exists, so this is a guard against typos)."""
+        schema_names = {s.get("name") for s in schemas if s.get("name")}
+        schema_present = self._service_schema in schema_names
+
+        # Required table names: PG uses the canonical trio; CH uses
+        # whatever the adapter's canonical_deploy_ddl provides. We don't
+        # have the adapter here, so for CH we use the well-known
+        # ``deploy_*`` names.
+        required = (
+            ("deploy_schema_version", "deploy_script_history", "deploy_script_audit_log")
+            if is_ch
+            else self._PG_REQUIRED_TABLES
+        )
+
+        tables_present: list[str] = []
+        tables_missing: list[str] = []
+        if schema_present:
+            for s in schemas:
+                if s.get("name") != self._service_schema:
+                    continue
+                existing = {t.get("name") for t in (s.get("tables") or [])}
+                for tbl in required:
+                    if tbl in existing:
+                        tables_present.append(tbl)
+                    else:
+                        tables_missing.append(tbl)
+        else:
+            tables_missing = list(required)
+        return schema_present, tables_present, tables_missing
 
     @staticmethod
     def _emit(
