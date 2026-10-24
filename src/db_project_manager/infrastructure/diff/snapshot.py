@@ -37,6 +37,10 @@ DIFFED_TYPES = frozenset({
     "schema",
     "table", "view", "materialized_view",
     "function", "procedure", "sequence",
+    # 20261024_001: autonomous indexes participate in the delta too — without
+    # this, deploy apply (delta path) never creates them; deploy validate
+    # (graph path) always did.
+    "index",
 })
 
 #: Edge relations that participate in the edge diff (Phase 14). All relations are

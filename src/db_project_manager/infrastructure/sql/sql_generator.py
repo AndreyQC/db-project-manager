@@ -250,14 +250,14 @@ class SQLGenerator:
 
     def _generate_schema(self, schema_info: dict[str, Any], output_path: Path, object_catalog: str | None) -> None:
         schema_name = schema_info["name"]
-        has_objects = any(schema_info.get(kind) for kind in self._OBJECT_KINDS)
-        if not has_objects:
-            return
-
         schema_dir = output_path / schema_name
         schema_dir.mkdir(parents=True, exist_ok=True)
 
         # Schema creation script (skip 'public' which exists by default).
+        # Empty schemas are rendered too — a schema that exists in the DB is an
+        # object; skipping it makes RE output non-resumable for delta deploys
+        # (a partially-deployed target re-plans CREATE SCHEMA → DuplicateSchema,
+        # found live 2026-10-24 on qr_apply_*).
         if schema_name != "public":
             self._render_one(
                 "schema.sql.j2",
