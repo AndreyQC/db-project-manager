@@ -27,7 +27,7 @@ dependencies = [
 [project.scripts]
 db-pm = "db_project_manager.presentation.cli.main:app"
 db-pm-gui = "db_project_manager.presentation.gui.main:main"
-db-pm-mcp = "db_project_manager.presentation.mcp.main:main"
+db-pm-mcp = "db_project_manager.presentation.mcp.main:app"
 
 [project.optional-dependencies]
 # Phase 19: local MCP server (stdio). Install with: uv sync --extra mcp
