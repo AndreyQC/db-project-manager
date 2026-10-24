@@ -136,6 +136,7 @@ OBJECT_TYPE_KEYS: dict[str, str] = {
     "view": "views",
     "materialized_view": "materialized_views",
     "sequence": "sequences",
+    "index": "indexes",
     "function": "functions",
     "procedure": "procedures",
     "dictionary": "dictionaries",

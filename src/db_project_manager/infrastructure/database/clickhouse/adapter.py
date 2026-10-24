@@ -129,7 +129,7 @@ class CHDatabaseAdapter(DatabaseAdapter):
 
             {
               "schemas": [
-                {"name", "comment", "tables", "views",
+                {"name", "comment", "tables", "indexes", "views",
                  "materialized_views", "dictionaries", "functions",
                  "table_functions"},
                 ...
@@ -138,6 +138,10 @@ class CHDatabaseAdapter(DatabaseAdapter):
               "extensions": [],              # CH has no extension concept
               "database": {"properties", "settings"},
             }
+
+        ``indexes`` is always [] — CH has no autonomous index objects
+        (data-skipping indexes live inside the table DDL and are surfaced as
+        per-table ``skip_indexes`` metadata instead).
 
         The current connection's database becomes the *primary* schema
         (first entry); other user-visible DBs follow in name order.
@@ -853,6 +857,7 @@ class CHDatabaseAdapter(DatabaseAdapter):
             "comment": comment,
             "sequences": [],          # CH has no PG sequences
             "tables": tables,
+            "indexes": [],            # no autonomous index objects in CH
             "views": views,
             "materialized_views": materialized_views,
             "dictionaries": dictionaries,

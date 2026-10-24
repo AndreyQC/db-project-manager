@@ -385,10 +385,11 @@ def test_database_setting_script_db_name_replaced_in_deploy(tmp_path: Path) -> N
     # sp_x_caller (Phase 8 overload-resolution regression fixture) the deployable
     # count is 13 user objects + 4 service-schema objects (Phase 10: __deploy
     # schema + 3 tables) = 17; Phase 11 fixture repair added explicit user schema
-    # files for bookings/app (+2) = 19:
-    # 3 schemas + 3 tables + 1 seq + 1 view + 5 functions + 2 procs + 1 extension
-    # + 1 database_setting (routes matview excluded) + 4 __deploy.
-    assert result.objects_total == 19
+    # files for bookings/app (+2) = 19; 20261024_001 added 2 autonomous index
+    # fixtures = 21:
+    # 3 schemas + 3 tables + 1 seq + 2 indexes + 1 view + 5 functions + 2 procs
+    # + 1 extension + 1 database_setting (routes matview excluded) + 4 __deploy.
+    assert result.objects_total == 21
 
 
 def test_comment_only_script_is_skipped_not_failed(tmp_path: Path) -> None:
@@ -429,7 +430,7 @@ def test_comment_only_script_is_skipped_not_failed(tmp_path: Path) -> None:
 
     # Deploy succeeds; the comment-only vertex still counts (graph unchanged).
     assert result.success is True
-    assert result.objects_total == 19
+    assert result.objects_total == 21  # 20261024_001: +2 autonomous index fixtures
     assert result.objects_done == result.objects_total
     # db_properties from the comment-only file's header still reach
     # create_database — skipping execution does not drop the vertex.

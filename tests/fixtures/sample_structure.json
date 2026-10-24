@@ -149,7 +149,23 @@
       "materialized_views": [],
       "functions": [],
       "procedures": [],
-      "enums": []
+      "enums": [],
+      "indexes": [
+        {
+          "schema": "bookings",
+          "table_name": "flights",
+          "name": "flights_flight_no_idx",
+          "definition": "CREATE INDEX flights_flight_no_idx ON bookings.flights USING btree (flight_no)",
+          "comment": null
+        },
+        {
+          "schema": "bookings",
+          "table_name": "tickets",
+          "name": "tickets_uniq_ref_idx",
+          "definition": "CREATE UNIQUE INDEX bookings.tickets_uniq_ref_idx ON bookings.tickets USING btree (flight_id, passenger_name)",
+          "comment": "Уникальность билета в рамках рейса"
+        }
+      ]
     },
     {
       "name": "app",

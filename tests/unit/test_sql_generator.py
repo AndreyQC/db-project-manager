@@ -88,6 +88,49 @@ def test_default_rendered_when_present(structure, tmp_path) -> None:
     assert "DEFAULT nextval('flights_flight_id_seq'::regclass)" in text
 
 
+# --- 20261024_001: autonomous indexes as external files ---
+
+
+def test_index_scripts_rendered(structure, tmp_path) -> None:
+    """Indexes render as <schema>/indexes/index <name>.sql, one file each."""
+    gen = SQLGenerator()
+    out = gen.generate_scripts(structure, tmp_path / "out")
+    idx_dir = out / "bookings" / "indexes"
+    assert (idx_dir / "index flights_flight_no_idx.sql").is_file()
+    assert (idx_dir / "index tickets_uniq_ref_idx.sql").is_file()
+
+
+def test_index_script_content(structure, tmp_path) -> None:
+    """Index file = autodoc header + full pg_get_indexdef DDL + semicolon."""
+    gen = SQLGenerator()
+    out = gen.generate_scripts(structure, tmp_path / "out")
+    text = (out / "bookings" / "indexes" / "index flights_flight_no_idx.sql").read_text(encoding="utf-8")
+
+    assert "object_type: index" in text
+    assert "type/index/name/flights_flight_no_idx" in text
+    assert (
+        "CREATE INDEX flights_flight_no_idx ON bookings.flights USING btree (flight_no);"
+        in text
+    )
+    # No comment -> no COMMENT ON INDEX section
+    assert "COMMENT ON INDEX" not in text
+
+
+def test_index_comment_rendered(structure, tmp_path) -> None:
+    gen = SQLGenerator()
+    out = gen.generate_scripts(structure, tmp_path / "out")
+    text = (out / "bookings" / "indexes" / "index tickets_uniq_ref_idx.sql").read_text(encoding="utf-8")
+
+    assert (
+        "CREATE UNIQUE INDEX bookings.tickets_uniq_ref_idx ON bookings.tickets "
+        "USING btree (flight_id, passenger_name);" in text
+    )
+    assert (
+        'COMMENT ON INDEX "bookings"."tickets_uniq_ref_idx" '
+        "IS 'Уникальность билета в рамках рейса';" in text
+    )
+
+
 def test_view_script(structure, tmp_path) -> None:
     gen = SQLGenerator()
     out = gen.generate_scripts(structure, tmp_path / "out")

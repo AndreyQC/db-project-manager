@@ -1,0 +1,7 @@
+-- Автономный индекс таблицы {{ _qi(schema) }}.{{ _qi(table_name) }}
+{{ definition }};
+
+{% if comment %}
+-- Комментарий к индексу
+COMMENT ON INDEX {{ _qi(schema) }}.{{ _qi(name) }} IS '{{ comment }}';
+{% endif %}

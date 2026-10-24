@@ -165,6 +165,31 @@ GET_INDEXES = """
     )
 """
 
+# Autonomous (non-constraint-backed) indexes of a schema, full DDL.
+# Excludes: primary-key indexes (indisprimary) and any index owned by a table
+# constraint (UNIQUE / EXCLUDE via pg_constraint.conindid) — those are rendered
+# inline in CREATE TABLE by the table template and would collide on deploy.
+# Partial and expression indexes come out verbatim via pg_get_indexdef.
+GET_SCHEMA_INDEXES = """
+    SELECT
+        n.nspname AS schema_name,
+        t.relname AS table_name,
+        c.relname AS index_name,
+        pg_get_indexdef(c.oid) AS indexdef,
+        obj_description(c.oid, 'pg_class') AS comment
+    FROM pg_index AS idx
+    JOIN pg_class AS c ON c.oid = idx.indexrelid
+    JOIN pg_class AS t ON t.oid = idx.indrelid
+    JOIN pg_namespace AS n ON n.oid = t.relnamespace
+    WHERE n.nspname = :schema
+      AND t.relkind IN ('r', 'p')
+      AND idx.indisprimary = false
+      AND NOT EXISTS (
+            SELECT 1 FROM pg_constraint AS con WHERE con.conindid = c.oid
+      )
+    ORDER BY t.relname, c.relname
+"""
+
 # --- sequences ---
 
 # PostgreSQL 10+ via pg_sequence.
