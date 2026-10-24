@@ -86,7 +86,9 @@ GET_COLUMNS = """
         c.character_maximum_length,
         c.numeric_precision,
         c.numeric_scale,
-        pgd.description AS column_comment
+        pgd.description AS column_comment,
+        c.is_identity,
+        c.identity_generation
     FROM information_schema.columns AS c
     LEFT JOIN pg_catalog.pg_namespace AS n ON n.nspname = c.table_schema
     LEFT JOIN pg_catalog.pg_class AS cl
@@ -218,6 +220,12 @@ GET_SEQUENCES_POSTGRES = """
     WHERE n.nspname NOT LIKE 'pg_%'
       AND n.nspname != 'information_schema'
       AND n.nspname = :schema
+      -- Identity-owned sequences (deptype 'i') are created by the identity
+      -- column itself (GENERATED ... AS IDENTITY in the table DDL) — exporting
+      -- them standalone would collide with the identity's own sequence on deploy.
+      AND NOT EXISTS (
+            SELECT 1 FROM pg_depend di WHERE di.objid = seq.oid AND di.deptype = 'i'
+      )
     ORDER BY n.nspname, seq.relname
 """
 

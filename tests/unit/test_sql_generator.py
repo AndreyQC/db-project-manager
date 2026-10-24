@@ -131,6 +131,29 @@ def test_index_comment_rendered(structure, tmp_path) -> None:
     )
 
 
+# --- 20261024_001: identity columns (RE fidelity for post-deploy seed) ---
+
+
+def test_identity_column_rendered(structure, tmp_path) -> None:
+    """GENERATED ALWAYS AS IDENTITY replaces NOT NULL/DEFAULT modifiers."""
+    gen = SQLGenerator()
+    out = gen.generate_scripts(structure, tmp_path / "out")
+    text = (out / "bookings" / "tables" / "table aircrafts.sql").read_text(encoding="utf-8")
+
+    assert '"aircraft_no" int8 GENERATED ALWAYS AS IDENTITY,' in text
+    # Identity implies NOT NULL — no explicit modifier after the identity spec.
+    assert "GENERATED ALWAYS AS IDENTITY NOT NULL" not in text
+
+
+def test_non_identity_columns_unchanged(structure, tmp_path) -> None:
+    """Regression: columns without is_identity keep NOT NULL/DEFAULT rendering."""
+    gen = SQLGenerator()
+    out = gen.generate_scripts(structure, tmp_path / "out")
+    text = (out / "bookings" / "tables" / "table aircrafts.sql").read_text(encoding="utf-8")
+
+    assert '"aircraft_code" bpchar(3) NOT NULL' in text
+
+
 def test_view_script(structure, tmp_path) -> None:
     gen = SQLGenerator()
     out = gen.generate_scripts(structure, tmp_path / "out")

@@ -135,8 +135,8 @@ def test_default_named_sequence_column_renders_serial(monkeypatch) -> None:
     adapter = _make_columns_adapter(
         monkeypatch,
         [
-            ("id", "int4", "NO", "nextval('s1.t_id_seq'::regclass)", None, 32, 0, None),
-            ("code", "int8", "NO", "nextval('s1.t_code_seq'::regclass)", None, 64, 0, None),
+            ("id", "int4", "NO", "nextval('s1.t_id_seq'::regclass)", None, 32, 0, None, "NO", None),
+            ("code", "int8", "NO", "nextval('s1.t_code_seq'::regclass)", None, 64, 0, None, "NO", None),
         ],
     )
     table = adapter._build_table("s1", {"name": "t", "comment": None})
@@ -147,7 +147,7 @@ def test_default_named_sequence_column_renders_serial(monkeypatch) -> None:
 def test_custom_named_sequence_keeps_default(monkeypatch) -> None:
     adapter = _make_columns_adapter(
         monkeypatch,
-        [("id", "int4", "NO", "nextval('s1.custom_seq'::regclass)", None, 32, 0, None)],
+        [("id", "int4", "NO", "nextval('s1.custom_seq'::regclass)", None, 32, 0, None, "NO", None)],
     )
     table = adapter._build_table("s1", {"name": "t", "comment": None})
     assert table["columns"][0]["type"] == "int4"

@@ -39,6 +39,18 @@
               "numeric_precision": 32,
               "numeric_scale": 0,
               "comment": "Дальность полета"
+            },
+            {
+              "name": "aircraft_no",
+              "type": "int8",
+              "nullable": false,
+              "default": null,
+              "character_maximum_length": null,
+              "numeric_precision": null,
+              "numeric_scale": null,
+              "comment": null,
+              "is_identity": true,
+              "identity_generation": "ALWAYS"
             }
           ],
           "constraints": [

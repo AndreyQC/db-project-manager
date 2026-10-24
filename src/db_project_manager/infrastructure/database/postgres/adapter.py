@@ -1017,6 +1017,11 @@ class PGDatabaseAdapter(DatabaseAdapter):
                     "numeric_precision": col[5],
                     "numeric_scale": col[6],
                     "comment": col[7],
+                    # Identity columns (GENERATED ALWAYS/BY DEFAULT AS IDENTITY):
+                    # rendered by table.sql.j2 instead of NULL/DEFAULT modifiers;
+                    # the column's sequence is created by the identity itself.
+                    "is_identity": col[8] == "YES",
+                    "identity_generation": col[9],
                 }
             )
         constraints = self._group_constraints(
