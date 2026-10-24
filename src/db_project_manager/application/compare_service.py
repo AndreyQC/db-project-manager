@@ -36,6 +36,7 @@ from db_project_manager.application.reverse_engineer import (
     ProgressCallback,
     ReverseEngineerError,
     ReverseEngineerService,
+    build_default_service,
 )
 from db_project_manager.domain.connection import ConnectionConfig
 from db_project_manager.domain.diff import (
@@ -97,7 +98,12 @@ class CompareService:
         graph_service: BuildGraphService | None = None,
         service_schema: str = DEFAULT_SERVICE_SCHEMA,
     ) -> None:
-        self._reverse_engineer = reverse_engineer or ReverseEngineerService()
+        # build_default_service() wires qualify_refs — DB-side snapshots must be
+        # rendered exactly like a CLI reverse-engineer, else codebases produced
+        # by `db-pm reverse-engineer` (qualified calls) false-positive CHANGED
+        # against raw DB renders (150 phantom function diffs, 2026-10-24,
+        # qr_memory_dev vs qr_apply_*).
+        self._reverse_engineer = reverse_engineer or build_default_service()
         self._adapter_factory = adapter_factory or get_adapter
         self._graph_service = graph_service or BuildGraphService()
         self._service_schema = service_schema
