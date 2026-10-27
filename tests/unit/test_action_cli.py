@@ -275,8 +275,8 @@ def test_contract_graph_prepare(tmp_path, monkeypatch):
     _patch_common(monkeypatch)
     fake_graph = SimpleNamespace(vertices={}, edges=[], dangling_edges=lambda: [])
     fake_build_service = SimpleNamespace(
-        build_and_store=lambda d: tmp_path / ".dbm_graph",
-        build=lambda d: fake_graph,
+        build_and_store=lambda d, params=None: tmp_path / ".dbm_graph",
+        build=lambda d, params=None: fake_graph,
     )
     monkeypatch.setattr(cli_main, "BuildGraphService", lambda: fake_build_service)
     monkeypatch.setattr(cli_main.graph_store, "read_graph", lambda d: fake_graph)

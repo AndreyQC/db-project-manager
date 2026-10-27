@@ -20,12 +20,16 @@ Known limitations (deliberate for MVP; sqlglot backend addresses them later):
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from loguru import logger
 
 from db_project_manager.domain.graph import DependencyGraph, Edge, Relation, Vertex
 from db_project_manager.domain.signature import canonical_signature, signature_hash
+from db_project_manager.infrastructure.params import (
+    ParamSubstitutor,
+    effective_params,
+)
 from db_project_manager.infrastructure.parsing.base import ObjectGraphParser
 from db_project_manager.infrastructure.parsing.function_args import extract_argument_types
 from db_project_manager.infrastructure.parsing.normalize import (
@@ -116,13 +120,30 @@ class PgSqlParser(ObjectGraphParser):
     def supported_object_types(self) -> tuple[str, ...]:
         return SUPPORTED_TYPES
 
-    def parse_directory(self, root: str | Path) -> DependencyGraph:
+    def parse_directory(
+        self,
+        root: str | Path,
+        params: Mapping[str, str] | None = None,
+    ) -> DependencyGraph:
+        """Parse the codebase into a graph.
+
+        Args:
+            root: codebase root to scan for SQL files.
+            params: override values for ``{{param}}`` placeholders
+                (20261027_001) — the connection's ``params:`` and CLI ``--param``
+                merged by the caller. They are layered OVER the codebase's
+                ``dbpm.params.yaml`` (always the base layer, even when
+                overrides are empty). Unresolved placeholders fail the build
+                (aggregated).
+        """
         root = Path(root)
         if not root.is_dir():
             raise NotADirectoryError(f"Каталог кодовой базы не найден: {root}")
 
         # Reset per-build: each graph build is independent.
         self._resolution_notes = []
+
+        substitutor = ParamSubstitutor(effective_params(root, params))
 
         sql_files = sorted(p for p in self._iter_sql_files(root))
         logger.info(f"Найдено SQL-файлов для парсинга: {len(sql_files)}")
@@ -133,7 +154,7 @@ class PgSqlParser(ObjectGraphParser):
         # --- vertices ---
         for path in sql_files:
             try:
-                vertex, words, raw = self._parse_file(path, root)
+                vertex, words, raw = self._parse_file(path, root, substitutor)
             except Exception as e:  # noqa: BLE001
                 logger.warning(f"Не удалось разобрать файл {path}: {e}")
                 continue
@@ -141,6 +162,11 @@ class PgSqlParser(ObjectGraphParser):
                 continue
             graph.add_vertex(vertex)
             parsed.append({"vertex": vertex, "words": words, "raw": raw, "path": path})
+
+        # Fail-fast (20261027_001): unresolved {{param}} placeholders — after
+        # the vertex loop so ALL files are reported, none was swallowed by the
+        # per-file try/except above.
+        substitutor.raise_if_missing()
 
         # --- edges ---
         # Match each object name / full_name against every file's word stream.
@@ -170,8 +196,21 @@ class PgSqlParser(ObjectGraphParser):
 
     # --- per-file parsing ---
 
-    def _parse_file(self, path: Path, root: Path) -> tuple[Vertex | None, list[str], str]:
+    def _parse_file(
+        self,
+        path: Path,
+        root: Path,
+        substitutor: ParamSubstitutor | None = None,
+    ) -> tuple[Vertex | None, list[str], str]:
         raw = path.read_text(encoding="utf-8-sig")
+        # {{param}} substitution BEFORE any parsing/edge scan (20261027_001):
+        # the graph is built on resolved names. The autodoc header is excluded
+        # from substitution (identity is already written resolved by RE).
+        # None = direct/internal callers without the parse_directory gate —
+        # substitution becomes a no-op for missing params (no collection).
+        if substitutor is None:
+            substitutor = ParamSubstitutor({})
+        raw = substitutor.substitute(raw, origin=_relative_posix(path, root))
         normalized = get_normalized_file_content(raw)
         words = normalized.split(" ")
 

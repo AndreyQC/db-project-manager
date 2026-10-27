@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import Mapping
 
 from loguru import logger
 
@@ -44,6 +45,7 @@ from db_project_manager.infrastructure.deploy.alter_plan import (
     render_alter,
 )
 from db_project_manager.infrastructure.deploy.plan_report import write_plan_report
+from db_project_manager.infrastructure.params import ParamSubstitutor, effective_params
 from db_project_manager.infrastructure.sql.autodoc import strip_autodoc
 from db_project_manager.infrastructure.sql.sql_text import has_executable_sql
 
@@ -82,6 +84,7 @@ class DeltaService:
         source_version: str | None = None,
         target_version: str | None = None,
         include_drops: bool = False,
+        params: Mapping[str, str] | None = None,
     ) -> DeltaPlan:
         """Classify every report entry and order the operations.
 
@@ -90,9 +93,14 @@ class DeltaService:
         sorted by ``object_key``. Entries for objects excluded from deploy
         (``build=false``) are skipped entirely — they are not deployed, so their
         changes are not planned.
+
+        ``params`` — overrides (connection + CLI) layered over the codebase's
+        ``dbpm.params.yaml`` (20261027_001). Must be the same overrides the
+        compare snapshot was built with, else object keys diverge and the plan
+        misses vertices.
         """
         codebase_dir = Path(codebase_dir)
-        vertices = self._graph_service.deploy_order(codebase_dir, build_only=True)
+        vertices = self._graph_service.deploy_order(codebase_dir, build_only=True, params=params)
         position = {v.object_key: idx for idx, v in enumerate(vertices)}
 
         in_graph: list[tuple[int, PlannedOperation]] = []
@@ -157,12 +165,17 @@ class DeltaService:
         plan: DeltaPlan,
         codebase_dir: str | Path,
         output_dir: str | Path,
+        params: Mapping[str, str] | None = None,
     ) -> list[Path]:
         """Write ``delta/NNN_*.sql`` + ``plan.json`` + ``plan.md``; return paths.
 
         Mutates the plan in place: every written operation gets its ``script_file``
         set, and comment-only bodies are downgraded to ``skip`` before ``plan.json``
         is written (so the JSON reflects what is actually on disk).
+
+        ``params`` — overrides (connection + CLI) layered over the codebase's
+        ``dbpm.params.yaml`` (20261027_001). Must match the values the plan was
+        built with.
         """
         codebase_dir = Path(codebase_dir)
         output_dir = Path(output_dir)
@@ -171,13 +184,16 @@ class DeltaService:
 
         vertices = {
             v.object_key: v
-            for v in self._graph_service.deploy_order(codebase_dir, build_only=True)
+            for v in self._graph_service.deploy_order(
+                codebase_dir, build_only=True, params=params
+            )
         }
+        substitutor = ParamSubstitutor(effective_params(codebase_dir, params))
 
         written: list[Path] = []
         for idx, op in enumerate(plan.operations, start=1):
             vertex = vertices.get(op.object_key)
-            content = self._artifact_content(op, vertex, codebase_dir)
+            content = self._artifact_content(op, vertex, codebase_dir, substitutor)
             if content is None:
                 if op.action not in ("skip",):
                     logger.info(
@@ -195,7 +211,11 @@ class DeltaService:
         return written
 
     def _artifact_content(
-        self, op: PlannedOperation, vertex: Vertex | None, codebase_dir: Path
+        self,
+        op: PlannedOperation,
+        vertex: Vertex | None,
+        codebase_dir: Path,
+        substitutor: ParamSubstitutor,
     ) -> str | None:
         """SQL text of one operation's artifact; None = no artifact (skip)."""
         if op.action == "alter":
@@ -205,7 +225,7 @@ class DeltaService:
             return ddl if ddl.strip() else None
 
         if op.action in ("create", "rerender"):
-            body = self._read_body(vertex, codebase_dir)
+            body = self._read_body(vertex, codebase_dir, substitutor)
             if body is None:
                 logger.warning(
                     f"Файл объекта не найден для {op.object_key} — артефакт не записан."
@@ -235,13 +255,18 @@ class DeltaService:
         return None  # skip
 
     @staticmethod
-    def _read_body(vertex: Vertex | None, codebase_dir: Path) -> str | None:
+    def _read_body(
+        vertex: Vertex | None,
+        codebase_dir: Path,
+        substitutor: ParamSubstitutor,
+    ) -> str | None:
         if vertex is None or not vertex.object_source_file:
             return None
         path = codebase_dir / vertex.object_source_file
         if not path.is_file():
             return None
-        return strip_autodoc(path.read_text(encoding="utf-8-sig"))
+        text = substitutor.substitute(path.read_text(encoding="utf-8-sig"), origin=vertex.object_source_file)
+        return strip_autodoc(text)
 
     @staticmethod
     def _drop_statement(op: PlannedOperation, vertex: Vertex | None) -> str:

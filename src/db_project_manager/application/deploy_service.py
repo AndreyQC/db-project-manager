@@ -25,6 +25,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Mapping
 
 from loguru import logger
 
@@ -42,6 +43,7 @@ from db_project_manager.infrastructure.deploy.canonical_ddl import (
     DEFAULT_SERVICE_SCHEMA,
     validate_deploy_ddl,
 )
+from db_project_manager.infrastructure.params import effective_params, substitute_text
 from db_project_manager.infrastructure.sql.autodoc import strip_autodoc
 from db_project_manager.infrastructure.sql.sql_text import has_executable_sql
 
@@ -149,14 +151,23 @@ class DeployValidateService:
         keep_db: bool = False,
         continue_on_error: bool = False,
         progress: ProgressCallback | None = None,
+        params: Mapping[str, str] | None = None,
     ) -> DeployResult:
         """Run validation deploy and return the structured result.
+
+        ``params`` — overrides (connection ``params:`` + CLI ``--param``
+        merged by the caller) layered over the codebase's ``dbpm.params.yaml``
+        (20261027_001).
 
         Raises:
             DeployPermissionError: user lacks CREATEDB.
             DeployError: early-DDL failure or (without continue_on_error) any failure.
         """
         codebase_dir = Path(codebase_dir)
+        # One resolved values set for the whole run: graph build (with its
+        # aggregated fail-fast on unresolved placeholders) and file reads below.
+        # File defaults are the base; ``params`` (connection + CLI) override.
+        values = effective_params(codebase_dir, params)
         adapter = self._adapter_factory(conn_cfg)
 
         # 1. Connect to server.
@@ -175,7 +186,9 @@ class DeployValidateService:
 
         # 3. Build deploy order (graph + filter + toposort).
         self._emit(progress, "Построение графа зависимостей…", 0, 0)
-        deploy_vertices = self.graph_service.deploy_order(codebase_dir, build_only=True)
+        deploy_vertices = self.graph_service.deploy_order(
+            codebase_dir, build_only=True, params=values
+        )
         total = len(deploy_vertices)
 
         # Extract db-level CREATE DATABASE properties from the database_setting
@@ -245,7 +258,7 @@ class DeployValidateService:
                 )
                 # Early-DDL failure inside __deploy is always fatal (CDF-10):
                 # without these tables the rest of the mechanic can't run.
-                self._deploy_object(adapter, codebase_dir, vertex, db_name)
+                self._deploy_object(adapter, codebase_dir, vertex, db_name, values)
                 result.objects_done = done
 
             # 5b. Phase 10 S8: pre-runner (now __deploy.script_history exists).
@@ -284,7 +297,7 @@ class DeployValidateService:
                     done, total,
                 )
                 try:
-                    self._deploy_object(adapter, codebase_dir, vertex, db_name)
+                    self._deploy_object(adapter, codebase_dir, vertex, db_name, values)
                     result.objects_done = done
                 except DatabaseError as e:
                     obj_err = ObjectError(
@@ -404,12 +417,17 @@ class DeployValidateService:
         codebase_dir: Path,
         vertex: Vertex,
         target_db_name: str,
+        param_values: Mapping[str, str],
     ) -> None:
         """Read the object's SQL file and execute it."""
         source = codebase_dir / vertex.object_source_file
         if not source.is_file():
             raise DatabaseError(f"Файл объекта не найден: {source}")
         script = source.read_text(encoding="utf-8-sig")
+        # {{param}} substitution (20261027_001) before the autodoc strip. The
+        # graph build already failed fast on unresolved placeholders, so a
+        # one-shot substitution here never records anything.
+        script = substitute_text(script, param_values, origin=vertex.object_source_file)
         # Strip the autodoc header so only SQL reaches the server.
         script = strip_autodoc(script)
         # Phase 5: for database_setting, replace the original db name in

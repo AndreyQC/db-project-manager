@@ -205,7 +205,8 @@ class StubCompare:
         self.report = report or _added_note_report()
         self.databases: list[str] = []
 
-    def run(self, source, target, output_dir, *, keep_model_dir=False, progress=None):
+    def run(self, source, target, output_dir, *, keep_model_dir=False, progress=None,
+            codebase_params=None):
         from db_project_manager.application.compare_service import DIFF_REPORT_FILENAME
 
         self.databases.append(target.conn_cfg.database)

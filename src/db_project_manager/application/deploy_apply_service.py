@@ -32,6 +32,7 @@ import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Mapping
 
 from loguru import logger
 
@@ -78,6 +79,7 @@ from db_project_manager.infrastructure.database.registry import get_adapter
 from db_project_manager.infrastructure.deploy.alter_plan import classify
 from db_project_manager.infrastructure.deploy.canonical_ddl import DEFAULT_SERVICE_SCHEMA
 from db_project_manager.infrastructure.deploy.pre_coverage import read_pre_coverage
+from db_project_manager.infrastructure.params import effective_params
 from db_project_manager.infrastructure.sql.autodoc import strip_autodoc
 
 SEED_DIR_NAME = "__migrations/seed"
@@ -145,11 +147,19 @@ class DeployApplyService:
         *,
         include_drops: bool = False,
         progress: ProgressCallback | None = None,
+        params: Mapping[str, str] | None = None,
     ) -> DeltaPlan:
-        """Dry-run: gate + fresh delta + artifacts. Nothing is executed."""
+        """Dry-run: gate + fresh delta + artifacts. Nothing is executed.
+
+        ``params`` — overrides (connection ``params:`` + CLI ``--param`` merged
+        by the caller) layered over the codebase's ``dbpm.params.yaml``
+        (20261027_001).
+        """
+        values = effective_params(codebase_dir, params)
         return self._run_pipeline(
             target_cfg, codebase_dir, output_dir,
             include_drops=include_drops, execute=False, progress=progress,
+            param_values=values,
         )
 
     # ----------------------------------------------------------------- apply
@@ -164,11 +174,20 @@ class DeployApplyService:
         rehearsal: bool = True,
         keep_rehearsal_db: bool = False,
         progress: ProgressCallback | None = None,
+        params: Mapping[str, str] | None = None,
     ) -> ApplyResult:
-        """Full pipeline; see the module docstring for the safety model."""
+        """Full pipeline; see the module docstring for the safety model.
+
+        ``params`` — resolved ``{{param}}`` substitution values (20261027_001);
+        ``None`` = defaults from the codebase's ``dbpm.params.yaml``. The same
+        values drive the compare snapshot, the delta plan and the artifacts,
+        so the applied SQL matches the plan exactly.
+        """
         codebase_dir = Path(codebase_dir)
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
+        # File defaults are the base; ``params`` (connection + CLI) override.
+        values = effective_params(codebase_dir, params)
 
         rehearsal_db: str | None = None
         if rehearsal:
@@ -177,12 +196,14 @@ class DeployApplyService:
                 include_drops=include_drops,
                 keep_db=keep_rehearsal_db,
                 progress=progress,
+                param_values=values,
             )
 
         self._emit(progress, "Применение дельты к целевой БД…", 0, 0)
         plan = self._run_pipeline(
             target_cfg, codebase_dir, output_dir,
             include_drops=include_drops, execute=True, progress=progress,
+            param_values=values,
         )
         applied = sum(
             1 for op in plan.operations
@@ -214,6 +235,7 @@ class DeployApplyService:
         include_drops: bool,
         keep_db: bool,
         progress: ProgressCallback | None,
+        param_values: Mapping[str, str],
     ) -> str:
         """Reproduce the target state in a temp DB, seed it, run the pipeline.
 
@@ -260,6 +282,7 @@ class DeployApplyService:
                 self._run_pipeline(
                     rehearsal_cfg, codebase_dir, output_dir / REHEARSAL_DIR_NAME,
                     include_drops=include_drops, execute=True, progress=progress,
+                    param_values=param_values,
                 )
             except DeployApplyRejected as e:
                 raise DeployApplyError(
@@ -340,12 +363,17 @@ class DeployApplyService:
         include_drops: bool,
         execute: bool,
         progress: ProgressCallback | None,
+        param_values: Mapping[str, str] | None = None,
     ) -> DeltaPlan:
         """Shared core for plan (execute=False) and apply (execute=True).
 
         Steps (vision_final §4.6): manifest+version-check → gate → pre → fresh
         delta (CD-11) → artifacts → apply → post → record version. In plan mode
         the pre/apply/post/record steps are skipped entirely.
+
+        ``param_values`` — final resolved ``{{param}}`` values (20261027_001);
+        the same set goes into the compare snapshot, the delta plan and the
+        artifacts, so planned SQL == applied SQL.
         """
         codebase_dir = Path(codebase_dir)
         output_dir = Path(output_dir)
@@ -422,7 +450,7 @@ class DeployApplyService:
                     raise DeployApplyError(f"Pre-скрипт упал: {e}") from e
 
             self._emit(progress, "Повторная дельта (CD-11)…", 0, 0)
-            report = self._fresh_compare(codebase_dir, conn_cfg, output_dir)
+            report = self._fresh_compare(codebase_dir, conn_cfg, output_dir, param_values)
             stats = self._presence_lookup(adapter)
             coverage = read_pre_coverage(codebase_dir / "__migrations")
             plan = self._delta.build_plan(
@@ -431,6 +459,7 @@ class DeployApplyService:
                 source_version=manifest.source_version,
                 target_version=target_version,
                 include_drops=include_drops,
+                params=param_values,
             )
 
             if execute:
@@ -451,7 +480,7 @@ class DeployApplyService:
                     )
 
             self._emit(progress, "Запись артефактов дельты…", 0, 0)
-            self._delta.write_artifacts(plan, codebase_dir, output_dir)
+            self._delta.write_artifacts(plan, codebase_dir, output_dir, params=param_values)
 
             if not execute:
                 return plan
@@ -578,7 +607,11 @@ class DeployApplyService:
         return self._gate
 
     def _fresh_compare(
-        self, codebase_dir: Path, conn_cfg: ConnectionConfig, output_dir: Path
+        self,
+        codebase_dir: Path,
+        conn_cfg: ConnectionConfig,
+        output_dir: Path,
+        param_values: Mapping[str, str] | None = None,
     ) -> DiffReport:
         source = SideSpec(kind=SnapshotSourceKind.DIR, ref=str(codebase_dir))
         target = SideSpec(
@@ -587,7 +620,7 @@ class DeployApplyService:
             conn_cfg=conn_cfg,
         )
         try:
-            self._compare.run(source, target, output_dir)
+            self._compare.run(source, target, output_dir, codebase_params=param_values)
         except CompareError as e:
             raise DeployApplyError(f"Построение дельты не удалось: {e}") from e
         report_path = output_dir / DIFF_REPORT_FILENAME

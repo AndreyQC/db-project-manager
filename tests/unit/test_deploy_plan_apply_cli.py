@@ -78,21 +78,23 @@ class _StubService:
         _StubService.last = self
 
     def plan(self, codebase_dir, target_cfg, output_dir, *, include_drops=False,
-             progress=None):
+             progress=None, params=None):
         self.plan_calls.append({
             "codebase_dir": Path(codebase_dir), "target_cfg": target_cfg,
             "output_dir": Path(output_dir), "include_drops": include_drops,
+            "params": params,
         })
         if self.plan_error is not None:
             raise self.plan_error
         return self.plan_result
 
     def apply(self, codebase_dir, target_cfg, output_dir, *, include_drops=False,
-              rehearsal=True, keep_rehearsal_db=False, progress=None):
+              rehearsal=True, keep_rehearsal_db=False, progress=None, params=None):
         self.apply_calls.append({
             "codebase_dir": Path(codebase_dir), "target_cfg": target_cfg,
             "output_dir": Path(output_dir), "include_drops": include_drops,
             "rehearsal": rehearsal, "keep_rehearsal_db": keep_rehearsal_db,
+            "params": params,
         })
         if self.apply_error is not None:
             raise self.apply_error

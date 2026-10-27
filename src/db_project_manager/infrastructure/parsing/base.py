@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from pathlib import Path
+from typing import Mapping
 
 from db_project_manager.domain.graph import DependencyGraph
 
@@ -20,8 +21,18 @@ class ObjectGraphParser(ABC):
     """Parse a project directory into a DependencyGraph."""
 
     @abstractmethod
-    def parse_directory(self, root: str | Path) -> DependencyGraph:
-        """Walk ``root``, read each project file, return vertices + edges."""
+    def parse_directory(
+        self,
+        root: str | Path,
+        params: Mapping[str, str] | None = None,
+    ) -> DependencyGraph:
+        """Walk ``root``, read each project file, return vertices + edges.
+
+        ``params`` — resolved substitution values for ``{{param}}`` placeholders
+        (20261027_001); ``None`` means "use the codebase's own
+        ``dbpm.params.yaml`` defaults". Implementations must fail fast on
+        unresolved placeholders.
+        """
 
     @abstractmethod
     def supported_object_types(self) -> tuple[str, ...]:

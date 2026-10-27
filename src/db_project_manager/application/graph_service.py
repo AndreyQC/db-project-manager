@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from loguru import logger
 
@@ -33,16 +33,24 @@ class BuildGraphService:
     def __init__(self, parser: ObjectGraphParser | None = None) -> None:
         self.parser = parser or PgSqlParser()
 
-    def build(self, codebase_dir: str | Path) -> DependencyGraph:
+    def build(
+        self,
+        codebase_dir: str | Path,
+        params: Mapping[str, str] | None = None,
+    ) -> DependencyGraph:
         """Parse the codebase and return the in-memory graph (no I/O to disk).
 
         As a side effect, writes the overload-resolution report artifact when
         the parser found any unresolved overloaded calls (Phase 8). The graph
         itself is unaffected; the report is a transparent audit (LESSONS §36).
+
+        ``params`` — overrides (connection ``params:`` + CLI ``--param`` merged
+        by the caller) layered over the codebase's ``dbpm.params.yaml``
+        (20261027_001).
         """
         codebase_dir = Path(codebase_dir)
         logger.info(f"Построение графа по кодовой базе: {codebase_dir}")
-        graph = self.parser.parse_directory(codebase_dir)
+        graph = self.parser.parse_directory(codebase_dir, params=params)
         logger.info(
             f"Граф построен: вершин={len(graph.vertices)}, рёбер={len(graph.edges)}"
         )
@@ -109,23 +117,35 @@ class BuildGraphService:
         ])
         return lines
 
-    def build_and_store(self, codebase_dir: str | Path) -> Path:
+    def build_and_store(
+        self,
+        codebase_dir: str | Path,
+        params: Mapping[str, str] | None = None,
+    ) -> Path:
         """Build the graph and write it to <codebase>/.dbm_graph/."""
         codebase_dir = Path(codebase_dir)
-        graph = self.build(codebase_dir)
+        graph = self.build(codebase_dir, params=params)
         gdir = graph_store.write_graph(graph, codebase_dir)
         logger.info(f"Граф записан в: {gdir}")
         return gdir
 
-    def deploy_order(self, codebase_dir: str | Path, *, build_only: bool = True) -> list:
+    def deploy_order(
+        self,
+        codebase_dir: str | Path,
+        *,
+        build_only: bool = True,
+        params: Mapping[str, str] | None = None,
+    ) -> list:
         """Return vertices in deploy order (type+topology).
 
         Args:
             codebase_dir: codebase root to parse.
             build_only: if True (default), filter out build=false vertices —
                 this is the deploy-time view (vision Q8).
+            params: overrides (connection + CLI) layered over the
+                codebase's ``dbpm.params.yaml`` (20261027_001).
         """
-        graph = self.build(codebase_dir)
+        graph = self.build(codebase_dir, params=params)
         if build_only:
             graph = graph.filter_build_true()
         return sort_by_type_and_topology(graph)
