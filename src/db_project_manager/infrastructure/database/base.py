@@ -63,7 +63,10 @@ class DatabaseAdapter(ABC):
         """Return the full database structure as a nested dict.
 
         Shape: {"schemas": [ {"name", "comment", "sequences", "tables",
-        "views", "materialized_views", "functions", "procedures", "enums"}, ... ]}
+        "indexes", "views", "materialized_views", "functions", "procedures",
+        "enums"}, ... ]}
+        "indexes" holds autonomous (non-constraint-backed) indexes with full
+        pg_get_indexdef DDL; engines without that notion (CH) return [].
         """
 
     # --- Phase 2: validation-deploy surface ---

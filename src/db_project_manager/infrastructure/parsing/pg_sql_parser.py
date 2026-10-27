@@ -46,6 +46,7 @@ SUPPORTED_TYPES: tuple[str, ...] = (
     "sequence",
     "table",
     "external_table",
+    "index",
     "view",
     "materialized_view",
     "function",
@@ -74,6 +75,9 @@ _CREATE_KEYWORD_TO_TYPE: tuple[tuple[tuple[str, ...], str], ...] = (
     (("procedure",), "procedure"),
     (("proc",), "procedure"),
     (("trigger",), "trigger"),
+    # Autonomous indexes (CREATE [UNIQUE] INDEX) — standalone deploy objects.
+    (("unique", "index"), "index"),
+    (("index",), "index"),
     # Phase 5: schema-less global objects (autodoc path is primary; token path as fallback).
     (("extension",), "extension"),
     (("database", "setting"), "database_setting"),
@@ -361,6 +365,28 @@ class PgSqlParser(ObjectGraphParser):
 
         self_vertex_key = vertex.object_key
         self_schema = vertex.object_schema
+
+        # Index storage dependency: CREATE [UNIQUE] INDEX ... ON <table>.
+        # Dedicated pass — 'on' is too generic for the global classifier
+        # (triggers, policies and join conditions use it too). The main word
+        # loop below still runs afterwards: expression indexes pick up their
+        # function-call edges from it.
+        if vertex.object_type == "index":
+            pending_on = False
+            for token in scan_words:
+                if pending_on and token != "only":
+                    dest_key = names_index.get(token)
+                    if dest_key and dest_key != self_vertex_key:
+                        edge = Edge(
+                            source_object_key=self_vertex_key,
+                            destination_object_key=dest_key,
+                            relation=Relation.DEPENDS_ON,
+                            action="index on table",
+                        )
+                        if edge.dedup_key() not in seen:
+                            seen.add(edge.dedup_key())
+                            edges.append(edge)
+                pending_on = token == "on" or (pending_on and token == "only")
 
         # Phase 8: overloaded routine names are resolved by a dedicated pass
         # over the raw SQL (one edge per resolved overload), so the main word

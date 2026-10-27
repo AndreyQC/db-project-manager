@@ -11,6 +11,7 @@ from db_project_manager.infrastructure.profiling.base import (
     categorize,
     quote_ident,
 )
+from db_project_manager.infrastructure.profiling.clickhouse import CHProfiler
 from db_project_manager.infrastructure.profiling.greenplum import GreenplumProfiler
 from db_project_manager.infrastructure.profiling.postgres import PostgresProfiler
 
@@ -61,8 +62,128 @@ def test_quote_ident_escapes_quotes() -> None:
 def test_get_profiler_registry() -> None:
     assert isinstance(get_profiler("postgres"), PostgresProfiler)
     assert isinstance(get_profiler("Greenplum"), GreenplumProfiler)
+    assert isinstance(get_profiler("clickhouse"), CHProfiler)
     with pytest.raises(ValueError, match="Профайлинг не поддерживается"):
         get_profiler("mssql")
+
+
+# --- CHProfiler (Phase 6.2) ---
+
+
+def test_ch_columns_sql_uses_cluster_all_replicas() -> None:
+    p = CHProfiler()
+    sql = p.columns_sql("cis_etl", "tr_orders")
+    assert "clusterAllReplicas('default', system.columns)" in sql
+    assert "database = 'cis_etl'" in sql
+    assert "table = 'tr_orders'" in sql
+    assert "ORDER BY position" in sql
+    # CH has no is_nullable column — uses NOT startsWith(type, 'Nullable(')
+    assert "startsWith(type, 'Nullable(')" in sql
+
+
+def test_ch_table_meta_sql_joins_system_parts() -> None:
+    p = CHProfiler()
+    sql = p.table_meta_sql("cis_etl", "tr_orders")
+    assert "clusterAllReplicas('default', system.tables) t" in sql
+    assert "clusterAllReplicas('default', system.parts)" in sql
+    assert "countIf(active = 1) AS parts_active" in sql
+    assert "t.total_rows AS reltuples" in sql
+    assert "t.total_bytes AS size_bytes" in sql
+
+
+def test_ch_base_expr_no_sample_returns_qualified_name() -> None:
+    p = CHProfiler()
+    assert p.base_expr("cis_etl", "tr_orders", None) == '"cis_etl"."tr_orders"'
+
+
+def test_ch_base_expr_with_sample_uses_sample_k() -> None:
+    """fraction=0.1 → SAMPLE 10 (1 row out of 10)."""
+    p = CHProfiler()
+    expr = p.base_expr("cis_etl", "tr_orders", 0.1)
+    assert expr == '"cis_etl"."tr_orders" SAMPLE 10'
+
+    # fraction=0.5 → SAMPLE 2
+    expr = p.base_expr("cis_etl", "t", 0.5)
+    assert expr.endswith("SAMPLE 2")
+
+    # fraction=0.01 → SAMPLE 100
+    expr = p.base_expr("db", "t", 0.01)
+    assert expr.endswith("SAMPLE 100")
+
+    # fraction=0.99 → SAMPLE 2 (rounded, min k=2)
+    expr = p.base_expr("db", "t", 0.99)
+    assert expr.endswith("SAMPLE 2")
+
+
+def test_ch_sample_base_expr_random_uses_where_rand() -> None:
+    p = CHProfiler()
+    expr = p.sample_base_expr_random("cis_etl", "t", 0.1)
+    assert expr == '"cis_etl"."t" WHERE rand() < 0.1'
+
+
+def test_ch_percentile_expr_uses_quantile() -> None:
+    """CH override — quantile(f)(x) вместо PG percentile_cont."""
+    p = CHProfiler()
+    assert p.percentile_expr(0.5, "x") == "quantile(0.5)(x)"
+    assert p.percentile_expr(0.95, "amount") == "quantile(0.95)(amount)"
+
+
+def test_ch_text_length_expr_no_cast() -> None:
+    """CH length() works on any type — no ::text cast needed."""
+    p = CHProfiler()
+    assert p.text_length_expr("name") == "length(name)"
+
+
+def test_ch_parse_meta_handles_nulls() -> None:
+    p = CHProfiler()
+    # total_rows=None (empty/fresh table) → reltuples=None, stats_present=False
+    m = p.parse_meta({"reltuples": None, "size_bytes": None, "parts_active": 0, "parts_total": 0})
+    assert m.reltuples is None
+    assert m.size_bytes is None
+    assert m.stats_present is False
+
+    # Real values
+    m = p.parse_meta({"reltuples": 12345, "size_bytes": 67890, "parts_active": 2, "parts_total": 3})
+    assert m.reltuples == 12345
+    assert m.size_bytes == 67890
+    assert m.stats_present is True
+
+
+def test_ch_main_sql_uses_quantile_not_percentile_cont() -> None:
+    """End-to-end: the parameterized percentile_expr flows into main_sql."""
+    p = CHProfiler()
+    col_id = col("id", ColumnCategory.NUMERIC, "UInt64")
+    sql = p.main_sql([col_id], '"db"."t"')
+    assert 'quantile(0.5)("id")' in sql
+    assert 'quantile(0.99)("id")' in sql
+    # No PG syntax
+    assert "percentile_cont" not in sql
+
+
+def test_pg_main_sql_still_uses_percentile_cont() -> None:
+    """Regression: PG profiler still uses percentile_cont (default in base)."""
+    p = PostgresProfiler()
+    col_id = col("id", ColumnCategory.NUMERIC, "bigint")
+    sql = p.main_sql([col_id], '"public"."t"')
+    assert 'percentile_cont(0.5) WITHIN GROUP (ORDER BY "id")' in sql
+    # No CH syntax
+    assert "quantile(" not in sql
+
+
+def test_pg_text_length_expr_uses_cast() -> None:
+    """Regression: PG default still uses length(x::text) for non-text types."""
+    p = PostgresProfiler()
+    assert p.text_length_expr("name") == "length(name::text)"
+
+
+def test_greenplum_inherits_pg_percentile() -> None:
+    """GreenplumProfiler is a subclass of PostgresProfiler; default PG
+    percentile_cont applies. (GP-specific override not required for
+    percentile aggregations.)"""
+    p = GreenplumProfiler()
+    col_id = col("id", ColumnCategory.NUMERIC, "bigint")
+    sql = p.main_sql([col_id], '"public"."t"')
+    assert 'percentile_cont(0.5) WITHIN GROUP (ORDER BY "id")' in sql
 
 
 # --- base expressions ---

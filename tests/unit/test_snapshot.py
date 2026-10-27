@@ -29,13 +29,15 @@ def test_snapshot_filters_to_diffed_types():
 
 
 def test_snapshot_contains_expected_object_count():
-    """Fixture has 20 vertices; minus extension & database_setting = 18.
+    """Fixture has 22 vertices; minus extension & database_setting = 20.
 
     Regression note: 2026-09-02 — ``schema`` was added to DIFFED_TYPES after the
     cis_zup feedback (Phase 15.5). Before the fix, schema vertices were silently
     dropped from snapshots, so ``deploy apply`` on an empty target DB tried to
     CREATE TABLE in a schema that did not yet exist (InvalidSchemaName). With
     the fix, 3 user/service schemas enter the snapshot: __deploy, app, bookings.
+    2026-10-24 (20261024_001): ``index`` joined DIFFED_TYPES — the 2 autonomous
+    index fixtures enter the snapshot (the delta path must deploy indexes too).
     """
     snap = build_snapshot_from_dir(
         CODEBASE_SAMPLE,
@@ -43,9 +45,9 @@ def test_snapshot_contains_expected_object_count():
         source_ref=str(CODEBASE_SAMPLE),
         db_type="postgres",
     )
-    # 20 vertices total: -1 extension -1 database_setting +0 (schemas now kept)
-    # = 18 diffed.
-    assert len(snap.objects) == 18
+    # 22 vertices total: -1 extension -1 database_setting +0 (schemas kept)
+    # = 20 diffed.
+    assert len(snap.objects) == 20
 
 
 def test_snapshot_includes_schema_vertices():

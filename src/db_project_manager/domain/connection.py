@@ -8,7 +8,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, model_validator, field_serializer
 
 #: Supported database adapter types.
-SUPPORTED_DB_TYPES = ("postgres", "greenplum")
+SUPPORTED_DB_TYPES = ("postgres", "greenplum", "clickhouse")
 
 
 class ConnectionType(str, Enum):
@@ -148,7 +148,7 @@ class ConnectionConfig(BaseModel):
     database: str = Field(..., min_length=1)
     username: str = Field(..., min_length=1)
     password: str = ""
-    type: str = Field(default="postgres", description="postgres | greenplum | snowflake | mssql")
+    type: str = Field(default="postgres", description="postgres | greenplum | clickhouse | snowflake | mssql")
     name: str | None = None
     options: dict[str, Any] = Field(default_factory=dict)
 
@@ -202,6 +202,11 @@ class ConnectionConfig(BaseModel):
     def is_greenplum(self) -> bool:
         """Whether this connection targets a Greenplum cluster."""
         return self.type.lower() == "greenplum"
+
+    @property
+    def is_clickhouse(self) -> bool:
+        """Whether this connection targets a ClickHouse cluster."""
+        return self.type.lower() == "clickhouse"
 
     @property
     def mcp_settings(self) -> McpSettings:

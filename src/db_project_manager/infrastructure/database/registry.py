@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from db_project_manager.domain.connection import ConnectionConfig
 from db_project_manager.infrastructure.database.base import DatabaseAdapter, DatabaseError
+from db_project_manager.infrastructure.database.clickhouse.adapter import CHDatabaseAdapter
 from db_project_manager.infrastructure.database.postgres.adapter import PGDatabaseAdapter
 
 
@@ -16,4 +17,9 @@ def get_adapter(cfg: ConnectionConfig) -> DatabaseAdapter:
     db_type = cfg.type.lower()
     if db_type in ("postgres", "greenplum"):
         return PGDatabaseAdapter()
-    raise DatabaseError(f"Неподдерживаемый тип БД: {cfg.type!r}. Поддерживаются: postgres, greenplum.")
+    if db_type == "clickhouse":
+        return CHDatabaseAdapter()
+    raise DatabaseError(
+        f"Неподдерживаемый тип БД: {cfg.type!r}. "
+        f"Поддерживаются: postgres, greenplum, clickhouse."
+    )

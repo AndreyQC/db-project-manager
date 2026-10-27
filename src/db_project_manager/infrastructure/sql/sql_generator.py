@@ -142,7 +142,7 @@ class SQLGenerator:
     """Generate SQL files from a structure dict."""
 
     #: object kinds that each produce a subfolder under a schema.
-    _OBJECT_KINDS = ("sequences", "tables", "views", "materialized_views", "functions", "procedures")
+    _OBJECT_KINDS = ("sequences", "tables", "indexes", "views", "materialized_views", "functions", "procedures")
 
     def __init__(
         self,
@@ -250,14 +250,14 @@ class SQLGenerator:
 
     def _generate_schema(self, schema_info: dict[str, Any], output_path: Path, object_catalog: str | None) -> None:
         schema_name = schema_info["name"]
-        has_objects = any(schema_info.get(kind) for kind in self._OBJECT_KINDS)
-        if not has_objects:
-            return
-
         schema_dir = output_path / schema_name
         schema_dir.mkdir(parents=True, exist_ok=True)
 
         # Schema creation script (skip 'public' which exists by default).
+        # Empty schemas are rendered too — a schema that exists in the DB is an
+        # object; skipping it makes RE output non-resumable for delta deploys
+        # (a partially-deployed target re-plans CREATE SCHEMA → DuplicateSchema,
+        # found live 2026-10-24 on qr_apply_*).
         if schema_name != "public":
             self._render_one(
                 "schema.sql.j2",
@@ -272,6 +272,7 @@ class SQLGenerator:
 
         self._render_kind(schema_info, "sequences", "sequence", schema_dir, self._sequence_ctx, object_catalog)
         self._render_kind(schema_info, "tables", "table", schema_dir, self._table_ctx, object_catalog)
+        self._render_kind(schema_info, "indexes", "index", schema_dir, self._index_ctx, object_catalog)
         self._render_kind(schema_info, "views", "view", schema_dir, self._view_ctx, object_catalog)
         self._render_kind(
             schema_info, "materialized_views", "materialized_view", schema_dir, self._matview_ctx, object_catalog
@@ -397,6 +398,17 @@ class SQLGenerator:
             "gp_tail": gp_tail_sql(table),
         }
         return ctx, f"table {table['name']}.sql", ""
+
+    @staticmethod
+    def _index_ctx(index: dict[str, Any]) -> tuple[dict[str, Any], str, str]:
+        ctx = {
+            "schema": index["schema"],
+            "name": index["name"],
+            "table_name": index.get("table_name", ""),
+            "definition": index["definition"],
+            "comment": index.get("comment"),
+        }
+        return ctx, f"index {index['name']}.sql", ""
 
     @staticmethod
     def _view_ctx(view: dict[str, Any]) -> tuple[dict[str, Any], str, str]:

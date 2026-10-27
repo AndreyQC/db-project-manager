@@ -177,6 +177,7 @@ STRUCTURE = {
                 {"name": "flights", "comment": None, "columns": []},
             ],
             "views": [{"name": "v_report", "comment": None}],
+            "dictionaries": [{"name": "country_dict", "comment": None}],
         },
         {"name": "audit", "comment": None, "tables": [{"name": "log", "comment": None}]},
     ]
@@ -191,6 +192,12 @@ def test_extract_objects_filters_schema_and_type():
     objects = extract_objects(STRUCTURE, "public", "table")
     assert [o["name"] for o in objects] == ["bookings", "flights"]
     assert objects[0]["comment"] == "Бронирования"
+
+
+def test_extract_objects_dictionary_type():
+    """CH-specific: 'dictionary' object_type maps to the dictionaries key."""
+    objects = extract_objects(STRUCTURE, "public", "dictionary")
+    assert [o["name"] for o in objects] == ["country_dict"]
 
 
 def test_extract_objects_unknown_type_rejected():

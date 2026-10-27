@@ -1,7 +1,7 @@
 -- Создание таблицы {{ _qi(schema) }}.{{ _qi(name) }}
 CREATE TABLE {{ _qi(schema) }}.{{ _qi(name) }} (
 {% for col in columns %}
-    {{ _qi(col.name) }} {{ col.type }}{{ _type_mod(col) }}{{ _null_mod(col) }}{{ _default_mod(col) }}{{ _comma(col, loop, constraints) }}{{ _comment_mod(col) }}
+    {{ _qi(col.name) }} {{ col.type }}{{ _type_mod(col) }}{% if col.is_identity %} GENERATED {{ col.identity_generation }} AS IDENTITY{% else %}{{ _null_mod(col) }}{{ _default_mod(col) }}{% endif %}{{ _comma(col, loop, constraints) }}{{ _comment_mod(col) }}
 {% endfor %}
 {% for c in constraints %}
     CONSTRAINT {{ _qi(c.name) }} {{ c.definition }}{{ _constraint_comma(loop) }}{{ _comment_mod(c) }}

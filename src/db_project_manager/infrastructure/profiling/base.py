@@ -117,6 +117,24 @@ class ProfilingSQLGenerator(ABC):
     def parse_meta(self, row: dict[str, Any]) -> TableMeta:
         """Adapt the engine-specific meta row (JSON-safe values) to TableMeta."""
 
+    # --- engine-specific SQL fragments ---
+
+    def percentile_expr(self, fraction: float, column_ref: str) -> str:
+        """Engine-specific percentile aggregation expression.
+
+        PG: ``percentile_cont({f}) WITHIN GROUP (ORDER BY {q})`` (ordered-set)
+        CH: ``quantile({f})({q})`` (aggregate, TDigest by default)
+        """
+        return f"percentile_cont({fraction}) WITHIN GROUP (ORDER BY {column_ref})"
+
+    def text_length_expr(self, column_ref: str) -> str:
+        """Engine-specific length-of-text expression for VARCHAR/TEXT/etc.
+
+        PG: ``length({q}::text)`` (cast needed for non-text types)
+        CH: ``length({q})`` (works on any type directly)
+        """
+        return f"length({column_ref}::text)"
+
     # --- table source ---
 
     @abstractmethod
@@ -153,16 +171,17 @@ class ProfilingSQLGenerator(ABC):
             if col.category == ColumnCategory.NUMERIC:
                 # percentile_cont существует только для double precision/interval —
                 # ORDER BY timestamp не приводится (живая проверка PG 18, Phase 20).
+                # For CH see ``percentile_expr`` override in CHProfiler.
                 for frac in PERCENTILE_FRACTIONS:
                     key = PERCENTILE_KEYS[frac]
                     parts.append(
-                        f'percentile_cont({frac}) WITHIN GROUP (ORDER BY {q}) AS "{a}{key}"'
+                        f'{self.percentile_expr(frac, q)} AS "{a}{key}"'
                     )
             if col.category == ColumnCategory.TEXT:
                 parts.append(f'min({q}) AS "{a}min"')
                 parts.append(f'max({q}) AS "{a}max"')
-                parts.append(f'avg(length({q}::text)) AS "{a}avglen"')
-                parts.append(f'max(length({q}::text)) AS "{a}maxlen"')
+                parts.append(f'avg({self.text_length_expr(q)}) AS "{a}avglen"')
+                parts.append(f'max({self.text_length_expr(q)}) AS "{a}maxlen"')
         body = ",\n       ".join(parts)
         return f"SELECT {body}\nFROM {base}"
 

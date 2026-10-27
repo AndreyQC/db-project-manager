@@ -437,6 +437,7 @@ class PGDatabaseAdapter(DatabaseAdapter):
                 "comment": schema["comment"],
                 "sequences": [],
                 "tables": [],
+                "indexes": [],
                 "views": [],
                 "materialized_views": [],
                 "functions": [],
@@ -451,6 +452,7 @@ class PGDatabaseAdapter(DatabaseAdapter):
                 for table in self._get_tables(schema_name)
             ]
             schema_info["sequences"] = self._get_sequences(schema_name)
+            schema_info["indexes"] = self._get_indexes(schema_name)
             schema_info["views"] = self._get_views(schema_name)
             schema_info["materialized_views"] = self._get_materialized_views(schema_name)
             schema_info["functions"] = self._get_functions(schema_name)
@@ -1015,6 +1017,11 @@ class PGDatabaseAdapter(DatabaseAdapter):
                     "numeric_precision": col[5],
                     "numeric_scale": col[6],
                     "comment": col[7],
+                    # Identity columns (GENERATED ALWAYS/BY DEFAULT AS IDENTITY):
+                    # rendered by table.sql.j2 instead of NULL/DEFAULT modifiers;
+                    # the column's sequence is created by the identity itself.
+                    "is_identity": col[8] == "YES",
+                    "identity_generation": col[9],
                 }
             )
         constraints = self._group_constraints(
@@ -1138,6 +1145,27 @@ class PGDatabaseAdapter(DatabaseAdapter):
             for r in rows
         ]
         logger.info(f"Последовательностей в '{schema}': {len(infos)}")
+        return infos
+
+    def _get_indexes(self, schema: str) -> list[dict[str, Any]]:
+        """Autonomous indexes of a schema as full ``pg_get_indexdef`` DDL.
+
+        Constraint-backed indexes (PK / UNIQUE / EXCLUDE) are excluded by
+        GET_SCHEMA_INDEXES — they live inside CREATE TABLE. The ``table_name``
+        is kept for the graph edge (index depends on its table).
+        """
+        rows = self._exec(q.GET_SCHEMA_INDEXES, {"schema": schema})
+        infos = [
+            {
+                "schema": r[0],
+                "table_name": r[1],
+                "name": r[2],
+                "definition": r[3],
+                "comment": r[4],
+            }
+            for r in rows
+        ]
+        logger.info(f"Индексов в '{schema}': {len(infos)}")
         return infos
 
     def _get_views(self, schema: str) -> list[dict[str, Any]]:

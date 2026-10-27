@@ -1,0 +1,9 @@
+{
+  "clean": true,
+  "db_type": "postgres",
+  "source_version": "2026.10.23.01",
+  "target_version": "2026.10.23.01",
+  "touched": [],
+  "ignored_build_false": 0,
+  "generated_at": "2026-10-24T13:43:03+00:00"
+}

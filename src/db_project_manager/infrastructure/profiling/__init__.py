@@ -15,10 +15,12 @@ from db_project_manager.infrastructure.profiling.base import (
     quote_ident,
     quote_literal,
 )
+from db_project_manager.infrastructure.profiling.clickhouse import CHProfiler
 from db_project_manager.infrastructure.profiling.greenplum import GreenplumProfiler
 from db_project_manager.infrastructure.profiling.postgres import PostgresProfiler
 
 __all__ = [
+    "CHProfiler",
     "ColumnCategory",
     "GreenplumProfiler",
     "PostgresProfiler",
@@ -39,6 +41,9 @@ def get_profiler(db_type: str) -> ProfilingSQLGenerator:
         return GreenplumProfiler()
     if normalized == "postgres":
         return PostgresProfiler()
+    if normalized == "clickhouse":
+        return CHProfiler()
     raise ValueError(
-        f"Профайлинг не поддерживается для типа БД {db_type!r} (postgres | greenplum)"
+        f"Профайлинг не поддерживается для типа БД {db_type!r} "
+        f"(postgres | greenplum | clickhouse)"
     )

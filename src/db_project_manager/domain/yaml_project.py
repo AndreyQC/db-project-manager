@@ -163,7 +163,7 @@ class YamlProject(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    db_type: Literal["greenplum", "postgres"]
+    db_type: Literal["greenplum", "postgres", "clickhouse"]
     database: str  # bare database name, e.g. "cis_zup"
     generated_at: str  # ISO-8601 UTC
     source_version: str = ""  # calver YYYY.MM.DD.NN; empty if not set

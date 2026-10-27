@@ -28,6 +28,10 @@ TICKETS_SEQ = "pg_database/demo/schema/bookings/type/sequence/name/tickets_id_se
 FLIGHTS_V = "pg_database/demo/schema/bookings/type/view/name/flights_v"
 ROUTES = "pg_database/demo/schema/bookings/type/materialized_view/name/routes"
 
+# 20261024_001: autonomous index objects
+FLIGHTS_NO_IDX = "pg_database/demo/schema/bookings/type/index/name/flights_flight_no_idx"
+TICKETS_UNIQ_IDX = "pg_database/codebase/schema/bookings/type/index/name/tickets_uniq_ref_idx"
+
 
 @pytest.fixture(scope="module")
 def graph():
@@ -381,3 +385,48 @@ def test_extension_file_inside_skip_dirs_ignored(tmp_path) -> None:
     (dbm / "ext.sql").write_text("CREATE EXTENSION citext", encoding="utf-8")
     result = parser.parse_directory(tmp_path)
     assert "pg_database" not in result.vertices
+
+
+# --- 20261024_001: index as a deployable object ---
+
+
+def test_supported_object_types_includes_index() -> None:
+    assert "index" in PgSqlParser().supported_object_types()
+
+
+def test_index_vertex_from_autodoc(graph) -> None:
+    """RE-format index file (autodoc header) becomes an index vertex."""
+    v = graph.get_vertex(FLIGHTS_NO_IDX)
+    assert v is not None
+    assert v.object_type == "index"
+    assert v.object_schema == "bookings"
+    assert v.object_name == "flights_flight_no_idx"
+    assert v.build is True
+    assert v.object_source_file.endswith("bookings/indexes/index flights_flight_no_idx.sql")
+
+
+def test_index_vertex_from_token_path(graph) -> None:
+    """CREATE UNIQUE INDEX without autodoc parses via the token fallback."""
+    v = graph.get_vertex(TICKETS_UNIQ_IDX)
+    assert v is not None
+    assert v.object_type == "index"
+    # Bare catalog fallback + schema from the schema-qualified index name.
+    assert v.object_catalog == "codebase"
+    assert v.object_schema == "bookings"
+    assert v.object_name == "tickets_uniq_ref_idx"
+
+
+def test_index_depends_on_table_edge(graph) -> None:
+    """CREATE INDEX ... ON <table> produces exactly one DEPENDS_ON edge."""
+    edges = [e for e in graph.edges if e.source_object_key == FLIGHTS_NO_IDX]
+    assert len(edges) == 1
+    assert edges[0].destination_object_key == FLIGHTS
+    assert edges[0].relation == Relation.DEPENDS_ON
+    assert edges[0].action == "index on table"
+
+
+def test_unique_index_depends_on_table_edge(graph) -> None:
+    edges = [e for e in graph.edges if e.source_object_key == TICKETS_UNIQ_IDX]
+    assert len(edges) == 1
+    assert edges[0].destination_object_key == TICKETS
+    assert edges[0].relation == Relation.DEPENDS_ON

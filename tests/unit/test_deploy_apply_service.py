@@ -499,3 +499,113 @@ def test_version_newer_hard_error(tmp_path: Path) -> None:
     service = _service(factory)
     with pytest.raises(DeployApplyError, match="Forward-only"):
         service.plan(codebase, _conn(), tmp_path / "out")
+
+
+# --- Phase 6.1 / task 20261017_003: pre-flight ensure_deploy_tables ---
+
+
+class _JournalBootstrappingAdapter(FakeApplyAdapter):
+    """FakeApplyAdapter that exposes ``ensure_deploy_tables`` and tracks
+    every call so we can verify the pre-flight ordering in
+    DeployApplyService._run_pipeline.
+    """
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.ensure_calls: list[str] = []
+
+    def ensure_deploy_tables(self, target_db: str) -> None:
+        self.ensure_calls.append(target_db)
+        self.calls.append(("ensure_deploy_tables", self.database or "", target_db))
+
+
+def test_preflight_ensure_journal_tables_called_for_ch_like_adapters(
+    tmp_path: Path,
+) -> None:
+    """Adapters that expose ``ensure_deploy_tables`` get the pre-flight.
+
+    Verifies the call ordering: ``ensure_deploy_tables`` is invoked
+    BEFORE the final ``record_schema_version`` (it's the pre-flight for
+    the version write at the end of the pipeline)."""
+    codebase = _make_codebase(
+        tmp_path,
+        pre="ALTER TABLE app.orders ADD COLUMN IF NOT EXISTS note text;\n",
+    )
+    factory = AdapterFactory(adapter_cls=_JournalBootstrappingAdapter)
+    service = _service(factory)
+    out = tmp_path / "out"
+    result = service.apply(codebase, _conn(), out, rehearsal=False)
+    assert isinstance(result, ApplyResult)
+    assert result.applied_version == SOURCE_VERSION
+
+    kinds = [k for k, _, _ in factory.calls]
+    assert "ensure_deploy_tables" in kinds, (
+        f"expected ensure_deploy_tables in call log, got: {kinds}"
+    )
+
+    # Ordering: ensure_deploy_tables must come BEFORE
+    # record_schema_version (it's the pre-flight for the version write
+    # at the end of the pipeline).
+    ensure_idx = kinds.index("ensure_deploy_tables")
+    record_idx = kinds.index("record_schema_version")
+    assert ensure_idx < record_idx, (
+        f"bad ordering: ensure={ensure_idx}, record={record_idx}, all={kinds}"
+    )
+
+    # The pre-flight was for the service_schema ("__deploy")
+    ensure_call = next(
+        c for c in factory.calls if c[0] == "ensure_deploy_tables"
+    )
+    assert ensure_call[1] == "target_db"
+    assert ensure_call[2] == "__deploy"
+
+
+def test_preflight_no_op_for_adapters_without_ensure_deploy_tables(
+    tmp_path: Path,
+) -> None:
+    """Adapters WITHOUT ``ensure_deploy_tables`` (PG today) get a no-op.
+
+    Uses the default ``FakeApplyAdapter`` which doesn't implement the
+    method — exactly the PG path. The deploy should still succeed
+    end-to-end and the call log should not contain
+    ``ensure_deploy_tables``.
+    """
+    codebase = _make_codebase(
+        tmp_path,
+        pre="ALTER TABLE app.orders ADD COLUMN IF NOT EXISTS note text;\n",
+    )
+    factory = AdapterFactory()  # default = FakeApplyAdapter (no ensure_*)
+    service = _service(factory)
+    out = tmp_path / "out"
+    result = service.apply(codebase, _conn(), out, rehearsal=False)
+    assert isinstance(result, ApplyResult)
+    assert result.applied_version == SOURCE_VERSION
+
+    kinds = [k for k, _, _ in factory.calls]
+    assert "ensure_deploy_tables" not in kinds
+
+
+def test_preflight_ensure_failure_raises_deploy_apply_error(
+    tmp_path: Path,
+) -> None:
+    """If ``ensure_deploy_tables`` itself fails, surface as DeployApplyError.
+
+    Wraps the underlying DatabaseError so the deploy boundary is the
+    single error contract, not a lower-level clickhouse-connect error.
+    """
+    from db_project_manager.infrastructure.database.base import DatabaseError
+
+    class _FailingBootstrapAdapter(_JournalBootstrappingAdapter):
+        def ensure_deploy_tables(self, target_db: str) -> None:
+            super().ensure_deploy_tables(target_db)
+            raise DatabaseError("simulated cluster error")
+
+    codebase = _make_codebase(
+        tmp_path,
+        pre="ALTER TABLE app.orders ADD COLUMN IF NOT EXISTS note text;\n",
+    )
+    factory = AdapterFactory(adapter_cls=_FailingBootstrapAdapter)
+    service = _service(factory)
+    out = tmp_path / "out"
+    with pytest.raises(DeployApplyError, match="deploy_journal"):
+        service.apply(codebase, _conn(), out, rehearsal=False)

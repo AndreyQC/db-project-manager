@@ -129,13 +129,17 @@ class ConnectionManager:
 
 #: Object-type aliases accepted by list_objects/get_object_details, mapped to
 #: the structure dict keys produced by DatabaseAdapter.get_database_structure().
+#: ``dictionary`` is a CH-specific object class (real DICTIONARY engine,
+#: surfaced via system.dictionaries). PG/Greenplum return [] for it.
 OBJECT_TYPE_KEYS: dict[str, str] = {
     "table": "tables",
     "view": "views",
     "materialized_view": "materialized_views",
     "sequence": "sequences",
+    "index": "indexes",
     "function": "functions",
     "procedure": "procedures",
+    "dictionary": "dictionaries",
 }
 
 

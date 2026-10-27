@@ -114,7 +114,9 @@ def test_dir_vs_dir_identical_produces_all_unchanged(tmp_path):
     # autodoc — excluded from the diff on BOTH sides → 18 - 1 = 17 unchanged.
     # Phase 16.8: the __deploy service schema (schema + 3 tables) is excluded
     # on BOTH sides — tool-owned, never compared → 17 - 4 = 13.
-    assert '"unchanged": 13' in report_text
+    # 20261024_001 (2026-10-24): ``index`` joined DIFFED_TYPES → +2 autonomous
+    # index fixtures = 15 unchanged.
+    assert '"unchanged": 15' in report_text
     assert '"added": 0' in report_text
     assert '"ignored_build_false": 1' in report_text
     assert '"ignored_service_schema": 4' in report_text

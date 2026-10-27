@@ -1026,7 +1026,7 @@ def deploy_reset(
 # --- yaml subapp (Phase 13) ---
 
 
-_VALID_DB_TYPES = ("greenplum", "postgres")
+_VALID_DB_TYPES = ("greenplum", "postgres", "clickhouse")
 
 
 def _resolve_source_db_type(source: Path, db_type: str | None) -> str:
