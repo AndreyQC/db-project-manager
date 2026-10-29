@@ -27,7 +27,7 @@ import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from loguru import logger
 
@@ -116,11 +116,15 @@ class CompareService:
         *,
         keep_model_dir: bool = False,
         progress: ProgressCallback | None = None,
+        codebase_params: Mapping[str, str] | None = None,
     ) -> Path:
         """Run the comparison and write the report to ``output_dir``.
 
         Returns the output directory path. Raises :class:`CompareError` on
         db_type mismatch or a missing manifest.
+
+        ``codebase_params`` — overrides (connection + CLI) applied to DIR
+        sides, layered over the codebase's ``dbpm.params.yaml`` (20261027_001).
         """
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -128,10 +132,16 @@ class CompareService:
         temp_dirs: list[Path] = []
         try:
             self._emit(progress, "Подготовка снимка source…", 0, 4)
-            src_snap = self._build_side(source, "source", temp_dirs, keep_model_dir, progress, output_dir)
+            src_snap = self._build_side(
+                source, "source", temp_dirs, keep_model_dir, progress, output_dir,
+                codebase_params=codebase_params,
+            )
 
             self._emit(progress, "Подготовка снимка target…", 1, 4)
-            tgt_snap = self._build_side(target, "target", temp_dirs, keep_model_dir, progress, output_dir)
+            tgt_snap = self._build_side(
+                target, "target", temp_dirs, keep_model_dir, progress, output_dir,
+                codebase_params=codebase_params,
+            )
 
             if src_snap.db_type != tgt_snap.db_type:
                 raise CompareError(
@@ -179,12 +189,17 @@ class CompareService:
         keep_model_dir: bool,  # noqa: ARG002 — kept for symmetry / future per-side flags
         progress: ProgressCallback | None,
         output_dir: Path,
+        codebase_params: Mapping[str, str] | None = None,
     ) -> StateSnapshot:
         if side.kind == SnapshotSourceKind.DIR:
-            return self._build_dir_side(side)
+            return self._build_dir_side(side, codebase_params)
         return self._build_db_side(side, label, temp_dirs, progress, output_dir)
 
-    def _build_dir_side(self, side: SideSpec) -> StateSnapshot:
+    def _build_dir_side(
+        self,
+        side: SideSpec,
+        codebase_params: Mapping[str, str] | None = None,
+    ) -> StateSnapshot:
         """Read the manifest from a codebase dir, then build the snapshot."""
         try:
             manifest = read_manifest(side.ref)
@@ -196,6 +211,7 @@ class CompareService:
             source_ref=side.ref,
             db_type=manifest.db_type,
             graph_service=self._graph_service,
+            params=codebase_params,
         )
 
     def _build_db_side(

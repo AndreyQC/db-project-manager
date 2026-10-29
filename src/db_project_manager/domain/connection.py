@@ -174,6 +174,16 @@ class ConnectionConfig(BaseModel):
         description="Политика профайлинга таблиц для этого подключения (блок profiling: в yaml)",
     )
 
+    # 20261027_001 (deploy param substitution): per-database override values
+    # for {{param}} placeholders (block ``params:`` in the YAML). Stored
+    # encrypted like the password (crypto__ tokens) and decrypted by
+    # ConnectionStore at load; dbpm.params.yaml of the codebase supplies the
+    # defaults, CLI --param wins over both.
+    params: dict[str, str] = Field(
+        default_factory=dict,
+        description="Переопределения параметров подстановки {{param}} для деплоя в эту БД (блок params: в yaml)",
+    )
+
     # SSH tunnel configuration
     connection_type: ConnectionType = Field(
         default=ConnectionType.DIRECT,

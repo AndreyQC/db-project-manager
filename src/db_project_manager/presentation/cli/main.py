@@ -75,6 +75,7 @@ from db_project_manager.infrastructure.deploy.safety_report import rows_phrase
 from db_project_manager.infrastructure.graph import graph_store
 from db_project_manager.infrastructure.graph.export import export_graph
 from db_project_manager.infrastructure.logging_setup import configure as configure_logging
+from db_project_manager.infrastructure.params import UnresolvedParamError
 
 app = typer.Typer(no_args_is_help=True, add_completion=False, help="DB Project Manager CLI.")
 graph_app = typer.Typer(no_args_is_help=True, help="Граф зависимостей кодовой базы.")
@@ -102,6 +103,45 @@ def _load_connection(connection_file: Path) -> object:
     except ConnectionStoreError as e:
         typer.secho(f"Ошибка загрузки подключения: {e}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2) from e
+
+
+def _parse_cli_params(items: list[str] | None) -> dict[str, str]:
+    """Разобрать повторяемый ``--param name=value`` в словарь.
+
+    Значение может содержать ``=`` — режем по первому. Пустое значение
+    допустимо (``--param x=`` → пустая строка).
+    """
+    result: dict[str, str] = {}
+    for item in items or []:
+        name, sep, value = item.partition("=")
+        if not sep or not name.strip():
+            raise typer.BadParameter(
+                f"Ожидался формат --param name=value, получено: {item!r}"
+            )
+        result[name.strip()] = value
+    return result
+
+
+def _merge_deploy_params(conn_cfg: object, cli_items: list[str] | None) -> dict[str, str]:
+    """Переопределения деплоя: ``params:`` подключения < ``--param`` CLI.
+
+    База (``dbpm.params.yaml`` кодовой базы) подмешивается дальше по цепочке —
+    в effective_params внутри сервисов.
+    """
+    overrides: dict[str, str] = dict(getattr(conn_cfg, "params", None) or {})
+    overrides.update(_parse_cli_params(cli_items))
+    return overrides
+
+
+#: Повторяемая опция параметров подстановки (20261027_001).
+_PARAM_OPTION = Annotated[
+    Optional[list[str]],
+    typer.Option(
+        "--param",
+        help="Параметр подстановки {{name}}=значение (повторяемый). Приоритет: "
+        "--param > params: подключения > dbpm.params.yaml кодовой базы.",
+    ),
+]
 
 
 _NO_RUN_SUBDIR_OPTION = Annotated[
@@ -302,12 +342,18 @@ def qualify_refs(
 @graph_app.command("build")
 def graph_build(
     directory: Annotated[Path, typer.Option("--dir", help="Codebase root to parse.")],
+    param: _PARAM_OPTION = None,
 ) -> None:
     """Build the dependency graph and write it to <dir>/.dbm_graph/."""
     configure_logging()
+    cli_params = _parse_cli_params(param)
     service = BuildGraphService()
-    gdir = service.build_and_store(directory)
-    graph = service.build(directory)
+    try:
+        gdir = service.build_and_store(directory, params=cli_params)
+        graph = service.build(directory, params=cli_params)
+    except UnresolvedParamError as e:
+        typer.secho(f"✗ Параметры подстановки: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from e
     typer.secho(
         f"✓ Граф построен: вершин={len(graph.vertices)}, рёбер={len(graph.edges)}; "
         f"записан в {gdir}",
@@ -539,11 +585,13 @@ def deploy_validate(
         bool, typer.Option("--continue-on-error", help="Continue past late-object failures.")
     ] = False,
     config: Annotated[Optional[Path], typer.Option("--config", help="Path to config.yaml.")] = None,
+    param: _PARAM_OPTION = None,
 ) -> None:
     """Validation deploy: build a temp DB on the server and deploy the codebase into it."""
     cfg = load_cfg(config if config is not None else None)
     configure_logging(level=cfg.logging.level, console=True, logs_dir=cfg.paths.logs_dir)
     conn_cfg = _load_connection(connection_file)
+    param_values = _merge_deploy_params(conn_cfg, param)
 
     service = DeployValidateService()
 
@@ -562,9 +610,13 @@ def deploy_validate(
             keep_db=keep_db,
             continue_on_error=continue_on_error,
             progress=progress,
+            params=param_values,
         )
     except DeployPermissionError as e:
         typer.secho(f"✗ Нет прав: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from e
+    except UnresolvedParamError as e:
+        typer.secho(f"✗ Параметры подстановки: {e}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2) from e
     except CycleError as e:
         typer.secho(f"✗ Граф содержит циклы: {', '.join(sorted(e.unresolved))}", fg=typer.colors.RED, err=True)
@@ -764,6 +816,7 @@ def deploy_plan(
     ] = False,
     no_run_subdir: _NO_RUN_SUBDIR_OPTION = False,
     config: Annotated[Optional[Path], typer.Option("--config", help="Path to config.yaml.")] = None,
+    param: _PARAM_OPTION = None,
 ) -> None:
     """Dry-run delta plan: safety gate + ALTER plan + artifacts. Read-only.
 
@@ -777,6 +830,7 @@ def deploy_plan(
     cfg = load_cfg(config if config is not None else None)
     configure_logging(level=cfg.logging.level, console=True, logs_dir=cfg.paths.logs_dir)
     conn_cfg = _load_connection(target_connection_file)
+    param_values = _merge_deploy_params(conn_cfg, param)
 
     run_dir = create_run_dir(output_dir, enabled=not no_run_subdir)
     service = DeployApplyService(service_schema=cfg.deploy.service_schema)
@@ -791,6 +845,7 @@ def deploy_plan(
         plan = service.plan(
             directory, conn_cfg, run_dir,
             include_drops=include_drops, progress=progress,
+            params=param_values,
         )
     except DeployApplyRejected as e:
         typer.secho(f"✗ Plan отклонён: {e}", fg=typer.colors.RED, err=True)
@@ -798,6 +853,10 @@ def deploy_plan(
         raise typer.Exit(code=1) from e
     except DeployApplyError as e:
         typer.secho(f"✗ Plan: {e}", fg=typer.colors.RED, err=True)
+        typer.secho(f"Артефакты прогона: {run_dir}", err=True)
+        raise typer.Exit(code=2) from e
+    except UnresolvedParamError as e:
+        typer.secho(f"✗ Параметры подстановки: {e}", fg=typer.colors.RED, err=True)
         typer.secho(f"Артефакты прогона: {run_dir}", err=True)
         raise typer.Exit(code=2) from e
 
@@ -855,6 +914,7 @@ def deploy_apply(
     ] = False,
     no_run_subdir: _NO_RUN_SUBDIR_OPTION = False,
     config: Annotated[Optional[Path], typer.Option("--config", help="Path to config.yaml.")] = None,
+    param: _PARAM_OPTION = None,
 ) -> None:
     """MUTATES the target DB: rehearse the delta on a temp analog, then apply.
 
@@ -869,6 +929,7 @@ def deploy_apply(
     cfg = load_cfg(config if config is not None else None)
     configure_logging(level=cfg.logging.level, console=True, logs_dir=cfg.paths.logs_dir)
     conn_cfg = _load_connection(target_connection_file)
+    param_values = _merge_deploy_params(conn_cfg, param)
 
     run_dir = create_run_dir(output_dir, enabled=not no_run_subdir)
     service = DeployApplyService(service_schema=cfg.deploy.service_schema)
@@ -886,6 +947,7 @@ def deploy_apply(
             rehearsal=not no_rehearsal,
             keep_rehearsal_db=keep_rehearsal_db,
             progress=progress,
+            params=param_values,
         )
     except DeployApplyRejected as e:
         typer.secho(f"✗ Apply отклонён: {e}", fg=typer.colors.RED, err=True)
@@ -893,6 +955,10 @@ def deploy_apply(
         raise typer.Exit(code=1) from e
     except DeployApplyError as e:
         typer.secho(f"✗ Apply: {e}", fg=typer.colors.RED, err=True)
+        typer.secho(f"Артефакты прогона: {run_dir}", err=True)
+        raise typer.Exit(code=2) from e
+    except UnresolvedParamError as e:
+        typer.secho(f"✗ Параметры подстановки: {e}", fg=typer.colors.RED, err=True)
         typer.secho(f"Артефакты прогона: {run_dir}", err=True)
         raise typer.Exit(code=2) from e
 

@@ -16,12 +16,17 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Mapping
 
 from db_project_manager.application.graph_service import BuildGraphService
 from db_project_manager.domain.diff import EdgeSnapshot, ObjectSnapshot, SnapshotSourceKind, StateSnapshot
 from db_project_manager.domain.graph import DependencyGraph
 from db_project_manager.infrastructure.diff.columns import extract_columns
 from db_project_manager.infrastructure.diff.normalize_sql import hash_normalized, normalize_sql
+from db_project_manager.infrastructure.params import (
+    ParamSubstitutor,
+    effective_params,
+)
 from db_project_manager.infrastructure.sql.autodoc import MARKER_CLOSE
 
 #: Object types that participate in the structural diff.
@@ -57,6 +62,7 @@ def build_snapshot_from_dir(
     db_type: str,
     row_counts: dict[tuple[str, str], int | float | None] | None = None,
     graph_service: BuildGraphService | None = None,
+    params: Mapping[str, str] | None = None,
 ) -> StateSnapshot:
     """Build a :class:`StateSnapshot` from a reverse-engineer codebase dir.
 
@@ -68,18 +74,26 @@ def build_snapshot_from_dir(
         row_counts: optional ``{(schema, table): estimated_rows}`` from
             :meth:`DatabaseAdapter.get_table_row_counts`; attached to tables only.
         graph_service: injectable for tests (defaults to a fresh ``BuildGraphService``).
+        params: overrides (connection + CLI) layered over the codebase's
+            ``dbpm.params.yaml`` (20261027_001).
 
     The graph is read-only here; no ``.dbm_graph/`` is written.
     """
     root = Path(codebase_dir)
     service = graph_service or BuildGraphService()
-    graph: DependencyGraph = service.build(root)
+    graph: DependencyGraph = service.build(root, params=params)
+
+    # Same values for the hashed bodies as for the graph (20261027_001): the
+    # codebase's dbpm.params.yaml as the base, overrides layered on top. The
+    # parser has already failed fast on unresolved placeholders, so the
+    # substitutor here never records anything — defensive symmetry only.
+    substitutor = ParamSubstitutor(effective_params(root, params))
 
     objects: dict[str, ObjectSnapshot] = {}
     for vertex in graph.vertices.values():
         if vertex.object_type not in DIFFED_TYPES:
             continue
-        body = _read_sql_body(root, vertex.object_source_file)
+        body = _read_sql_body(root, vertex.object_source_file, substitutor)
         normalized = normalize_sql(body)
         objects[vertex.object_key] = ObjectSnapshot(
             object_key=vertex.object_key,
@@ -114,12 +128,19 @@ def build_snapshot_from_dir(
     )
 
 
-def _read_sql_body(codebase_root: Path, source_file: str) -> str:
+def _read_sql_body(
+    codebase_root: Path,
+    source_file: str,
+    substitutor: ParamSubstitutor | None = None,
+) -> str:
     """Read an object's SQL body, stripping the autodoc comment header.
 
-    The autodoc block is a ``/* ... [[autodoc-yaml]>] ... */`` comment at the top
-    of the file. We take everything after the closing ``*/`` of that block. If no
-    autodoc is present, the whole file content is returned.
+    ``{{param}}`` placeholders are substituted first (20261027_001); the
+    autodoc block is excluded from substitution, so the strip below sees it
+    unchanged. The autodoc block is a ``/* ... [[autodoc-yaml]>] ... */``
+    comment at the top of the file. We take everything after the closing
+    ``*/`` of that block. If no autodoc is present, the whole file content is
+    returned.
     """
     if not source_file:
         return ""
@@ -127,6 +148,8 @@ def _read_sql_body(codebase_root: Path, source_file: str) -> str:
     if not path.is_file():
         return ""
     text = path.read_text(encoding="utf-8-sig")
+    if substitutor is not None:
+        text = substitutor.substitute(text, origin=source_file)
     if MARKER_CLOSE not in text:
         return text.strip()
     after_marker = text.split(MARKER_CLOSE, 1)[1]
