@@ -1,7 +1,7 @@
 # Сравнение состояния БД с файловой системой — драфт задачи (Phase 9)
 
 > Это план **создания драфта-документа** (task-файла по `_tasks_` конвенции).
-> Никаких изменений в коде — только новый файл `_docs_/_tasks_/2026-07-28/20260728_001_compare_db_vs_fs_draft.md`,
+> Никаких изменений в коде — только новый файл `harness_docs/harness_tasks/2026-07-28/20260728_001_compare_db_vs_fs_draft.md`,
 > плюс при желании запись в `BACKLOG.md`.
 
 ## Что будет в драфте
@@ -99,7 +99,7 @@ db-pm compare run \
 - [ ] Нормализация: глобальные преобразования ДО токенизации (sqlglot делает сам, но осознать) (§27).
 - [ ] Сетевой адаптер в `try/finally`, cleanup temp-каталога (по образцу deploy_service) (§11).
 - [ ] SQL-запрос — статическая проверка имён столбцов (§3).
-- [ ] `git add -- "_tasks_/..."` для каталогов с `-` (§12).
+- [ ] `git add -- "harness_tasks/..."` для каталогов с `-` (§12).
 - [ ] Bare refs в телах функций/views — документировать как ограничение (§35).
 - [ ] Новая зависимость (sqlglot) — проверить наличие wheel для Windows (§10).
 
@@ -109,14 +109,14 @@ db-pm compare run \
 - Open questions: нет (после Q&A все закрыты); в драфте явно отметить, что дизайн готов к плану→результат.
 
 ### Связанные документы (кросс-ссылки)
-- `_checkpoints_/20260725_002_checkpoint.md` — текущее состояние проекта.
-- `_tasks_/BACKLOG.md` — фаза 8 (overload resolution) и куда добавить edge diff.
+- `harness_checkpoints/20260725_002_checkpoint.md` — текущее состояние проекта.
+- `harness_tasks/BACKLOG.md` — фаза 8 (overload resolution) и куда добавить edge diff.
 - `LESSONS_LEARNED.md` §3, §9, §11, §18, §27, §35 — релевантные уроки.
-- `_tasks_/phase_07/Phase_7_vision_final.md` — паттерн action registry (если позже добавлять GUI).
+- `harness_tasks/phase_07/Phase_7_vision_final.md` — паттерн action registry (если позже добавлять GUI).
 
 ## Файл драфта
 
-**Путь:** `_docs_/_tasks_/2026-07-28/20260728_001_compare_db_vs_fs_draft.md`
+**Путь:** `harness_docs/harness_tasks/2026-07-28/20260728_001_compare_db_vs_fs_draft.md`
 
 **Коммит (после утверждения плана):**
 ```

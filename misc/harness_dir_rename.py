@@ -8,7 +8,8 @@ Rename harness documentation directories and rewrite references.
 
 - Переименование каталогов: git mv (вне этого скрипта), порядок в ранбуке.
 - Перезапись ссылок: во всех текстовых файлах под root, кроме skip-каталогов
-  (.git, src, node_modules, dist, vendor, ...), Taskfile.yml и самого скрипта.
+  (.git, node_modules, dist, .venv, output, ...), Taskfile.yml и самого скрипта.
+  Код в src/ перезаписывается наравне с документами.
 - Fenced-блоки переписываются наравне с телом: живые инструкции (команды
   make/ls) тоже лежат в фенсах; от порчи карту уберегает self-skip.
 - Байт-точная запись: перезаписываются только файлы с реальными заменами,
@@ -20,6 +21,7 @@ Usage:
 """
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
@@ -32,17 +34,37 @@ RENAME_MAP = [
     (b"_docs_/_phases_", b"harness_docs/harness_phases"),
     (b"_docs_/_sessions_", b"harness_docs/harness_sessions"),
     (b"_docs_/_index", b"harness_docs/harness_index"),
+    # backslash-варианты (Windows-пути в доках этого репозитория)
+    (b"_docs_\\_checkpoints_", b"harness_docs\\harness_checkpoints"),
+    (b"_docs_\\_tasks_", b"harness_docs\\harness_tasks"),
+    (b"_docs_\\_plans_", b"harness_docs\\harness_plans"),
+    (b"_docs_\\_phases_", b"harness_docs\\harness_phases"),
     # опечаточный вариант без закрывающего подчёркивания (исторический мусор)
     (b"_docs/_checkpoints_", b"harness_docs/harness_checkpoints"),
     (b"_docs_", b"harness_docs"),
     (b"_archives_", b"harness_archives"),
 ]
 
+# Bare-имена внутренних каталогов в путевом употреблении (за ними / или \):
+# `_tasks_/BACKLOG.md`, `_checkpoints_\...`. Guard слева отсекает уже
+# переписанные формы (в `harness_checkpoints/` подстрока `_checkpoints_/`
+# присутствует — простой replace дал бы harness_harness_). Bare-проза без
+# слэша не переписывается — правится руками в активных доках по вкусу.
+BARE_INNER_RE = re.compile(
+    rb"(?<![A-Za-z0-9_])_(checkpoints|tasks|phases|plans|sessions|domains|archives)_(?=[/\\])"
+)
+
 SKIP_DIRS = {
-    ".git", "node_modules", "src", "dist", "build", "vendor", "targets",
+    ".git", "node_modules", "dist", "build", "vendor", "targets",
     ".venv", "__pycache__", ".idea", ".vscode", "output", "logs",
+    # portable-сборка (не в git, вендорённый сторонний код: _docs_for_groups и пр.)
+    "dbpm-portable",
 }
-SKIP_FILES = {"Taskfile.yml"}
+SKIP_FILES = {
+    "Taskfile.yml",
+    # исторические скрипты прошлого переезда — не трогать (замер плана)
+    "move_docs_dirs.py", "rename_docs_dirs.py",
+}
 
 
 def is_text(data: bytes) -> bool:
@@ -62,6 +84,8 @@ def rewrite(data: bytes) -> tuple[bytes, int]:
         if n:
             changed = changed.replace(old, new)
             total += n
+    changed, n = BARE_INNER_RE.subn(rb"harness_\1", changed)
+    total += n
     return changed, total
 
 

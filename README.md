@@ -381,7 +381,7 @@ MCP-слой править не нужно.
 JSON-профиль каждой таблицы в `reports/<connection>/<schema>.<table>.json`
 (каталог в .gitignore: профиль содержит литералы данных) + сводка в stdout.
 Тот же функционал в MCP — инструмент `profile_tables` (read-only, 13-й
-инструмент). Решения фазы: `_tasks_/2026-10-06/20261006_001_ydata_profiling_final.md`.
+инструмент). Решения фазы: `harness_tasks/2026-10-06/20261006_001_ydata_profiling_final.md`.
 
 Метрики: count, размер, оценка reltuples; по колонкам — NULL-доли,
 COUNT(DISTINCT), min/max, avg/stddev, перцентили p01/p25/p50/p75/p99
@@ -437,7 +437,7 @@ uv run pytest --cov=db_project_manager   # с покрытием
 uv run ruff check .     # линтер
 ```
 
-Структура пакетов: `domain` (модели) → `infrastructure` (БД, файлы, crypto) → `application` (сервисы) → `presentation` (CLI/GUI/MCP). Подробности: `_tasks_/`.
+Структура пакетов: `domain` (модели) → `infrastructure` (БД, файлы, crypto) → `application` (сервисы) → `presentation` (CLI/GUI/MCP). Подробности: `harness_tasks/`.
 
 ## Лицензия
 

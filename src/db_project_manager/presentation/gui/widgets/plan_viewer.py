@@ -5,7 +5,7 @@ A standalone ``QMainWindow`` that opens an existing ``plan.json`` (produced by
 type/schema, color-coded by classification (safe / needs-pre / blocked), with
 a detail panel and a DDL view of the per-operation ``script_file`` artifact.
 
-Design (see ``_tasks_/phase_15/Phase_15_vision_final.md`` §4):
+Design (see ``harness_tasks/phase_15/Phase_15_vision_final.md`` §4):
     - Reads a single self-describing ``plan.json`` (the ``DeltaPlan`` model).
     - Separate window (not a dock; not an action dialog — those close on OK).
       Mirrors :class:`DeltaViewerWindow` (Phase 14) in lifecycle.

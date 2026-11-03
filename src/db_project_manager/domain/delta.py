@@ -16,7 +16,7 @@ This module is pure pydantic — no I/O, no DB, no sqlglot (same convention as
 ``domain/diff.py`` and ``domain/safety.py``). Serialization uses the standard pydantic
 JSON machinery; all models ignore unknown keys so older reports keep parsing.
 
-See ``_docs_/_tasks_/phase_12/Phase_12_vision_final.md`` for the normative design
+See ``harness_docs/harness_tasks/phase_12/Phase_12_vision_final.md`` for the normative design
 (decisions ALT-1..ALT-8, classification matrix §3).
 """
 

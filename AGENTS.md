@@ -2,8 +2,8 @@
 
 
 Инструкция для AI-агентов, работающих в этом репозитории. Контекст сессии
-начинать отсюда: `_docs_/REFRESH_CONTEXT.md` → последний чекпойнт
-(`ls _docs_/_checkpoints_/`).
+начинать отсюда: `harness_docs/REFRESH_CONTEXT.md` → последний чекпойнт
+(`ls harness_docs/harness_checkpoints/`).
 
 
 ## Commands
@@ -64,11 +64,11 @@ Marked `@pytest.mark.integration`, skipped by default. Require Docker Desktop ru
 - Use `shlex.split(cmd, posix=False)` for Windows path handling
 - Always qualify SQL identifiers (schema.name) — bare names break on different search_path
 - See `LESSONS_LEARNED.md` for patterns to avoid
-- See `_docs_/_checkpoints_/latest_checkpoint.md` for current status
+- See `harness_docs/harness_checkpoints/latest_checkpoint.md` for current status
 
 ## Next Phase
 
 Phase 17 — post-deploy отчёты (CD-16..19). Phase 18 (deploy reset — сброс
 пользовательских схем) реализована 2026-09-17 до Phase 17 по решению
-пользователя: `_docs_/_tasks_/2026-09-17/20260917_001_deploy_reset_final.md`.
-Phase 19 (MCP-сервер `db-pm-mcp`) — план `_docs_/_tasks_/2026-09-27/20260927_001_mcp_server_plan.md`.
+пользователя: `harness_docs/harness_tasks/2026-09-17/20260917_001_deploy_reset_final.md`.
+Phase 19 (MCP-сервер `db-pm-mcp`) — план `harness_docs/harness_tasks/2026-09-27/20260927_001_mcp_server_plan.md`.
