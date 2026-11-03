@@ -32,6 +32,14 @@ from db_project_manager.infrastructure.database.snowflake.adapter import (
 )
 
 
+def _edge_exists(graph: object, src_name: str, dst_name: str) -> bool:
+    """True when an edge source→destination exists (name-in-key match)."""
+    return any(
+        src_name in e.source_object_key and dst_name in e.destination_object_key
+        for e in graph.edges  # type: ignore[attr-defined]
+    )
+
+
 def _cfg(**overrides: object) -> ConnectionConfig:
     defaults: dict = {
         "host": "xy12345.eu-central-1.snowflakecomputing.com",
@@ -491,3 +499,120 @@ def test_reverse_engineer_renders_snowflake_files(tmp_path) -> None:
     assert "FUNCTION ANALYTICS.CORE.FN_ADD" in fn_sql
     # __deploy service schema seeded into the codebase (PG canonical templates).
     assert (target / "__deploy" / "schema __deploy.sql").is_file()
+
+
+# --- S3-pre: parser/graph on the RE-generated Snowflake codebase ----------
+
+
+def test_graph_builds_from_re_generated_codebase(tmp_path) -> None:
+    """RE-фикстуры → кодовая база → BuildGraphService: все вершины, рёбра
+    вью/матвью → таблица, сортировка деплоя без циклов (S3-пре, 20261103_002)."""
+    from db_project_manager.application.graph_service import BuildGraphService
+    from db_project_manager.application.reverse_engineer import ReverseEngineerService
+    from db_project_manager.infrastructure.graph.topological_sort import (
+        sort_by_type_and_topology,
+    )
+
+    service = ReverseEngineerService(adapter_factory=lambda _cfg: _fixture_adapter())
+    target = service.run(_cfg(), tmp_path)
+
+    graph = BuildGraphService().build(target)
+    # 7 объектов CORE (schema, table, view, matview, sequence, function,
+    # procedure) + 4 в __deploy (schema + 3 таблицы).
+    assert len(graph.vertices) == 11
+    assert _edge_exists(graph, "V_ORDERS", "ORDERS")
+    assert _edge_exists(graph, "MV_DAILY", "ORDERS")
+    # Деплой-порядок строится (циклов нет), trigger-логика не задействована.
+    ordered = sort_by_type_and_topology(graph)
+    assert len(ordered) == 11
+    types = [v.object_type for v in ordered]
+    assert types.index("schema") < types.index("table") < types.index("view")
+
+
+_SNOW_HEADER = """\
+/*====================================================================================
+[<[autodoc-yaml]]object:
+  object_catalog: ANALYTICS
+  object_schema: {schema}
+  object_type: {otype}
+  object_name: {name}
+  object_key: pg_database/ANALYTICS/schema/{schema}/type/{otype}/name/{name}
+project:
+  build: true
+[[autodoc-yaml]>]
+=====================================================================================*/
+
+"""
+
+
+def _write_snow_object(root, schema: str, otype: str, name: str, body: str) -> None:
+    """RE-подобный файл с autodoc-заголовком и Snowflake-телом."""
+    kind = {"table": "tables", "view": "views", "function": "functions", "procedure": "procedures"}[otype]
+    path = root / schema / kind / f"{otype} {name}.sql"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_SNOW_HEADER.format(schema=schema, otype=otype, name=name) + body, encoding="utf-8")
+
+
+def test_snowflake_syntax_through_word_scan(tmp_path) -> None:
+    """Пробник синтаксиса через word-scan: QUALIFY/::/ILIKE/FLATTEN/скриптинг/
+    @stage не роняют разбор и не дают ложных рёбер; настоящие зависимости
+    (вью → таблица, процедура → таблица) строятся."""
+    from db_project_manager.application.graph_service import BuildGraphService
+
+    root = tmp_path / "codebase"
+    _write_snow_object(
+        root, "CORE", "table", "ORDERS",
+        'CREATE TABLE "CORE"."ORDERS" (\n'
+        '    "ID" NUMBER(38,0) NOT NULL AUTOINCREMENT START 1 INCREMENT 1,\n'
+        '    "PAYLOAD" VARIANT,\n'
+        '    "EMAIL" VARCHAR(320)\n'
+        ");",
+    )
+    _write_snow_object(
+        root, "CORE", "view", "V_PIVOT",
+        'CREATE OR REPLACE VIEW "CORE"."V_PIVOT" AS\n'
+        "SELECT o.\"ID\"::VARCHAR AS id_str, p.\"K\", p.\"V\"\n"
+        'FROM "CORE"."ORDERS" o,\n'
+        'LATERAL FLATTEN(input => o."PAYLOAD") p\n'
+        "WHERE o.\"EMAIL\" ILIKE '%@example.com'\n"
+        "QUALIFY row_number() OVER (PARTITION BY o.\"ID\" ORDER BY p.\"V\" DESC) = 1;",
+    )
+    _write_snow_object(
+        root, "CORE", "function", "FN_SCRIPT",
+        "CREATE OR REPLACE FUNCTION \"CORE\".FN_SCRIPT(x NUMBER)\n"
+        "RETURNS VARCHAR\n"
+        "LANGUAGE SQL\n"
+        "AS\n"
+        "$$\n"
+        "BEGIN\n"
+        "  LET s VARCHAR := (SELECT \"EMAIL\" FROM \"CORE\".ORDERS WHERE \"ID\" = :x);\n"
+        "  EXECUTE IMMEDIATE 'SELECT 1';\n"
+        "  RETURN s;\n"
+        "END;\n"
+        "$$;",
+    )
+    _write_snow_object(
+        root, "CORE", "procedure", "SP_EXPORT",
+        'CREATE OR REPLACE PROCEDURE "CORE".SP_EXPORT()\n'
+        "RETURNS VARCHAR\n"
+        "LANGUAGE SQL\n"
+        "AS\n"
+        "$$\n"
+        "BEGIN\n"
+        "  COPY INTO @MY_STAGE/export/orders.csv\n"
+        '  FROM "CORE"."ORDERS";\n'
+        "END;\n"
+        "$$;",
+    )
+
+    graph = BuildGraphService().build(root)
+    assert len(graph.vertices) == 4
+    # Настоящие зависимости: вью и функция и процедура читают ORDERS.
+    assert _edge_exists(graph, "V_PIVOT", "ORDERS")
+    assert _edge_exists(graph, "FN_SCRIPT", "ORDERS")
+    assert _edge_exists(graph, "SP_EXPORT", "ORDERS")
+    # Ложных вершин под @stage / билтины нет.
+    assert not any("MY_STAGE" in k or "FLATTEN" in k for k in graph.vertices)
+    # Вью не должна получить ложное ребро к самой себе через QUALIFY/итог.
+    self_edges = [e for e in graph.edges if e.source_object_key == e.destination_object_key]
+    assert not self_edges

@@ -333,11 +333,14 @@ def find_calls(raw_sql: str, schema: str | None, name: str) -> list[str]:
     patterns.append(rf"(?<![\w.]){name_re}")
     name_pattern = "(?:" + "|".join(patterns) + ")"
 
-    # Match ``name ( <balanced> )``. We allow one level of nested parentheses in
+    # Match ``name ( <balanced> )``. Case-insensitive: unquoted SQL identifiers
+    # are case-insensitive (Snowflake bodies arrive UPPERCASE — Phase 21), the
+    # parser index keys are lowercased (PgSqlParser._build_names_index).
+    # We allow one level of nested parentheses in
     # the body via the classic non-recursive pattern; deeper nesting is still
     # captured because after a balanced inner pair we resume scanning — but a
     # truly unbalanced tail is skipped (caller treats it as not-found).
-    call_re = re.compile(rf"{name_pattern}\s*\(")
+    call_re = re.compile(rf"{name_pattern}\s*\(", re.IGNORECASE)
 
     for m in call_re.finditer(body):
         # Skip function/procedure DEFINITIONS: 'CREATE FUNCTION name(...)' /

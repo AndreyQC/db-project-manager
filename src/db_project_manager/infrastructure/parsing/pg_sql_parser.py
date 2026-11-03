@@ -319,16 +319,19 @@ class PgSqlParser(ObjectGraphParser):
         """Map every known object identifier -> object_key.
 
         We index by bare name and full_name; the scanner looks up tokens.
+        Keys are lowercased: the normalized word stream arrives lowercase and
+        unquoted identifiers are case-insensitive in SQL (Snowflake stores
+        them uppercase — Phase 21) — matching must not depend on case.
         First-wins on collisions (overloads share a bare name) — the overload
         index below carries the extra data needed to disambiguate call sites.
         """
         index: dict[str, str] = {}
         for key, vertex in graph.vertices.items():
             if vertex.object_name:
-                index.setdefault(vertex.object_name, key)
+                index.setdefault(vertex.object_name.lower(), key)
             if vertex.object_schema and vertex.object_name:
                 full = f"{vertex.object_schema}.{vertex.object_name}"
-                index.setdefault(full, key)
+                index.setdefault(full.lower(), key)
         return index
 
     @staticmethod
@@ -349,12 +352,13 @@ class PgSqlParser(ObjectGraphParser):
         Keys are both the bare name and the ``schema.name`` form, matching
         ``_build_names_index``, so a call can be looked up however it appears.
         """
-        # Group routine vertices by bare name to detect overload groups.
+        # Group routine vertices by bare name (lowercased — see
+        # _build_names_index) to detect overload groups.
         groups: dict[str, list[Vertex]] = {}
         for vertex in graph.vertices.values():
             if vertex.object_type not in {"function", "procedure"} or not vertex.object_name:
                 continue
-            groups.setdefault(vertex.object_name, []).append(vertex)
+            groups.setdefault(vertex.object_name.lower(), []).append(vertex)
 
         overload_index: dict[str, list[tuple[str, tuple[str, ...]]]] = {}
         for name, vertices in groups.items():
@@ -458,7 +462,7 @@ class PgSqlParser(ObjectGraphParser):
                 # first-wins edge does not mask the resolved ones. The actual
                 # call/JOIN classification is deferred to that pass too.
                 overloads = overload_index.get(token) or overload_index.get(
-                    f"{self_schema}.{token}" if self_schema else ""
+                    f"{self_schema}.{token}".lower() if self_schema else ""
                 )
                 if overloads:
                     resolved_overload_names.add(token)
@@ -479,7 +483,7 @@ class PgSqlParser(ObjectGraphParser):
                 if relation is None:
                     continue
                 if relation == Relation.SEQUENCE_NEXTVAL_IN and self_schema:
-                    qualified = f"{self_schema}.{token}"
+                    qualified = f"{self_schema}.{token}".lower()
                     dest_key = names_index.get(qualified) or dest_key
 
             edge = Edge(
