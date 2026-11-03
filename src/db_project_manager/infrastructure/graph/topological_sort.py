@@ -32,11 +32,15 @@ TYPE_PRIORITIES: dict[str, int] = {
     "table": 2,
     "index": 3,
     "constraint": 3,
-    "trigger": 3,
     "view": 4,
     "materialized_view": 4,
     "function": 5,
     "procedure": 5,
+    # Trigger executes a function/procedure and is attached to a table or
+    # view — it must deploy AFTER all three (task 20261028_001). Shares the
+    # band with policy/grant: no type-level constraint between them, ties
+    # fall through to topo_index.
+    "trigger": 6,
     "policy": 6,
     "grant": 6,
 }
