@@ -72,3 +72,9 @@ Phase 17 — post-deploy отчёты (CD-16..19). Phase 18 (deploy reset — с
 пользовательских схем) реализована 2026-09-17 до Phase 17 по решению
 пользователя: `harness_docs/harness_tasks/2026-09-17/20260917_001_deploy_reset_final.md`.
 Phase 19 (MCP-сервер `db-pm-mcp`) — план `harness_docs/harness_tasks/2026-09-27/20260927_001_mcp_server_plan.md`.
+
+Текущее: 20261028_001 закрыт (приоритет trigger 3→6, 17 триггеров qr
+деплоятся 584/584). Ближайшее по бэклогу: **P2 — этап 1 плана 588
+(constraint-объекты, взаимные FK)**; также P3: RE не выгружает триггеры,
+GP-регресс правки порядка, очередь Кана. Открытые пункты не терять —
+смотреть хвост `harness_docs/harness_tasks/BACKLOG.md`.
