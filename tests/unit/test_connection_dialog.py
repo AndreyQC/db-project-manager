@@ -218,3 +218,56 @@ def test_accept_still_blocks_plaintext_when_env_unset(
 
     assert dlg.result() != QDialog.DialogCode.Accepted
     assert len(critical_calls) == 1
+
+
+# --- Phase 21 (20261103_002): snowflake type in the dialog ------------------
+
+
+def test_db_types_include_snowflake(qapp) -> None:
+    dlg = ConnectionDialog(ConnectionStore())
+    items = [dlg.db_type_combo.itemText(i) for i in range(dlg.db_type_combo.count())]
+    assert "snowflake" in items
+
+
+def test_snowflake_default_port_applied_when_port_is_stock(qapp) -> None:
+    dlg = ConnectionDialog(ConnectionStore())
+    assert dlg.port_spin.value() == 5432  # postgres default on open
+    dlg.db_type_combo.setCurrentText("clickhouse")
+    assert dlg.port_spin.value() == 8123
+    dlg.db_type_combo.setCurrentText("snowflake")
+    assert dlg.port_spin.value() == 443
+
+
+def test_custom_port_survives_type_switch(qapp) -> None:
+    dlg = ConnectionDialog(ConnectionStore())
+    dlg.port_spin.setValue(5433)
+    dlg.db_type_combo.setCurrentText("snowflake")
+    assert dlg.port_spin.value() == 5433
+
+
+def test_snowflake_password_hint_set(qapp) -> None:
+    dlg = ConnectionDialog(ConnectionStore())
+    dlg.db_type_combo.setCurrentText("snowflake")
+    assert "externalbrowser" in dlg.password_edit.toolTip()
+    dlg.db_type_combo.setCurrentText("postgres")
+    assert dlg.password_edit.toolTip() == ""
+
+
+def test_save_snowflake_without_password(qapp, tmp_path, two_keys) -> None:
+    """Browser-auth connection: empty password saves fine (no crypto needed)."""
+    store = ConnectionStore(tmp_path)
+    dlg = ConnectionDialog(store, crypto_env=ENV_PRIMARY)
+    dlg.name_edit.setText("sf")
+    dlg.db_type_combo.setCurrentText("snowflake")
+    dlg.host_edit.setText("xy12345.eu-central-1.snowflakecomputing.com")
+    dlg.database_edit.setText("ANALYTICS")
+    dlg.username_edit.setText("user@example.com")
+    dlg.password_edit.setText("")
+
+    dlg._on_accept()
+
+    assert dlg.result() == QDialog.DialogCode.Accepted
+    cfg = store.load_by_name("sf")
+    assert cfg.type == "snowflake"
+    assert cfg.port == 443
+    assert cfg.password == ""

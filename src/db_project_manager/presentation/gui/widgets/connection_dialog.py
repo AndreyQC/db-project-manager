@@ -36,7 +36,10 @@ from db_project_manager.infrastructure.crypto.crypto_util import get_cipher_env
 class ConnectionDialog(QDialog):
     """Add or edit a connection (UI is the only place connections are created)."""
 
-    DB_TYPES = ("postgres", "greenplum", "clickhouse")
+    DB_TYPES = ("postgres", "greenplum", "clickhouse", "snowflake")
+    #: Port a type switch applies when the user has not customized it yet
+    #: (Phase 21: snowflake 443; the rest keep the historical defaults).
+    _DEFAULT_PORTS = {"postgres": 5432, "greenplum": 5432, "clickhouse": 8123, "snowflake": 443}
     CONNECTION_TYPES = (
         ("direct", "Direct PG"),
         ("ssh_tunnel", "SSH Tunnel PG"),
@@ -70,6 +73,7 @@ class ConnectionDialog(QDialog):
         self.name_edit = QLineEdit()
         self.db_type_combo = QComboBox()
         self.db_type_combo.addItems(self.DB_TYPES)
+        self.db_type_combo.currentIndexChanged.connect(self._on_db_type_changed)
 
         # Connection type dropdown (Direct PG / SSH Tunnel PG)
         self.connection_type_combo = QComboBox()
@@ -208,6 +212,26 @@ class ConnectionDialog(QDialog):
         btn_row.addStretch()
         btn_row.addWidget(buttons)
         form.addRow(btn_row)
+
+    def _on_db_type_changed(self) -> None:
+        """Apply the type's default port when the port is still a stock value.
+
+        A user-customized port (e.g. 5433) survives the switch; clicking
+        through the stock defaults (5432 → 8123 → 443) follows the type.
+        Snowflake also gets a browser-auth hint on the password field
+        (externalbrowser needs no password — Phase 21).
+        """
+        db_type = self.db_type_combo.currentText()
+        if self.port_spin.value() in set(self._DEFAULT_PORTS.values()):
+            self.port_spin.setValue(self._DEFAULT_PORTS.get(db_type, 5432))
+        if db_type == "snowflake":
+            self.password_edit.setToolTip(
+                "Snowflake: при authenticator: externalbrowser пароль не нужен —\n"
+                "вход через браузер (токен кэшируется в OS-хранилище).\n"
+                "Пароль — только для authenticator: snowflake."
+            )
+        else:
+            self.password_edit.setToolTip("")
 
     def _on_connection_type_changed(self) -> None:
         """Show/hide SSH tunnel fields based on connection type."""
