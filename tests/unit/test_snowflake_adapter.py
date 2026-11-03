@@ -24,6 +24,7 @@ from db_project_manager.infrastructure.database.base import (
 from db_project_manager.infrastructure.database.clickhouse.adapter import CHDatabaseAdapter
 from db_project_manager.infrastructure.database.postgres.adapter import PGDatabaseAdapter
 from db_project_manager.infrastructure.database.registry import get_adapter
+from db_project_manager.infrastructure.database.snowflake import queries as sf_q
 from db_project_manager.infrastructure.database.snowflake.adapter import (
     SnowflakeAdapter,
     build_connect_kwargs,
@@ -240,12 +241,6 @@ def test_run_query_requires_connection() -> None:
 # --- MVP stubs -----------------------------------------------------------
 
 
-def test_re_structure_is_s2_stub() -> None:
-    adapter = SnowflakeAdapter()
-    with pytest.raises(NotSupportedError, match="S2"):
-        adapter.get_database_structure()
-
-
 def test_deploy_surface_stubs() -> None:
     adapter = SnowflakeAdapter()
     for call in (
@@ -282,3 +277,217 @@ def test_registry_error_lists_snowflake() -> None:
 
 def test_supported_types_contains_snowflake() -> None:
     assert "snowflake" in SUPPORTED_DB_TYPES
+
+
+# --- S2: get_database_structure (fixture SHOW/GET_DDL/IS rows) ------------
+
+
+class _FixtureSnowflake(SnowflakeAdapter):
+    """Adapter with SHOW/GET_DDL/INFORMATION_SCHEMA replaced by fixtures."""
+
+    def __init__(self, show: dict, ddl: dict, exec_rows: dict) -> None:
+        super().__init__()
+        self._conn = object()  # «активное подключение» для _require_connection
+        self._cfg = _cfg()
+        self._show_map = show
+        self._ddl_map = ddl
+        self._exec_map = exec_rows
+
+    def connect(self, cfg: ConnectionConfig) -> None:
+        """No driver: fixtures are pre-«connected»."""
+        self._cfg = cfg
+
+    def disconnect(self) -> None:
+        self._conn = None
+
+    def _show(self, command: str, scope: str) -> list[dict]:
+        key = (command, scope)
+        if key not in self._show_map:
+            raise AssertionError(f"неожиданный SHOW: {command!r} {scope!r}")
+        return self._show_map[key]
+
+    def _get_ddl(self, kind: str, fq: str) -> str:
+        return self._ddl_map.get((kind, fq), "")
+
+    def _exec(self, query: str, params: dict | None = None) -> list[tuple]:
+        key = (query.strip(), tuple(sorted((params or {}).items())))
+        if key not in self._exec_map:
+            raise AssertionError(f"неожиданный запрос: {query.strip()[:40]!r} {params}")
+        return self._exec_map[key]
+
+
+CORE = "ANALYTICS"
+SCHEMA = "CORE"
+SCHEMA_SCOPE = 'SCHEMA "ANALYTICS"."CORE"'
+
+
+def _fixture_adapter() -> _FixtureSnowflake:
+    show = {
+        ("SCHEMAS", 'DATABASE "ANALYTICS"'): [
+            {"name": "CORE", "comment": "ядро"},
+            {"name": "INFORMATION_SCHEMA", "comment": None},
+        ],
+        ("TABLES", SCHEMA_SCOPE): [{"name": "ORDERS", "comment": "заказы"}],
+        ("VIEWS", SCHEMA_SCOPE): [
+            {"name": "V_ORDERS", "comment": "вью заказов", "text": "select id from orders"}
+        ],
+        ("MATERIALIZED VIEWS", SCHEMA_SCOPE): [
+            {"name": "MV_DAILY", "comment": "mv", "text": "select d, count(*) c from orders group by d"}
+        ],
+        ("SEQUENCES", SCHEMA_SCOPE): [{"name": "SEQ_ORDERS", "comment": None}],
+        ("USER FUNCTIONS", SCHEMA_SCOPE): [
+            {"name": "FN_ADD", "arguments": "FN_ADD(NUMBER, NUMBER) RETURN NUMBER", "description": "сумма"}
+        ],
+        ("PROCEDURES", SCHEMA_SCOPE): [
+            {"name": "SP_RUN", "arguments": "SP_RUN(NUMBER)", "description": None}
+        ],
+    }
+    ddl = {
+        ("SEQUENCE", "ANALYTICS.CORE.SEQ_ORDERS"): (
+            "create or replace sequence ANALYTICS.CORE.SEQ_ORDERS start = 10 increment = 5;"
+        ),
+        ("FUNCTION", "ANALYTICS.CORE.FN_ADD(NUMBER, NUMBER)"): (
+            "create or replace FUNCTION ANALYTICS.CORE.FN_ADD(a number, b number) "
+            "returns number language sql as 'select a + b';"
+        ),
+        ("PROCEDURE", "ANALYTICS.CORE.SP_RUN(NUMBER)"): (
+            "create or replace PROCEDURE ANALYTICS.CORE.SP_RUN(x number) "
+            "returns string language sql as 'begin return to_string(x); end';"
+        ),
+    }
+    exec_rows = {
+        (sf_q.GET_COLUMNS.strip(), (("schema", "CORE"), ("table", "ORDERS"))): [
+            ("ID", "NUMBER", "NO", None, None, 38, 0, "идентификатор"),
+            ("NAME", "VARCHAR", "YES", None, 100, None, None, None),
+            ("CUST_ID", "NUMBER", "YES", "CORE.SQ_CUST.NEXTVAL", None, 38, 0, None),
+        ],
+        (sf_q.GET_COLUMNS.strip(), (("schema", "CORE"), ("table", "V_ORDERS"))): [
+            ("ID", "NUMBER", "YES", None, None, 38, 0, None),
+        ],
+        (sf_q.GET_COLUMNS.strip(), (("schema", "CORE"), ("table", "MV_DAILY"))): [],
+        (sf_q.GET_CONSTRAINTS.strip(), (("schema", "CORE"), ("table", "ORDERS"))): [
+            ("PK_ORDERS", "PRIMARY KEY", "ORDERS", "ID", None, None, None, None),
+            ("FK_ORDERS", "FOREIGN KEY", "ORDERS", "CUST_ID", "PK_CUST", "CORE", "CUSTOMERS", "ID"),
+        ],
+    }
+    return _FixtureSnowflake(show, ddl, exec_rows)
+
+
+def test_structure_shape_and_information_schema_excluded() -> None:
+    structure = _fixture_adapter().get_database_structure()
+    names = [s["name"] for s in structure["schemas"]]
+    assert names == ["CORE"]
+    core = structure["schemas"][0]
+    assert core["comment"] == "ядро"
+    assert core["indexes"] == [] and core["enums"] == []
+    assert [t["name"] for t in core["tables"]] == ["ORDERS"]
+    assert [v["name"] for v in core["views"]] == ["V_ORDERS"]
+    assert [m["name"] for m in core["materialized_views"]] == ["MV_DAILY"]
+    assert [s["name"] for s in core["sequences"]] == ["SEQ_ORDERS"]
+    assert [f["name"] for f in core["functions"]] == ["FN_ADD"]
+    assert [p["name"] for p in core["procedures"]] == ["SP_RUN"]
+
+
+def test_table_columns_types_and_autoincrement_dropped() -> None:
+    table = _fixture_adapter().get_database_structure()["schemas"][0]["tables"][0]
+    assert table["comment"] == "заказы"
+    cols = {c["name"]: c for c in table["columns"]}
+    assert cols["ID"]["type"] == "NUMBER" and cols["ID"]["nullable"] is False
+    assert cols["NAME"]["character_maximum_length"] == 100
+    # Snowflake autoincrement (<seq>.NEXTVAL default) is dropped in MVP.
+    assert cols["CUST_ID"]["default"] is None
+    assert cols["ID"]["comment"] == "идентификатор"
+
+
+def test_constraint_definitions_rendered() -> None:
+    constraints = {
+        c["name"]: c
+        for c in _fixture_adapter().get_database_structure()["schemas"][0]["tables"][0][
+            "constraints"
+        ]
+    }
+    assert constraints["PK_ORDERS"]["definition"] == "PRIMARY KEY (ID)"
+    assert (
+        constraints["FK_ORDERS"]["definition"]
+        == "FOREIGN KEY (CUST_ID) REFERENCES CORE.CUSTOMERS (ID)"
+    )
+
+
+def test_view_matview_definition_from_show_text() -> None:
+    schema = _fixture_adapter().get_database_structure()["schemas"][0]
+    view = schema["views"][0]
+    # Leading space added by the adapter: templates render "AS{{ definition }}".
+    assert view["definition"].strip() == "select id from orders"
+    assert view["columns"][0]["name"] == "ID"
+    mv = schema["materialized_views"][0]
+    assert mv["definition"].strip() == "select d, count(*) c from orders group by d"
+    assert mv["tablespace"] is None  # PG-only clause skipped
+
+
+def test_sequence_fields_from_get_ddl() -> None:
+    seq = _fixture_adapter().get_database_structure()["schemas"][0]["sequences"][0]
+    assert seq["start"] == 10
+    assert seq["increment"] == 5
+    assert seq["minvalue"] is None and seq["maxvalue"] is None
+
+
+def test_routines_signature_and_ddl_body() -> None:
+    schema = _fixture_adapter().get_database_structure()["schemas"][0]
+    fn = schema["functions"][0]
+    assert fn["argument_types"] == "NUMBER, NUMBER"
+    assert "FUNCTION ANALYTICS.CORE.FN_ADD" in fn["definition"]
+    proc = schema["procedures"][0]
+    assert proc["argument_types"] == "NUMBER"
+    assert "PROCEDURE ANALYTICS.CORE.SP_RUN" in proc["definition"]
+
+
+def test_invalid_schema_name_rejected() -> None:
+    show = {("SCHEMAS", 'DATABASE "ANALYTICS"'): [{"name": 'bad"; drop', "comment": None}]}
+    adapter = _FixtureSnowflake(show, {}, {})
+    with pytest.raises(DatabaseError, match="Недопустимое имя"):
+        adapter.get_database_structure()
+
+
+# --- S2: RE end-to-end on fixtures ----------------------------------------
+
+
+def test_reverse_engineer_renders_snowflake_files(tmp_path) -> None:
+    from db_project_manager.application.reverse_engineer import ReverseEngineerService
+
+    adapter = _fixture_adapter()
+    service = ReverseEngineerService(adapter_factory=lambda _cfg: adapter)
+    target = service.run(_cfg(), tmp_path)
+
+    assert (target / "dbpm.manifest.json").is_file()
+    # Schema file + table with inline PK and FK via ALTER.
+    schema_sql = (target / "CORE" / "schema CORE.sql").read_text(encoding="utf-8")
+    assert 'CREATE SCHEMA "CORE"' in schema_sql
+    table_sql = (target / "CORE" / "tables" / "table ORDERS.sql").read_text(encoding="utf-8")
+    assert 'CREATE TABLE "CORE"."ORDERS"' in table_sql
+    assert 'CONSTRAINT "PK_ORDERS" PRIMARY KEY (ID)' in table_sql
+    assert (
+        'ADD CONSTRAINT "FK_ORDERS" FOREIGN KEY (CUST_ID) REFERENCES CORE.CUSTOMERS (ID)'
+        in table_sql
+    )
+    # View takes its query from SHOW text.
+    view_sql = (target / "CORE" / "views" / "view V_ORDERS.sql").read_text(encoding="utf-8")
+    assert "CREATE OR REPLACE VIEW" in view_sql
+    assert "select id from orders" in view_sql
+    # Matview without the PG-only TABLESPACE clause.
+    mv_sql = (target / "CORE" / "materialized_views" / "materialized_view MV_DAILY.sql").read_text(
+        encoding="utf-8"
+    )
+    assert "CREATE MATERIALIZED VIEW" in mv_sql
+    # The PG-only clause is skipped: view header goes straight to AS <query>.
+    assert 'CREATE MATERIALIZED VIEW "CORE"."MV_DAILY"\nAS select d' in mv_sql
+    # Sequences without PG-only MINVALUE/MAXVALUE/CACHE clauses.
+    seq_sql = (target / "CORE" / "sequences" / "sequence SEQ_ORDERS.sql").read_text(encoding="utf-8")
+    assert "START 10" in seq_sql and "INCREMENT BY 5" in seq_sql
+    # Rendered clauses would carry values ("MINVALUE 1", "CACHE 1") — template
+    # comments mention the clause names, the values do not appear.
+    assert "MINVALUE 1" not in seq_sql and "CACHE 1" not in seq_sql
+    # Routine bodies carry the GET_DDL definition.
+    fn_sql = (target / "CORE" / "functions" / "function FN_ADD.sql").read_text(encoding="utf-8")
+    assert "FUNCTION ANALYTICS.CORE.FN_ADD" in fn_sql
+    # __deploy service schema seeded into the codebase (PG canonical templates).
+    assert (target / "__deploy" / "schema __deploy.sql").is_file()

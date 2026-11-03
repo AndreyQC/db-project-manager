@@ -1,7 +1,9 @@
 -- Создание материализованного представления {{ _qi(schema) }}.{{ _qi(name) }}
+-- TABLESPACE is PG/GP-only: engines without tablespaces (Snowflake) pass None
+-- and the clause is skipped (Phase 21). data_status: PG renders "WITH DATA".
 CREATE MATERIALIZED VIEW {{ _qi(schema) }}.{{ _qi(name) }}
-TABLESPACE {{ tablespace }}
-AS{{ definition }}
+{% if tablespace %}TABLESPACE {{ tablespace }}
+{% endif %}AS{{ definition }}
 {{ data_status }};
 
 {% if comment %}
