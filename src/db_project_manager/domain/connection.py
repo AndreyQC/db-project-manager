@@ -8,7 +8,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, model_validator, field_serializer
 
 #: Supported database adapter types.
-SUPPORTED_DB_TYPES = ("postgres", "greenplum", "clickhouse")
+SUPPORTED_DB_TYPES = ("postgres", "greenplum", "clickhouse", "snowflake")
 
 
 class ConnectionType(str, Enum):

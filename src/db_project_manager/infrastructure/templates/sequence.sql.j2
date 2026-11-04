@@ -1,11 +1,14 @@
 -- Создание последовательности {{ _qi(schema) }}.{{ _qi(name) }}
+-- MINVALUE/MAXVALUE/CACHE/CYCLE conditional: PG/GP always carry them;
+-- Snowflake sequences have none (Phase 21) — None/empty skips the clause.
 CREATE SEQUENCE {{ _qi(schema) }}.{{ _qi(name) }}
     INCREMENT BY {{ increment }}
-    MINVALUE {{ minvalue }}
-    MAXVALUE {{ maxvalue }}
-    START {{ start }}
-    CACHE {{ cache }}
-    {{ cycle }};
+    {% if minvalue is not none %}MINVALUE {{ minvalue }}
+    {% endif %}{% if maxvalue is not none %}MAXVALUE {{ maxvalue }}
+    {% endif %}START {{ start }}
+    {% if cache is not none %}CACHE {{ cache }}
+    {% endif %}{% if cycle %}{{ cycle }}
+    {% endif %};
 {% if comment %}
 -- Комментарий к последовательности
 COMMENT ON TABLE {{ _qi(schema) }}.{{ _qi(name) }} IS '{{ comment }}';

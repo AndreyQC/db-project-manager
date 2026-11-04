@@ -10,6 +10,7 @@ from db_project_manager.domain.connection import ConnectionConfig
 from db_project_manager.infrastructure.database.base import DatabaseAdapter, DatabaseError
 from db_project_manager.infrastructure.database.clickhouse.adapter import CHDatabaseAdapter
 from db_project_manager.infrastructure.database.postgres.adapter import PGDatabaseAdapter
+from db_project_manager.infrastructure.database.snowflake.adapter import SnowflakeAdapter
 
 
 def get_adapter(cfg: ConnectionConfig) -> DatabaseAdapter:
@@ -19,7 +20,9 @@ def get_adapter(cfg: ConnectionConfig) -> DatabaseAdapter:
         return PGDatabaseAdapter()
     if db_type == "clickhouse":
         return CHDatabaseAdapter()
+    if db_type == "snowflake":
+        return SnowflakeAdapter()
     raise DatabaseError(
         f"Неподдерживаемый тип БД: {cfg.type!r}. "
-        f"Поддерживаются: postgres, greenplum, clickhouse."
+        f"Поддерживаются: postgres, greenplum, clickhouse, snowflake."
     )

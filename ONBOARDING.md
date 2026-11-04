@@ -6,8 +6,8 @@
 ## Порядок чтения в первый день
 
 1. `README.md` — что за инструмент и какие команды есть.
-2. `AGENTS.md` — правила для AI-агентов и людей (структура `_docs_`, конвенции).
-3. `_docs_/REFRESH_CONTEXT.md` → последний чекпойнт в `_docs_/_checkpoints_/` — где проект сейчас.
+2. `AGENTS.md` — правила для AI-агентов и людей (структура `harness_docs`, конвенции).
+3. `harness_docs/REFRESH_CONTEXT.md` → последний чекпойнт в `harness_docs/harness_checkpoints/` — где проект сейчас.
 4. `PREPAREENV.md` — настройка окружения (uv, `uv sync`, `ENVOS_CRYPTO_01`, Docker для integration-тестов).
 
 ## AI-ассистенты: модель Minimax в периметре Риксофта (prod)
@@ -54,8 +54,8 @@
 
 ## Куда писать вопросы по репозиторию
 
-- Конвенции документов: `_docs_/_tasks_/TASK_CONVENTIONS.md`,
-  `_docs_/_checkpoints_/CHECKPOINTS_CONVENTION.md`,
-  `_docs_/_phases_/PHASES_CONVENTION.md`.
+- Конвенции документов: `harness_docs/harness_tasks/TASK_CONVENTIONS.md`,
+  `harness_docs/harness_checkpoints/CHECKPOINTS_CONVENTION.md`,
+  `harness_docs/harness_phases/PHASES_CONVENTION.md`.
 - Известные грабли: `LESSONS_LEARNED.md` — читать перед первым код-ревью.
-- Текущий статус фаз: `_tasks_/ROADMAP.md` и последний чекпойнт.
+- Текущий статус фаз: `harness_tasks/ROADMAP.md` и последний чекпойнт.

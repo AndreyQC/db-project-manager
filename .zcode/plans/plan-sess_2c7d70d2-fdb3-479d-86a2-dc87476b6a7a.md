@@ -190,7 +190,7 @@ db-pm yaml apply \
 ### Отклонения от Phase 12 workflow
 
 - Vision draft → USER_INPUT → final → plan — **пропускаем**: требования понятны, нужен рабочий инструмент сейчас
-- Документы: `Phase_13_vision_draft.md` не пишется; сразу `_tasks_/phase_13/Phase_13_result.md` + `Phase_13.md`
+- Документы: `Phase_13_vision_draft.md` не пишется; сразу `harness_tasks/phase_13/Phase_13_result.md` + `Phase_13.md`
 - CD-17/18/19 откладываются в Phase 15
 
 ---

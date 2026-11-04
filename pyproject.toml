@@ -32,6 +32,10 @@ db-pm-mcp = "db_project_manager.presentation.mcp.main:app"
 [project.optional-dependencies]
 # Phase 19: local MCP server (stdio). Install with: uv sync --extra mcp
 mcp = ["mcp>=1.2,<2"]
+# Phase 21: Snowflake adapter (connect + RE MVP). The secure-local-storage
+# extra carries keyring/WAM so the browser-SSO token is cached in the OS
+# credential store (no browser on reconnect). Install: uv sync --extra snowflake
+snowflake = ["snowflake-connector-python[secure-local-storage]>=3,<4"]
 
 [dependency-groups]
 dev = [

@@ -150,6 +150,11 @@ def test_type_priority_constants() -> None:
     assert TYPE_PRIORITIES["schema"] < TYPE_PRIORITIES["sequence"]
     assert TYPE_PRIORITIES["table"] < TYPE_PRIORITIES["view"]
     assert TYPE_PRIORITIES["view"] < TYPE_PRIORITIES["function"]
+    # Task 20261028_001: trigger deploys AFTER the function/procedure it
+    # executes and the table/view it is attached to.
+    assert TYPE_PRIORITIES["function"] < TYPE_PRIORITIES["trigger"]
+    assert TYPE_PRIORITIES["procedure"] < TYPE_PRIORITIES["trigger"]
+    assert TYPE_PRIORITIES["view"] < TYPE_PRIORITIES["trigger"]
     assert get_type_priority("unknown_thing") == 100
 
 
@@ -240,6 +245,40 @@ def test_disconnected_sequence_before_table_by_type_priority() -> None:
     order = [v.object_type for v in sort_by_type_and_topology(g)]
     # sequence (priority=1) must come before table (priority=2)
     assert order == ["sequence", "table"]
+
+
+def test_trigger_after_function_table_view_by_type_priority() -> None:
+    """Regression for task 20261028_001 (qr-проект 588): trigger used to have
+    priority 3 — on an empty DB `CREATE TRIGGER ... EXECUTE FUNCTION` ran
+    before the function itself (type priority dominated the explicit
+    trigger→function edge). Trigger must deploy after table, view, function
+    and procedure regardless of edges."""
+    g = DependencyGraph()
+    for key, obj_type in (
+        ("trg", "trigger"),
+        ("fn", "function"),
+        ("proc", "procedure"),
+        ("vw", "view"),
+        ("tbl", "table"),
+        ("sch", "schema"),
+    ):
+        g.add_vertex(_v(key, obj_type))
+    # Explicit body dependency (word-scan catches the function call) — even
+    # with this edge the old type priority (trigger=3 < function=5) broke it.
+    g.add_edge(_edge("trg", "fn"))
+    order = [v.object_type for v in sort_by_type_and_topology(g)]
+    assert order == ["schema", "table", "view", "function", "procedure", "trigger"]
+
+
+def test_trigger_drop_order_reversed_after_function() -> None:
+    """Deploy reset drops in reverse deploy order: trigger (6) is dropped
+    BEFORE the function it executes (5) — mirrors the CREATE-side fix."""
+    g = DependencyGraph()
+    g.add_vertex(_v("fn", "function"))
+    g.add_vertex(_v("trg", "trigger"))
+    order = [v.object_type for v in sort_by_type_and_topology(g)]
+    assert order == ["function", "trigger"]
+    assert list(reversed(order)) == ["trigger", "function"]
 
 
 # --- integration with the parser fixture shape ---
